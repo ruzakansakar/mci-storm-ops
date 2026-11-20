@@ -14,8 +14,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | Phase | What | Status |
 |---|---|---|
 | 1 | Database + data from the class files | **done** |
-| 2 | Rules as tested code (`config/rules.yaml`) | next |
-| 3 | Simulator + debug page | |
+| 2 | Rules as tested code (`config/rules.yaml`) | **done** |
+| 3 | Simulator + debug page | next |
 | 4 | Orchestrator + Situation agent | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
 | 6 | Communication, consistency check, Passenger Care, Station & Staff (milestone 2) | |
@@ -44,7 +44,8 @@ source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python -m scripts.reset_db    # builds every table and loads the data
 python -m scripts.summary     # plain-English check
-pytest                        # 12 automated checks
+python -m scripts.rules_demo  # the rules in plain English + the A31 example
+pytest                        # 38 automated checks
 ```
 
 ## What Phase 1 gives you
@@ -58,6 +59,19 @@ pytest                        # 12 automated checks
 - Crews and reserve crews, hotels, later-flight capacity, route tiers, van and hotel rates, and an MCI staff roster.
 - Empty tables ready for later phases: events, incidents, recommendations, decisions, audit log, mismatches, metric runs.
 - **`data_issues`**: every conflict between the class files, recorded with what we did about it (nothing silently fixed).
+
+## The rules (Phase 2)
+
+Every number the agents use lives in `config/rules.yaml`: the safety ladder, legal limits,
+who approves what, and compensation. Change a number there and rerun `pytest`.
+
+- **Safety ladder:** life, aircraft, infrastructure, legal, vulnerable passengers (these remove unsafe options),
+  then network, convenience, cost (these only rank what's left). Unknown data counts as unsafe.
+- **Who decides:** `auto`, `needs_approval` (with the approver's role) or `human_only`. Anything not listed is human-only,
+  and nothing that touches rungs 1-4 can be automatic.
+- **Compensation:** legal floor for everyone (refund if cancelled or 3+ h late, 6+ h international, and rebooking declined),
+  Southwest commitments only for controllable causes (meal + $75 voucher at 3+ h, hotel if overnight and not local),
+  optional goodwill that a supervisor approves.
 
 ## Rules for conflicting files
 
@@ -73,6 +87,8 @@ backend/db/schema.sql      every table
 backend/seed/class_files.py reads the class files in data/raw
 backend/seed/build.py      turns them into rows (deterministic by SEED)
 backend/seed/load.py       writes the rows into PostgreSQL
+backend/rules/             safety ladder, who decides, compensation
+config/rules.yaml          every rule number
 scripts/reset_db.py        wipe and rebuild
 scripts/summary.py         human-readable check
 tests/                     pytest checks

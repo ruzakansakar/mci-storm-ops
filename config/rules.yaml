@@ -1,0 +1,71 @@
+# Ground-Stop Co-Pilot rules
+#
+# Every number the co-pilot uses to judge an option lives here, not in code.
+# Change a number here, rerun `pytest`, and every agent follows the new rule.
+#
+# source tags:  law = federal regulation   southwest = Southwest commitment
+#               assumption = our class-project choice (change freely)
+
+version: 1
+
+# ------------------------------------------------------------------ SAFETY LADDER
+# Checked top to bottom. An option that fails a "filter" rung is removed, never traded off.
+# Rungs 6-8 don't remove anything; they only decide the order of the options that survive.
+safety_ladder:
+  - {rung: 1, name: life,           kind: filter, checks: [tarmac_limit, ramp_closed_for_lightning]}
+  - {rung: 2, name: aircraft,       kind: filter, checks: [maintenance_due, needs_inspection, fuel_reserve]}
+  - {rung: 3, name: infrastructure, kind: filter, checks: [station_has_gate, customs_for_international]}
+  - {rung: 4, name: legal,          kind: filter, checks: [crew_duty_left, crew_rest, child_alone_international]}
+  - {rung: 5, name: vulnerable,     kind: filter, checks: [wheelchair_help_available, child_alone_has_plan]}
+  - {rung: 6, name: network,        kind: rank,   score: network_score}       # higher is better
+  - {rung: 7, name: convenience,    kind: rank,   score: pax_disrupted}       # lower is better
+  - {rung: 8, name: cost,           kind: rank,   score: cost_usd}            # lower is better
+
+# ------------------------------------------------------------------ LIMITS
+limits:
+  tarmac_domestic_min: 180            # law: 14 CFR 259.4, deplane by 3 h on domestic flights
+  tarmac_international_min: 240       # law: 4 h on international flights
+  tarmac_food_water_min: 120          # law: food and water by 2 h
+  pilot_min_rest_hours: 10            # law: 14 CFR 117.25
+  crew_duty_buffer_min: 30            # assumption: never plan a crew to the last minute
+  fuel_reserve_min: 45                # assumption: keep 45 min of fuel after reaching the alternate
+  min_connection_min: 45              # assumption: same as the data loader
+
+# ------------------------------------------------------------------ WHO DECIDES WHAT
+# auto           the co-pilot does it and writes it to the audit log
+# needs_approval the co-pilot proposes; the named role taps approve or reject
+# human_only     the co-pilot may show facts, never a recommendation it can act on
+# Anything not listed here is treated as human_only.
+autonomy:
+  send_status_update:      {level: auto}
+  fix_channel_mismatch:    {level: auto}
+  hold_hotel_rooms:        {level: auto, max_rooms: 40}
+  request_wheelchair_help: {level: auto}
+  rebook_passenger:        {level: needs_approval, approver: customer_service_supervisor}
+  issue_compensation:      {level: needs_approval, approver: customer_service_supervisor}
+  call_in_reserve_crew:    {level: needs_approval, approver: crew_scheduling}
+  swap_aircraft:           {level: needs_approval, approver: network_operations_control}
+  delay_flight:            {level: needs_approval, approver: network_operations_control}
+  cancel_flight:           {level: needs_approval, approver: network_operations_control}
+  divert_flight:           {level: human_only, approver: dispatcher_and_captain}
+  ramp_closure:            {level: human_only, approver: ramp_supervisor}
+  release_aircraft_after_inspection: {level: human_only, approver: maintenance_control}
+  extend_crew_duty:        {level: human_only, approver: captain}
+
+# Anything that would change a safety fact (rungs 1-4) is never automatic, whatever is written above.
+never_auto_rungs: [1, 2, 3, 4]
+
+# ------------------------------------------------------------------ COMPENSATION
+# Legal floor: owed to everyone, whatever the cause.
+# Southwest commitments: owed only when the cause was within Southwest's control.
+# Goodwill: optional, always needs a supervisor's approval.
+compensation:
+  significant_delay_domestic_min: 180       # law: DOT refund rule (2024), arrival 3+ h late
+  significant_delay_international_min: 360  # law: 6+ h for international
+  controllable_delay_min: 180               # southwest: 3+ h late arrival, controllable cause
+  voucher_usd: 75                           # southwest: DOT settlement (Dec 2023), at least $75
+  meal_usd: 15                              # assumption: value of one meal voucher
+  hotel_needed_if_overnight: true           # southwest: hotel + ground transport for controllable overnights
+  goodwill_usd: 50                          # assumption: optional credit for uncontrollable cases
+  uncontrollable_causes: [weather, faa_program, ground_stop, security, airport]
+  controllable_causes:   [maintenance, crew, it_outage, staffing, operational]
