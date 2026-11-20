@@ -100,7 +100,7 @@ All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumptio
    12:10-12:45, and A31 is airborne from Denver with 55 min of spare fuel.
 2. **The truth.** Minute by minute the simulator moves flights, planes, crews, bags and bookings, the way Southwest's systems would
    record them *today*, with no co-pilot: flights wait out the stop, a flight that would leave more than 150 min late is
-   cancelled, a plane that burns its spare fuel while holding diverts, and people on a cancelled flight get the next flight
+   cancelled, a plane diverts once its spare holding fuel minus the extra flying to its alternate airport falls to 10 min (the same sum as the rules' fuel check), and people on a cancelled flight get the next flight
    to the same place that has room (or are left with no seat). It makes no clever choices.
 3. **The screens.** The app, text messages, gate screens and call center each copy the truth later than it happened:
    app fast, call center slowest, and slower still when many things change at once. Sometimes a copy never arrives, and that

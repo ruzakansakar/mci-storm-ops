@@ -73,10 +73,33 @@ def test_a31_ground_stop_and_airborne_a31(data):
     stops = [e for e in r.world.events if e["type"] == "ground_stop_started"]
     assert len(stops) == 1 and stops[0]["station"] == "MCI" and stops[0]["t"] == hhmm("11:30")
     assert [e["t"] for e in r.world.events if e["type"] == "ground_stop_ended"] == [hhmm("14:00")]
-    for t in ("11:30", "12:00", "12:29"):
+    for t in ("11:30", "12:00", "12:14"):
         assert status_at(r.world, "WN2031", hhmm(t)) == "airborne"
     takeoff = next(e for e in r.world.events if e["type"] == "flight_airborne" and e["payload"]["flight_id"] == "WN2031")
     assert takeoff["payload"]["fuel_minutes_extra"] == 55
+
+
+def test_a31_diverts_after_about_30_minutes_of_holding(data):
+    r = sim(data, 7, "a31_storm")
+    div = [e for e in r.world.events if e["type"] == "flight_diverted" and e["payload"]["flight_id"] == "WN2031"]
+    assert len(div) == 1 and div[0]["station"] == "STL"
+    assert div[0]["t"] == hhmm("12:15")                      # holding began 11:45; 55 - 30 - 15 = 10 spare minutes left
+    assert div[0]["payload"]["fuel_minutes_extra"] == 25 and div[0]["payload"]["extra_flying_min"] == 15
+    assert status_at(r.world, "WN2031", hhmm("12:15")) == "diverted"
+
+
+def test_no_diverted_flight_reaches_its_alternate_below_the_fuel_floor():
+    from simulator.config import load_config
+    floor = load_config()["physics"]["diversion"]["fuel_floor_min"]
+    seen = 0
+    for seed in range(1, 21):
+        for scenario in ("random", "a31_storm"):
+            for e in simulate(seed, scenario).world.events:
+                if e["type"] == "flight_diverted":
+                    seen += 1
+                    p = e["payload"]
+                    assert p["fuel_minutes_extra"] - p["extra_flying_min"] >= floor, (seed, scenario, p)
+    assert seen > 20                                          # the check really looked at diversions
 
 
 def test_a31_ramp_closes_inside_stop_then_reopens(data):
@@ -161,13 +184,13 @@ def test_simulator_never_touches_rules():
 
 @pytest.fixture(scope="module")
 def saved():
-    """Run the class story into the database, remembering what the events looked like after each batch."""
+    """Run a random day (seed 4: a storm with many cancellations) into the database, noting events after each batch."""
     snaps = []
 
     def on_flush(conn):
         snaps.append(conn.execute("SELECT id, md5(payload::text || type) FROM events ORDER BY id").fetchall())
 
-    res = run(7, "a31_storm", write=True, on_flush=on_flush)
+    res = run(4, "random", write=True, on_flush=on_flush)
     with connect() as conn, conn.cursor() as cur:
         yield res, snaps, cur
 

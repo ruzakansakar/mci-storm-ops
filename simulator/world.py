@@ -56,7 +56,7 @@ class World:
         self.aircraft = {}
         for r in data["aircraft"]:
             a = dict(r)
-            a.update(as_of=start, airborne=False, fuel_minutes_extra=None, needs_inspection=False, _inspect_done=None,
+            a.update(as_of=start, airborne=False, fuel_minutes_extra=None, _fuel0=None, needs_inspection=False, _inspect_done=None,
                      _inspect_min=None)
             self.aircraft[a["id"]] = a
         self.crews = {r["id"]: {**r, "as_of": start} for r in data["crews"]}
@@ -136,7 +136,8 @@ class World:
                 self.dirty["flights"].add(f["id"])
             elif f["sched_dep"] < self.start:
                 f.update(status="airborne", actual_dep=f["sched_dep"])
-                self.aircraft[f["aircraft_id"]].update(airborne=True, fuel_minutes_extra=params.get("fuel_minutes_extra"))
+                self.aircraft[f["aircraft_id"]].update(airborne=True, fuel_minutes_extra=params.get("fuel_minutes_extra"),
+                                                       _fuel0=params.get("fuel_minutes_extra"))
                 self.dirty["aircraft"].add(f["aircraft_id"])
                 self.dirty["flights"].add(f["id"])
         for f in self.flights.values():
@@ -167,6 +168,7 @@ class World:
         self._inbound_takeoffs()
         self._holding_start()
         self._landings()
+        self._check_fuel()
         self._resume_from_alternate()
         self._departures()
         self._destination_arrivals()
@@ -294,7 +296,7 @@ class World:
             if s in NOT_DEPARTED_ARR:
                 key = max(f["sched_arr"], t + f["_block"])
             elif s == "airborne":
-                key = max(f["sched_arr"], t)
+                key = max(self._over_mci(f), t)
             elif s == "diverted":
                 key = max(f["_land_key"] if f["_resumed"] else f["_resume_ready"], t)
             else:
@@ -384,12 +386,13 @@ class World:
                 self._set("flights", f, f["id"], "flight", "took off", status="airborne", actual_dep=t, as_of=t)
                 ac = self.aircraft[f["aircraft_id"]]
                 self._set("aircraft", ac, ac["id"], "aircraft", "airborne", airborne=True, fuel_minutes_extra=fuel, as_of=t)
+                ac["_fuel0"] = fuel
                 self._emit("flight_airborne", f["origin"], {"flight_id": f["id"], "to": "MCI", "fuel_minutes_extra": fuel,
                                                            "delay_min": t - f["sched_dep"]})
 
     def _holding_start(self):
         for f in self.arrivals:
-            if f["status"] == "airborne" and not f["_holding"] and self.t >= f["sched_arr"] and f["est_arr"] > self.t:
+            if f["status"] == "airborne" and not f["_holding"] and self.t >= self._over_mci(f) and f["est_arr"] > self.t:
                 f["_holding"] = True
                 self._emit("flight_holding", "MCI", {"flight_id": f["id"], "expected_landing": fmt(f["est_arr"]),
                                                     "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"]})
@@ -480,25 +483,14 @@ class World:
         t, n = self.t, self.ph["clock_update_every_min"]
         if t % n:
             return
-        floor = self.ph["diversion"]["fuel_floor_min"]
-        divert = []
         for f in self.arrivals:
-            if f["status"] == "airborne" and t > f["sched_arr"] and f["est_arr"] > t - n:   # holding over MCI
-                burn = min(n, t - f["sched_arr"])
-                ac = self.aircraft[f["aircraft_id"]]
-                if ac["fuel_minutes_extra"] is not None:
-                    self._set("aircraft", ac, ac["id"], "aircraft", "holding: fuel burned",
-                              fuel_minutes_extra=max(0, ac["fuel_minutes_extra"] - burn), as_of=t)
-                    if ac["fuel_minutes_extra"] <= floor:
-                        divert.append(f)
-                self._burn_duty(f, burn)
+            if f["status"] == "airborne" and t > self._over_mci(f) and f["est_arr"] > t - n:   # holding over MCI
+                self._burn_duty(f, min(n, t - self._over_mci(f)))
             elif f["status"] == "diverted" and not f["_resumed"]:
                 self._burn_duty(f, n)
         for d in self.departures:
             if d["status"] in WAITING_DEP and t > d["sched_dep"] and self._aircraft_present(d):
                 self._burn_duty(d, min(n, t - d["sched_dep"]))
-        for f in divert:
-            self._divert(f)
         for d in self.departures:
             crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
             if d["status"] in WAITING_DEP and crew and crew["pilot_duty_left_min"] is not None \
@@ -517,6 +509,37 @@ class World:
                 self._emit("inspection_completed", "MCI", {"aircraft_id": ac["id"]})
                 self.reproject("inspection finished")
         self._update_crowd()
+
+    def _over_mci(self, f):
+        """The minute an airborne inbound flight reaches MCI airspace (it starts holding from here if it cannot land)."""
+        return f["actual_dep"] + f["_block"]
+
+    def _holding_fuel(self, f):
+        """Spare holding fuel right now: what it took off with, minus the minutes spent holding over MCI."""
+        ac = self.aircraft[f["aircraft_id"]]
+        if ac["_fuel0"] is None:
+            return None
+        return max(0, ac["_fuel0"] - max(0, self.t - self._over_mci(f)))
+
+    def _check_fuel(self):
+        """Every minute: a holding plane diverts once it could only just reach its alternate.
+
+        Same sum as the fuel check in the rules: spare fuel - extra flying to the alternate must stay above the floor.
+        """
+        t, floor = self.t, self.ph["diversion"]["fuel_floor_min"]
+        for f in self.arrivals:
+            if f["status"] != "airborne" or t < self._over_mci(f):    # still airborne after the landing step = still holding
+                continue
+            fuel = self._holding_fuel(f)
+            if fuel is None:
+                continue
+            ac = self.aircraft[f["aircraft_id"]]
+            extra = self.sc.flight_params[f["id"]]["alternate_extra_min"]
+            if fuel - extra <= floor:
+                self._set("aircraft", ac, ac["id"], "aircraft", "holding: fuel burned", fuel_minutes_extra=fuel)
+                self._divert(f, extra)
+            elif t % self.ph["clock_update_every_min"] == 0:
+                self._set("aircraft", ac, ac["id"], "aircraft", "holding: fuel burned", fuel_minutes_extra=fuel)
 
     def _burn_duty(self, f, minutes):
         crew = self.crews.get(f["crew_id"]) if f["crew_id"] else None
@@ -539,10 +562,10 @@ class World:
 
     # ================================================================ diversion and cancellation
 
-    def _divert(self, f):
+    def _divert(self, f, extra_flying_min):
         t, d = self.t, self.ph["diversion"]
-        alt = self.sc.flight_params.get(f["id"], {}).get("alternate", self.ph["inbound_alternates"][0])
-        self._set("flights", f, f["id"], "flight", "diverted: spare fuel used up while holding", status="diverted",
+        alt = self.sc.flight_params[f["id"]]["alternate"]
+        self._set("flights", f, f["id"], "flight", "diverted: spare fuel too low to keep holding", status="diverted",
                   diverted_to=alt, tarmac_since=t, as_of=t)
         f["_resume_ready"] = t + d["refuel_turn_min"] + d["flight_back_min"]
         f["_holding"] = False
@@ -550,7 +573,9 @@ class World:
         ac = self.aircraft[f["aircraft_id"]]
         self._set("aircraft", ac, ac["id"], "aircraft", "diverted", airborne=False, current_station=alt, as_of=t)
         self._emit("flight_diverted", alt, {"flight_id": f["id"], "diverted_to": alt, "pax": f["pax_total"],
-                                            "reason": "spare fuel used up while holding"}, incident=True)
+                                            "reason": "spare fuel too low to keep holding",
+                                            "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"],
+                                            "extra_flying_min": extra_flying_min}, incident=True)
         self._emit("tarmac_started", alt, {"flight_id": f["id"], "diverted": True})
         self._mark_pax(f)
         self.reproject("a flight diverted")

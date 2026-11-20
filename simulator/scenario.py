@@ -28,7 +28,7 @@ class Scenario:
     announced_end: int             # the end first announced (before any extension)
     incident: dict                 # kind, title, likely_cause, controllable
     events: list[dict] = field(default_factory=list)          # sorted by time
-    flight_params: dict = field(default_factory=dict)         # flight id -> {fuel_minutes_extra, alternate}
+    flight_params: dict = field(default_factory=dict)         # flight id -> {fuel_minutes_extra, alternate, alternate_extra_min}
 
     def events_at(self, minute: int) -> list[dict]:
         return self._by_time.get(minute, [])
@@ -52,9 +52,13 @@ def _event(events, t, type_, payload, incident=True, station="MCI"):
 def _flight_params(rng, flights, cfg) -> dict:
     """Spare fuel and diversion airport for every inbound flight (drawn in a fixed order)."""
     lo, hi = cfg["physics"]["fuel_extra_min"]
-    alts = cfg["physics"]["inbound_alternates"]
-    return {f["id"]: {"fuel_minutes_extra": rng.randint(lo, hi), "alternate": rng.choice(alts)}
-            for f in sorted(flights, key=lambda f: f["id"]) if f["direction"] == "arrival"}
+    alts = cfg["physics"]["inbound_alternates"]            # airport -> extra minutes of flying to get there
+    out = {}
+    for f in sorted(flights, key=lambda f: f["id"]):
+        if f["direction"] == "arrival":
+            fuel, alt = rng.randint(lo, hi), rng.choice(list(alts))
+            out[f["id"]] = {"fuel_minutes_extra": fuel, "alternate": alt, "alternate_extra_min": alts[alt]}
+    return out
 
 
 def _restriction_events(events, program, start, announced_end, end):
@@ -80,7 +84,8 @@ def _a31_storm(seed, flights, cfg) -> Scenario:
     s = cfg["scenarios"]["a31_storm"]
     rng = random.Random(f"scenario:a31_storm:{seed}")
     params = _flight_params(rng, flights, cfg)
-    params[s["flight"]] = {"fuel_minutes_extra": s["fuel_minutes_extra"], "alternate": s["alternate"]}
+    params[s["flight"]] = {"fuel_minutes_extra": s["fuel_minutes_extra"], "alternate": s["alternate"],
+                           "alternate_extra_min": s["alternate_extra_min"]}
     start, announced, end = hhmm(s["stop_start"]), hhmm(s["announced_end"]), hhmm(s["extended_end"])
     cause = cfg["causes"][s["cause"]]
     events: list[dict] = []
