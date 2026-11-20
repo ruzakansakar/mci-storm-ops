@@ -15,7 +15,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 |---|---|---|
 | 1 | Database + data from the class files | **done** |
 | 2 | Rules as tested code (`config/rules.yaml`) | **done** |
-| 3 | Simulator + debug page | next |
+| 3 | Simulator + debug page | **done** |
 | 4 | Orchestrator + Situation agent | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
 | 6 | Communication, consistency check, Passenger Care, Station & Staff (milestone 2) | |
@@ -45,7 +45,7 @@ pip install -r requirements.txt
 python -m scripts.reset_db    # builds every table and loads the data
 python -m scripts.summary     # plain-English check
 python -m scripts.rules_demo  # the rules in plain English + the A31 example
-pytest                        # 38 automated checks
+pytest                        # 56 automated checks (the simulator ones take ~20 s)
 ```
 
 ## What Phase 1 gives you
@@ -73,6 +73,40 @@ who approves what, and compensation. Change a number there and rerun `pytest`.
   Southwest commitments only for controllable causes (meal + $75 voucher at 3+ h, hotel if overnight and not local),
   optional goodwill that a supervisor approves.
 
+## The simulator (Phase 3)
+
+```bash
+python -m simulator.run --seed 7 --scenario a31_storm     # the class story; resets the database first
+python -m simulator.run --seed 7 --scenario random --mode today --until 23:59
+python -m simulator.report --latest                       # writes reports/<run_id>.html (double-click to open)
+python -m simulator.report --run-id a31_storm-s7-today
+```
+
+`--mode copilot` exists but only prints "not built yet (Phase 4+)". A full day takes about 10 seconds on Neon.
+All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumption`).
+
+**How it works, in plain English**
+
+1. **A script for the day.** From the seed it picks what goes wrong: a cause (storm, FAA program, IT outage, airport or
+   security problem), when the stop starts and how long it lasts, and sometimes side problems (lightning closes the ramp,
+   a crew nearly out of hours, an aircraft needing inspection, a crowd building in the terminal).
+   `a31_storm` is the fixed class story: storm stop 11:30-14:00 (first announced to end at 13:00), lightning closes the ramp
+   12:10-12:45, and A31 is airborne from Denver with 55 min of spare fuel.
+2. **The truth.** Minute by minute the simulator moves flights, planes, crews, bags and bookings, the way Southwest's systems would
+   record them *today*, with no co-pilot: flights wait out the stop, a flight that would leave more than 150 min late is
+   cancelled, a plane that burns its spare fuel while holding diverts, and people on a cancelled flight get the next flight
+   to the same place that has room (or are left with no seat). It makes no clever choices.
+3. **The screens.** The app, text messages, gate screens and call center each copy the truth later than it happened:
+   app fast, call center slowest, and slower still when many things change at once. Sometimes a copy never arrives, and that
+   screen stays wrong until the next change. A screen never shows the right answer early.
+4. **What gets saved.** Every event (append-only; the database refuses edits), every truth change in the audit log, one
+   incident, and at the end one row of numbers in `metric_runs` (delays, cancellations, passengers hit, how many people had a wrong screen,
+   for how long, and so on). Nothing is written to `mismatches`: finding mismatches is a later phase. `count_disagreements()`
+   in `simulator/channels.py` measures them.
+5. **Same seed, same day.** Only seeded random numbers are used, so the same seed and scenario always give the same events and numbers.
+
+The simulator never imports `backend/rules`: it only causes problems, it does not decide anything.
+
 ## Rules for conflicting files
 
 - The Daily Operating Schedule wins for times, destinations, aircraft type, passenger totals and priority.
@@ -89,6 +123,9 @@ backend/seed/build.py      turns them into rows (deterministic by SEED)
 backend/seed/load.py       writes the rows into PostgreSQL
 backend/rules/             safety ladder, who decides, compensation
 config/rules.yaml          every rule number
+config/simulator.yaml      every simulator number
+simulator/                 scenario, world (truth), channels (screens), run, report (debug page)
+reports/                   generated debug pages (not committed)
 scripts/reset_db.py        wipe and rebuild
 scripts/summary.py         human-readable check
 tests/                     pytest checks

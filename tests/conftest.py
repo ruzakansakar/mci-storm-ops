@@ -8,8 +8,10 @@ from scripts.reset_db import main as reset
 def db():
     """Rebuild the database once, then hand every test a cursor."""
     reset()
-    with connect() as conn, conn.cursor() as cur:
-        yield cur
+    with connect() as conn:
+        conn.autocommit = True      # no transaction left open, so later tests can rebuild the database
+        with conn.cursor() as cur:
+            yield cur
 
 
 def one(cur, sql, *args):

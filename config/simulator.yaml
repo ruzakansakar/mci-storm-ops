@@ -1,0 +1,167 @@
+# Ground-Stop Co-Pilot simulator settings
+#
+# Every number the simulator uses lives here, not in code.
+# "# assumption" = we made the number up for the class project (change freely).
+# "# class slides" = taken from the class slides.
+#
+# The simulator never decides anything. It only creates the world and its problems.
+# The "baseline" section is what happens TODAY with no co-pilot (simple fixed rules).
+
+version: 1
+
+day:
+  start: "05:00"                 # the seed data is as of 05:00
+  end: "23:59"                   # last minute simulated (the --until default)
+  write_every_min: 60            # assumption: write to the database in batches of this many simulated minutes
+
+# ------------------------------------------------------------------ WHAT CAN GO WRONG
+# weight = how likely the random scenario picks this cause (relative numbers).
+# programs = how likely each kind of FAA/airport restriction is, given the cause.
+#   ground_stop  = nothing lands or leaves MCI
+#   ground_delay = departures are fine, but landings are metered (fewer per hour)
+# controllable = is it Southwest's fault? (drives compensation later)
+causes:
+  weather:
+    weight: 40                   # assumption
+    incident_kind: weather
+    title: "Thunderstorms over Kansas City"
+    likely_cause: "Thunderstorm cells over the MCI airfield, lightning near the ramp"
+    controllable: false
+    programs: {ground_stop: 100} # assumption
+    start_window: ["10:00", "17:00"]   # assumption
+    duration_min: [90, 240]      # assumption
+    extension_chance: 0.35       # assumption: chance the stop is extended once
+    extension_min: [30, 75]      # assumption
+  faa_program:
+    weight: 20                   # assumption
+    incident_kind: faa_program
+    title: "FAA traffic program at MCI"
+    likely_cause: "FAA traffic management program (staffing or volume) limiting flights into MCI"
+    controllable: false
+    programs: {ground_stop: 50, ground_delay: 50}   # assumption
+    start_window: ["08:00", "18:00"]   # assumption
+    duration_min: [60, 240]      # assumption
+    extension_chance: 0.30       # assumption
+    extension_min: [30, 90]      # assumption
+  it_outage:
+    weight: 15                   # assumption
+    incident_kind: it_outage
+    title: "Southwest systems outage"
+    likely_cause: "Airline IT outage: check-in, dispatch or crew systems down"
+    controllable: true
+    programs: {ground_stop: 100} # assumption
+    start_window: ["06:00", "16:00"]   # assumption
+    duration_min: [45, 180]      # assumption
+    extension_chance: 0.25       # assumption
+    extension_min: [30, 60]      # assumption
+  airport:
+    weight: 15                   # assumption
+    incident_kind: airport
+    title: "Airport runway or power problem at MCI"
+    likely_cause: "Runway closure or power failure at the airport"
+    controllable: false
+    programs: {ground_stop: 100} # assumption
+    start_window: ["07:00", "18:00"]   # assumption
+    duration_min: [60, 210]      # assumption
+    extension_chance: 0.30       # assumption
+    extension_min: [30, 60]      # assumption
+  security:
+    weight: 10                   # assumption
+    incident_kind: security
+    title: "Security event at MCI"
+    likely_cause: "Security screening halted or terminal evacuated"
+    controllable: false
+    programs: {ground_stop: 100} # assumption
+    start_window: ["08:00", "20:00"]   # assumption
+    duration_min: [45, 150]      # assumption
+    extension_chance: 0.20       # assumption
+    extension_min: [30, 60]      # assumption
+
+# ------------------------------------------------------------------ SIDE EVENTS (random scenario only)
+side_events:
+  lightning_ramp_closure:        # ramp crews must come inside when lightning is close
+    applies_to: [weather]
+    chance: 1.0                  # assumption
+    start_offset_min: [10, 60]   # assumption: minutes after the stop starts
+    duration_min: [15, 45]       # from the brief: 15-45 minutes
+  crew_out_of_duty:              # a departing crew is close to its legal duty limit
+    chance: 0.6                  # assumption
+    start_offset_min: [5, 60]    # assumption
+    minutes_left: [60, 150]      # assumption
+  aircraft_inspection:           # an aircraft needs an inspection before it can fly
+    chance: 0.4                  # assumption
+    start_offset_min: [10, 90]   # assumption
+    duration_min: [60, 120]      # assumption
+  terminal_crowd_growth:         # extra people pile into the terminal
+    chance: 0.8                  # assumption
+    start_offset_min: [10, 60]   # assumption
+    extra_people: [400, 1500]    # assumption
+    ramp_up_min: [45, 120]       # assumption: minutes to reach the extra crowd
+    decay_min: 60                # assumption: minutes for the extra crowd to leave after the stop ends
+
+# ------------------------------------------------------------------ FIXED CLASS STORY
+scenarios:
+  a31_storm:
+    cause: weather
+    program: ground_stop
+    stop_start: "11:30"          # class slides: "about 11:30-14:00"
+    announced_end: "13:00"       # assumption: first announced end; extended at that time
+    extended_end: "14:00"        # class slides
+    ramp_closure: {start: "12:10", end: "12:45"}   # assumption: lightning inside the stop
+    flight: WN2031               # A31 inbound from Denver
+    fuel_minutes_extra: 55       # class slides
+    alternate: STL               # assumption: A31's pre-planned diversion airport
+    expect: {pax_total: 158, connecting: 42, wheelchair: 3, crew_duty_left_min: 260}   # class slides (checked at start)
+    # Maya's flight (WN1xxx to Baltimore) and the other flights get their fuel and diversion airports from the seed.
+
+# ------------------------------------------------------------------ HOW THE WORLD MOVES
+physics:
+  slot_spacing_min: 2            # assumption: normal minutes between landings / between takeoffs at MCI
+  ground_delay_spacing_min: 6    # assumption: minutes between landings during a ground delay program
+  min_turn_min: 35               # assumption: fastest turnaround from landing to next takeoff
+  min_connection_min: 45         # assumption: same minimum connection time as the seed data
+  pushback_lead_min: 25          # assumption: a flight leaving within this many minutes is already pushed back
+  delay_flag_min: 15             # assumption: a delay this long is shown to passengers as "delayed"
+  delay_update_min: 30           # assumption: log a new "delay updated" event when the delay moves this much
+  reproject_every_min: 5         # assumption: how often flight times are re-worked out
+  clock_update_every_min: 5      # assumption: fuel, crew duty and crowd numbers change in steps of this many minutes
+  fuel_extra_min: [30, 90]       # assumption: spare holding fuel when a flight takes off
+  inbound_alternates: [STL, ICT, OMA, DSM, TUL]   # assumption: where flights divert to
+  diversion:
+    fuel_floor_min: 10           # assumption: a holding flight diverts when spare fuel drops to this
+    refuel_turn_min: 60          # assumption: time on the ground at the alternate before flying back
+    flight_back_min: 40          # assumption: flying time from the alternate back to MCI
+  terminal:
+    base_people: 600             # assumption: people in the terminal with no delays
+    arrive_before_departure_min: 60   # assumption: passengers reach the terminal this long before departure
+    show_up_fraction: 0.85       # assumption: share of booked passengers who are in the terminal
+  disrupted_delay_min: 30        # assumption: a flight this late counts as "disrupted" in the numbers
+
+# ------------------------------------------------------------------ TODAY'S BEHAVIOUR (no co-pilot)
+# Simple fixed rules that stand in for what Southwest does today. Not the co-pilot.
+baseline:
+  cancel_if_delay_over_min: 150  # assumption: a flight that would leave more than this late is cancelled
+  tarmac_deplane_after_min: 180  # assumption: people are let off a plane stuck this long
+  rebook_to_next_flight_with_room: true
+
+# ------------------------------------------------------------------ WHAT EACH SCREEN KNOWS
+# Each channel copies the truth late. Copy delay = base_min + (changes in the last load_window_min / 100)
+# * per_100_changes_min (capped at extra_cap_min) + a random 0..jitter_min.
+# fail_chance = chance a copy never arrives; the screen stays stale until the next change.
+channels:
+  app:         {base_min: 1,  per_100_changes_min: 0.5, jitter_min: 1, fail_chance: 0.01}   # assumption
+  sms:         {base_min: 3,  per_100_changes_min: 1.5, jitter_min: 2, fail_chance: 0.04}   # assumption
+  gate_screen: {base_min: 8,  per_100_changes_min: 4.0, jitter_min: 4, fail_chance: 0.02}   # assumption
+  call_center: {base_min: 20, per_100_changes_min: 10.0, jitter_min: 8, fail_chance: 0.03}  # assumption
+load:
+  window_min: 15                 # from the brief: "changes in the last 15 min"
+  extra_cap_min: 45              # assumption
+labels:
+  stale_after_min: 30            # assumption: a copy that takes longer than this is "stale_copy", not "sync_delay"
+  seat_hold_extra_min: 15        # assumption: extra wait for an itinerary change while the new seat is held
+  bag_system_extra_min: 30       # assumption: the baggage system updates later than reservations
+  causes: [stale_copy, sync_delay, seat_hold, message_failed, bag_system]
+
+# ------------------------------------------------------------------ WHAT WE MEASURE
+metrics:
+  series_every_min: 5            # assumption: how often the chart numbers are recorded

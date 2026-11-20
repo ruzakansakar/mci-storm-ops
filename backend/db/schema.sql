@@ -350,6 +350,18 @@ CREATE TABLE audit_log (
 );
 CREATE INDEX audit_entity_idx ON audit_log (entity_type, entity_id);
 
+-- events and audit_log are append-only: the database refuses any UPDATE or DELETE on them.
+CREATE FUNCTION refuse_change() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION '% is append-only: rows are never updated or deleted', TG_TABLE_NAME;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER events_append_only BEFORE UPDATE OR DELETE ON events
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+CREATE TRIGGER audit_log_append_only BEFORE UPDATE OR DELETE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
 -- ============================================================ CHECKING & MEASURING
 
 CREATE TABLE mismatches (

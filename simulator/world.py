@@ -1,0 +1,766 @@
+"""The world: Southwest's real systems, the TRUTH.
+
+Applies the day's events to flights, aircraft, stations, crews, bags and bookings, and follows
+"today's" simple rules (no co-pilot): flights wait out the stop, a flight that would leave too late
+is cancelled, a plane that runs low on fuel while holding diverts, and passengers on a cancelled
+flight are put on the next flight to the same place that has room.
+
+The world makes no smart decisions. Everything it does is either physics (time passes, fuel burns)
+or one of the fixed rules in the "baseline" section of config/simulator.yaml.
+
+Everything is kept in memory. Every change goes through _set(), which records it in the audit log
+and remembers it so the writer can save it to the database in a batch.
+"""
+from collections import defaultdict
+
+from simulator.clock import at, fmt, minute_of
+
+SEG_ORDER = ["child_alone", "wheelchair", "international", "connecting", "standard"]
+TIME_FIELDS = {"est_dep", "est_arr", "edct", "tarmac_since", "sched_dep", "sched_arr"}
+
+WAITING_DEP = ("scheduled", "ground_stop", "delayed", "held")      # a departure that has not left yet
+NOT_DEPARTED_ARR = ("scheduled", "ground_stop", "delayed")          # an inbound still on the ground at its origin
+DEPARTED_STATES = ("departed", "airborne", "diverted", "arrived")
+SEVERITY = {"confirmed": 0, "delayed": 1, "rebooked": 2, "diverted": 3, "cancelled": 4}
+ACTOR = "simulator"
+
+
+class World:
+    def __init__(self, data: dict, scenario, cfg: dict, start: int):
+        self.cfg, self.sc, self.t = cfg, scenario, start
+        self.start = start
+        self.ph = cfg["physics"]
+        self.base = cfg["baseline"]
+        self.incident = scenario.incident
+
+        # ---- load the truth from the seed rows (copies; the input is never changed)
+        self.flights = {}
+        for r in data["flights"]:
+            f = dict(r)
+            for k in ("sched_dep", "sched_arr"):
+                f[k] = minute_of(f[k])
+            f.update(as_of=start, status="scheduled", est_dep=f["sched_dep"], est_arr=f["sched_arr"], edct=None,
+                     tarmac_since=None, cancel_reason=None, controllable=None, diverted_to=None,
+                     _block=f["sched_arr"] - f["sched_dep"], _orig_pax=f["pax_total"], actual_dep=None,
+                     actual_arr=None, _logged_delay=None, _holding=False, _resumed=False, _resume_ready=None,
+                     _land_key=None, _tarmac_max=0, _inbound=None, _outbound=None)
+            self.flights[f["id"]] = f
+        self.arrivals = sorted((f for f in self.flights.values() if f["direction"] == "arrival"), key=lambda f: f["id"])
+        self.departures = sorted((f for f in self.flights.values() if f["direction"] == "departure"), key=lambda f: f["id"])
+        arr_by_ac = {f["aircraft_id"]: f for f in self.arrivals}
+        for d in self.departures:
+            inb = arr_by_ac.get(d["aircraft_id"])
+            if inb:
+                d["_inbound"], inb["_outbound"] = inb["id"], d["id"]
+
+        self.aircraft = {}
+        for r in data["aircraft"]:
+            a = dict(r)
+            a.update(as_of=start, airborne=False, fuel_minutes_extra=None, needs_inspection=False, _inspect_done=None,
+                     _inspect_min=None)
+            self.aircraft[a["id"]] = a
+        self.crews = {r["id"]: {**r, "as_of": start} for r in data["crews"]}
+        self.stations = {r["code"]: {**r, "as_of": start} for r in data["stations"]}
+        self.mci = self.stations["MCI"]
+        self.passengers = {r["id"]: dict(r) for r in data["passengers"]}
+        self.bookings = defaultdict(list)
+        for r in sorted(data["bookings"], key=lambda r: (r["passenger_id"], r["seq"])):
+            self.bookings[r["passenger_id"]].append({**r, "status": "confirmed", "as_of": start, "_original": r["flight_id"]})
+        self.bags = {r["tag"]: {**r, "status": "checked", "as_of": start, "routing": list(r["routing"])} for r in data["bags"]}
+        self.bags_by_pax = defaultdict(list)
+        for b in self.bags.values():
+            self.bags_by_pax[b["passenger_id"]].append(b["tag"])
+        self.groups = {(r["flight_id"], r["segment"]): {**r, "rebooked": 0, "as_of": start} for r in data["passenger_groups"]}
+        self.orig_groups = {k: g["count"] for k, g in self.groups.items()}
+        self.pax_by_flight = defaultdict(set)
+        for pid, bks in self.bookings.items():
+            for b in bks:
+                self.pax_by_flight[b["flight_id"]].add(pid)
+
+        # ---- state of the day
+        self.restr = None                  # {'program','start','end'} while a stop / ground delay is in effect
+        self.ramp_until = None             # minute the ramp is expected to reopen, while it is closed
+        self.surge = None                  # terminal crowd growth
+        self.next_dep_slot = self.next_land_slot = start
+        self.max_tarmac = 0
+        self.events, self.audit_rows = [], []
+        self._ev_cursor = self._au_cursor = 0
+        self.dirty = defaultdict(set)
+        self.dirty_flights, self.dirty_pax, self.rebooked_now = set(), set(), set()
+        self._initial_state()
+        self.truth = {pid: self.pax_truth(pid) for pid in sorted(self.passengers)}
+
+    # ================================================================ recording
+
+    def _emit(self, type_, station="MCI", payload=None, incident=False, actor_name="world"):
+        self.events.append({"t": self.t, "type": type_, "actor": ACTOR, "actor_name": actor_name,
+                            "station": station, "payload": payload or {}, "incident": incident})
+
+    def _jsonable(self, k, v):
+        return at(v).isoformat() if k in TIME_FIELDS and isinstance(v, int) else v
+
+    def _set(self, table, obj, key, entity, why, **kv):
+        """Change fields on a truth record; log before/after and remember to save it."""
+        kv.pop("as_of", None)               # "as of" just follows any real change; it is not a change itself
+        before, after = {}, {}
+        for k, v in kv.items():
+            if obj.get(k) != v:
+                before[k], after[k] = self._jsonable(k, obj.get(k)), self._jsonable(k, v)
+                obj[k] = v
+        if not after:
+            return False
+        obj["as_of"] = self.t
+        self.audit_rows.append({"t": self.t, "actor": ACTOR, "actor_name": "world", "what": why,
+                                "entity_type": entity, "entity_id": str(key), "before": before, "after": after})
+        self.dirty[table].add(key)
+        if table == "flights" and {"status", "est_dep", "est_arr"} & set(after):
+            self.dirty_flights.add(key)
+        return True
+
+    def drain(self):
+        """New events and audit rows since the last call (the writer saves these)."""
+        ev, au = self.events[self._ev_cursor:], self.audit_rows[self._au_cursor:]
+        self._ev_cursor, self._au_cursor = len(self.events), len(self.audit_rows)
+        return ev, au
+
+    # ================================================================ start of day
+
+    def _initial_state(self):
+        """Flights that are already in the air (or landed) at the start of the day."""
+        for f in self.arrivals:
+            params = self.sc.flight_params.get(f["id"], {})
+            if f["sched_arr"] <= self.start:
+                f.update(status="arrived", actual_dep=f["sched_dep"], actual_arr=f["sched_arr"])
+                self.aircraft[f["aircraft_id"]].update(current_station="MCI")
+                self.dirty["aircraft"].add(f["aircraft_id"])
+                self.dirty["flights"].add(f["id"])
+            elif f["sched_dep"] < self.start:
+                f.update(status="airborne", actual_dep=f["sched_dep"])
+                self.aircraft[f["aircraft_id"]].update(airborne=True, fuel_minutes_extra=params.get("fuel_minutes_extra"))
+                self.dirty["aircraft"].add(f["aircraft_id"])
+                self.dirty["flights"].add(f["id"])
+        for f in self.flights.values():
+            self.dirty["flights"].add(f["id"])      # est_dep / est_arr are filled in on the first save
+
+    def check_story(self):
+        """For the fixed class story: make sure the seed still has the numbers from the slides."""
+        s = self.cfg["scenarios"].get(self.sc.name)
+        if not s:
+            return
+        e, fid = s["expect"], s["flight"]
+        got = {"pax_total": self.flights[fid]["pax_total"],
+               "connecting": self.groups[(fid, "connecting")]["count"],
+               "wheelchair": self.groups[(fid, "wheelchair")]["count"],
+               "crew_duty_left_min": self.crews[self.flights[fid]["crew_id"]]["pilot_duty_left_min"]}
+        if got != e:
+            raise SystemExit(f"The seed data no longer matches the class story for {fid}: expected {e}, found {got}")
+
+    # ================================================================ one minute
+
+    def step(self, t: int):
+        self.t = t
+        for ev in self.sc.events_at(t):
+            self._apply_event(ev)
+        if t == self.start or t % self.ph["reproject_every_min"] == 0:
+            self.reproject("regular update")
+        self._tick_clocks()
+        self._inbound_takeoffs()
+        self._holding_start()
+        self._landings()
+        self._resume_from_alternate()
+        self._departures()
+        self._destination_arrivals()
+
+    # ================================================================ scenario events
+
+    def _apply_event(self, ev):
+        t, type_, p = self.t, ev["type"], ev["payload"]
+        self._emit(type_, ev["station"], p, incident=ev["incident"], actor_name="scenario")
+        if type_.endswith("_started"):
+            self.restr = {"program": p["program"], "start": t, "end": p["expected_end"]}
+            self._start_tarmac_for_imminent()
+        elif type_.endswith("_extended"):
+            self.restr["end"] = p["expected_end"]
+        elif type_.endswith("_ended"):
+            self.restr = None
+        elif type_ == "ramp_closed":
+            self.ramp_until = p["expected_end"]
+            self._set("stations", self.mci, "MCI", "station", "ramp closed", ramp_open=False, as_of=t)
+            self._start_tarmac_for_imminent()
+        elif type_ == "ramp_reopened":
+            self.ramp_until = None
+            self._set("stations", self.mci, "MCI", "station", "ramp reopened", ramp_open=True, as_of=t)
+            for f in self.arrivals:
+                if f["status"] == "arrived" and f["tarmac_since"] is not None:
+                    self._end_tarmac(f, "ramp reopened")
+        elif type_ == "aircraft_inspection_needed":
+            ac = self.aircraft[p["aircraft_id"]]
+            dep = self.flights.get(p.get("flight_id"))
+            if dep and dep["status"] in WAITING_DEP:
+                self._set("aircraft", ac, ac["id"], "aircraft", "inspection needed", needs_inspection=True)
+                ac["_inspect_min"] = p["duration_min"]
+                on_ground = ac["current_station"] == "MCI" and not ac["airborne"]
+                ac["_inspect_done"] = t + p["duration_min"] if on_ground else None
+        elif type_ == "crew_duty_low":
+            crew = self.crews.get(p["crew_id"])
+            if crew:
+                self._set("crews", crew, crew["id"], "crew", "crew duty clock low",
+                          pilot_duty_left_min=p["minutes_left"], as_of=t)
+        elif type_ == "terminal_crowd_growth":
+            self.surge = {"start": t, "extra": p["extra_people"], "ramp": p["ramp_up_min"], "decay": p["decay_min"]}
+        self.reproject(f"event {type_}")
+
+    # ================================================================ rules of the airfield
+
+    def _stop_active(self):
+        r = self.restr
+        return bool(r and r["program"] == "ground_stop" and r["start"] <= self.t < r["end"])
+
+    def _landing_open(self, minute):
+        r = self.restr
+        return not (r and r["program"] == "ground_stop" and minute < r["end"])
+
+    def _departure_open(self, minute):
+        if not self._landing_open(minute):
+            return False
+        return not (self.ramp_until is not None and minute < self.ramp_until)
+
+    def _land_spacing(self, prev):
+        r = self.restr
+        if r and r["program"] == "ground_delay" and prev < r["end"]:
+            return self.ph["ground_delay_spacing_min"]
+        return self.ph["slot_spacing_min"]
+
+    def _departures_blocked_now(self):
+        return not self._departure_open(self.t)
+
+    def _start_tarmac_for_imminent(self):
+        """Flights about to leave have already pushed back. If the airfield shuts, they are stuck on the tarmac."""
+        if not self._departures_blocked_now():
+            return
+        lead = self.ph["pushback_lead_min"]
+        for f in self.departures:
+            if (f["status"] in ("scheduled", "delayed") and self.t <= f["est_dep"] < self.t + lead
+                    and f["tarmac_since"] is None and self._aircraft_present(f)):
+                self._set("flights", f, f["id"], "flight", "pushed back, now waiting on the tarmac",
+                          tarmac_since=self.t, as_of=self.t)
+                self._emit("tarmac_started", "MCI", {"flight_id": f["id"]})
+                self._refresh(f)
+
+    def _aircraft_present(self, dep):
+        inb = dep["_inbound"]
+        return inb is None or self.flights[inb]["status"] == "arrived"
+
+    def _end_tarmac(self, f, how):
+        if f["tarmac_since"] is None:
+            return
+        minutes = self.t - f["tarmac_since"]
+        f["_tarmac_max"] = max(f["_tarmac_max"], minutes)
+        self.max_tarmac = max(self.max_tarmac, minutes)
+        self._set("flights", f, f["id"], "flight", f"tarmac ended: {how}", tarmac_since=None, as_of=self.t)
+        self._emit("tarmac_ended", "MCI", {"flight_id": f["id"], "minutes": minutes, "how": how})
+
+    # ================================================================ working out the times
+
+    def _ready_at(self, d):
+        """Earliest minute a departure's aircraft (and inspection) allow it to leave. None = aircraft will not come."""
+        r = 0
+        if d["_inbound"]:
+            i = self.flights[d["_inbound"]]
+            if i["status"] == "cancelled":
+                return None
+            r = (i["actual_arr"] if i["status"] == "arrived" else i["est_arr"]) + self.ph["min_turn_min"]
+        ac = self.aircraft[d["aircraft_id"]]
+        if ac["needs_inspection"]:
+            done = ac["_inspect_done"]
+            r = max(r, done) if done is not None else r + ac["_inspect_min"]
+        return r
+
+    def reproject(self, why):
+        """Re-work out every waiting flight's expected times, using today's fixed rules."""
+        for _ in range(6):
+            to_cancel = self._project_arrivals() + self._project_departures()
+            if not to_cancel:
+                break
+            for f, reason in to_cancel:
+                if f["status"] != "cancelled":
+                    self._cancel_flight(f, reason)
+
+    def _project_arrivals(self):
+        t, limit = self.t, self.base["cancel_if_delay_over_min"]
+        keyed = []
+        for f in self.arrivals:
+            s = f["status"]
+            if s in NOT_DEPARTED_ARR:
+                key = max(f["sched_arr"], t + f["_block"])
+            elif s == "airborne":
+                key = max(f["sched_arr"], t)
+            elif s == "diverted":
+                key = max(f["_land_key"] if f["_resumed"] else f["_resume_ready"], t)
+            else:
+                continue
+            keyed.append((key, f["id"], f))
+        keyed.sort(key=lambda k: k[:2])
+        prev, cancels = None, []
+        for key, _, f in keyed:
+            slot = key if prev is None else max(key, prev + self._land_spacing(prev))
+            while not self._landing_open(slot):
+                slot += 1
+            if f["status"] in NOT_DEPARTED_ARR and slot - f["sched_arr"] > limit:
+                cancels.append((f, f"{self.sc.cause}: would arrive more than {limit} min late"))
+                continue
+            prev = slot
+            if f["status"] in NOT_DEPARTED_ARR:
+                est_dep = slot - f["_block"]
+                self._set("flights", f, f["id"], "flight", "times re-worked out", est_arr=slot, est_dep=est_dep,
+                          edct=est_dep if est_dep > f["sched_dep"] else None, as_of=t)
+                self._refresh(f)
+            else:
+                self._set("flights", f, f["id"], "flight", "landing time re-worked out", est_arr=slot, as_of=t)
+        return cancels
+
+    def _project_departures(self):
+        t, limit = self.t, self.base["cancel_if_delay_over_min"]
+        keyed, cancels = [], []
+        for d in self.departures:
+            if d["status"] not in WAITING_DEP:
+                continue
+            ready = self._ready_at(d)
+            if ready is None:
+                cancels.append((d, "aircraft will not arrive (inbound flight cancelled)"))
+                continue
+            keyed.append((max(d["sched_dep"], ready, t), d["id"], d))
+        keyed.sort(key=lambda k: k[:2])
+        prev = None
+        for key, _, d in keyed:
+            slot = key if prev is None else max(key, prev + self.ph["slot_spacing_min"])
+            while not self._departure_open(slot):
+                slot += 1
+            if slot - d["sched_dep"] > limit:
+                cancels.append((d, f"{self.sc.cause}: would leave more than {limit} min late"))
+                continue
+            prev = slot
+            self._set("flights", d, d["id"], "flight", "times re-worked out", est_dep=slot,
+                      est_arr=slot + d["_block"], as_of=t)
+            self._refresh(d)
+        return cancels
+
+    def _refresh(self, f):
+        """Set the status of a flight that is still on the ground, from its delay and where it is."""
+        if f["status"] not in (WAITING_DEP if f["direction"] == "departure" else NOT_DEPARTED_ARR):
+            return
+        delay = f["est_dep"] - f["sched_dep"]
+        if f["tarmac_since"] is not None:
+            new = "held"
+        elif delay >= self.ph["delay_flag_min"]:
+            new = "ground_stop" if self.restr else "delayed"
+        else:
+            new = "scheduled"
+        self._set("flights", f, f["id"], "flight", f"status {f['status']} -> {new}", status=new, as_of=self.t)
+        if new == "scheduled":
+            f["_logged_delay"] = None
+            return
+        if delay < self.ph["delay_flag_min"]:
+            return
+        self._mark_disrupted(f)
+        logged = f["_logged_delay"]
+        if logged is None or abs(delay - logged) >= self.ph["delay_update_min"]:
+            f["_logged_delay"] = delay
+            reason = self.sc.cause if self.restr else "knock-on delay"
+            self._emit("flight_delayed" if logged is None else "flight_delay_updated", f["origin"],
+                       {"flight_id": f["id"], "delay_min": delay, "new_departure": fmt(f["est_dep"]), "reason": reason})
+
+    def _mark_disrupted(self, f):
+        if f["controllable"] is None:
+            self._set("flights", f, f["id"], "flight", "cause recorded", controllable=self.incident["controllable"])
+
+    # ================================================================ flights moving
+
+    def _inbound_takeoffs(self):
+        t = self.t
+        for f in self.arrivals:
+            if f["status"] in NOT_DEPARTED_ARR and f["est_dep"] <= t:
+                fuel = self.sc.flight_params.get(f["id"], {}).get("fuel_minutes_extra")
+                self._set("flights", f, f["id"], "flight", "took off", status="airborne", actual_dep=t, as_of=t)
+                ac = self.aircraft[f["aircraft_id"]]
+                self._set("aircraft", ac, ac["id"], "aircraft", "airborne", airborne=True, fuel_minutes_extra=fuel, as_of=t)
+                self._emit("flight_airborne", f["origin"], {"flight_id": f["id"], "to": "MCI", "fuel_minutes_extra": fuel,
+                                                           "delay_min": t - f["sched_dep"]})
+
+    def _holding_start(self):
+        for f in self.arrivals:
+            if f["status"] == "airborne" and not f["_holding"] and self.t >= f["sched_arr"] and f["est_arr"] > self.t:
+                f["_holding"] = True
+                self._emit("flight_holding", "MCI", {"flight_id": f["id"], "expected_landing": fmt(f["est_arr"]),
+                                                    "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"]})
+
+    def _landings(self):
+        t = self.t
+        if t < self.next_land_slot or not self._landing_open(t):
+            return
+        for f in sorted((f for f in self.arrivals if f["status"] == "airborne" or (f["status"] == "diverted" and f["_resumed"])),
+                        key=lambda f: (f["est_arr"], f["id"])):
+            if f["est_arr"] > t:
+                break
+            self.next_land_slot = t + self._land_spacing(t)
+            self._land(f)
+            break                                                    # one landing per slot
+
+    def _land(self, f):
+        t = self.t
+        late = t - f["sched_arr"]
+        was_diverted = f["status"] == "diverted"
+        self._set("flights", f, f["id"], "flight", "landed", status="arrived", actual_arr=t, est_arr=t, as_of=t)
+        ac = self.aircraft[f["aircraft_id"]]
+        self._set("aircraft", ac, ac["id"], "aircraft", "landed at MCI", airborne=False, current_station="MCI",
+                  fuel_minutes_extra=None, as_of=t)
+        if ac["needs_inspection"] and ac["_inspect_done"] is None:
+            ac["_inspect_done"] = t + ac["_inspect_min"]
+        if self.ramp_until is not None:
+            self._set("flights", f, f["id"], "flight", "landed, ramp closed: waiting on the tarmac", tarmac_since=t)
+            self._emit("tarmac_started", "MCI", {"flight_id": f["id"], "ramp_closed": True})
+        self._emit("flight_arrived", "MCI", {"flight_id": f["id"], "delay_min": late, "after_diversion": was_diverted})
+        self._bags_arrive(f)
+        self._mark_pax(f)
+        self.reproject("a flight landed")
+
+    def _resume_from_alternate(self):
+        back = self.ph["diversion"]["flight_back_min"]
+        for f in self.arrivals:
+            if f["status"] == "diverted" and not f["_resumed"] and self.t >= f["est_arr"] - back:
+                f["_resumed"], f["_land_key"] = True, self.t + back
+                self._end_tarmac(f, "left the alternate airport")
+                ac = self.aircraft[f["aircraft_id"]]
+                self._set("aircraft", ac, ac["id"], "aircraft", "left the alternate airport", airborne=True, as_of=self.t)
+                self._emit("flight_resumed", f["diverted_to"], {"flight_id": f["id"], "to": "MCI"})
+
+    def _departures(self):
+        t = self.t
+        if t < self.next_dep_slot or not self._departure_open(t):
+            return
+        for d in sorted((d for d in self.departures if d["status"] in WAITING_DEP), key=lambda d: (d["est_dep"], d["id"])):
+            if d["est_dep"] > t:
+                break
+            ready = self._ready_at(d)
+            if ready is None or ready > t:
+                continue
+            self._depart(d)
+            self.next_dep_slot = t + self.ph["slot_spacing_min"]
+            break                                                     # one takeoff per slot
+
+    def _depart(self, d):
+        t = self.t
+        self._end_tarmac(d, "took off")
+        self._set("flights", d, d["id"], "flight", "departed", status="departed", actual_dep=t, est_dep=t,
+                  est_arr=t + d["_block"], as_of=t)
+        ac = self.aircraft[d["aircraft_id"]]
+        self._set("aircraft", ac, ac["id"], "aircraft", "departed MCI", airborne=True, current_station=None, as_of=t)
+        d["_logged_delay"] = None
+        self._emit("flight_departed", "MCI", {"flight_id": d["id"], "to": d["destination"], "delay_min": t - d["sched_dep"]})
+        for tag in self._bags_on(d["id"]):
+            self._set("bags", self.bags[tag], tag, "bag", "bag loaded, flight departed", status="in_transit", as_of=t)
+        self._missed_connections(d)
+        self._mark_pax(d)
+
+    def _destination_arrivals(self):
+        t = self.t
+        for d in self.departures:
+            if d["status"] == "departed" and d["est_arr"] <= t:
+                self._set("flights", d, d["id"], "flight", "arrived at destination", status="arrived", actual_arr=t, as_of=t)
+                ac = self.aircraft[d["aircraft_id"]]
+                self._set("aircraft", ac, ac["id"], "aircraft", "landed at destination", airborne=False,
+                          current_station=d["destination"], as_of=t)
+                self._emit("flight_arrived", d["destination"], {"flight_id": d["id"], "delay_min": t - d["sched_arr"]})
+                self._bags_arrive(d)
+                self._mark_pax(d)
+
+    # ================================================================ clocks that tick every few minutes
+
+    def _tick_clocks(self):
+        t, n = self.t, self.ph["clock_update_every_min"]
+        if t % n:
+            return
+        floor = self.ph["diversion"]["fuel_floor_min"]
+        divert = []
+        for f in self.arrivals:
+            if f["status"] == "airborne" and t > f["sched_arr"] and f["est_arr"] > t - n:   # holding over MCI
+                burn = min(n, t - f["sched_arr"])
+                ac = self.aircraft[f["aircraft_id"]]
+                if ac["fuel_minutes_extra"] is not None:
+                    self._set("aircraft", ac, ac["id"], "aircraft", "holding: fuel burned",
+                              fuel_minutes_extra=max(0, ac["fuel_minutes_extra"] - burn), as_of=t)
+                    if ac["fuel_minutes_extra"] <= floor:
+                        divert.append(f)
+                self._burn_duty(f, burn)
+            elif f["status"] == "diverted" and not f["_resumed"]:
+                self._burn_duty(f, n)
+        for d in self.departures:
+            if d["status"] in WAITING_DEP and t > d["sched_dep"] and self._aircraft_present(d):
+                self._burn_duty(d, min(n, t - d["sched_dep"]))
+        for f in divert:
+            self._divert(f)
+        for d in self.departures:
+            crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
+            if d["status"] in WAITING_DEP and crew and crew["pilot_duty_left_min"] is not None \
+                    and crew["pilot_duty_left_min"] <= 0:
+                self._emit("crew_out_of_duty", "MCI", {"flight_id": d["id"], "crew_id": crew["id"]}, incident=True)
+                self._cancel_flight(d, "crew ran out of legal duty time while waiting")
+        limit = self.base["tarmac_deplane_after_min"]
+        for f in self.flights.values():
+            if f["tarmac_since"] is not None and t - f["tarmac_since"] >= limit:
+                self._end_tarmac(f, f"passengers let off after {limit} min")
+                self._refresh(f)
+        for ac in self.aircraft.values():
+            if ac["needs_inspection"] and ac["_inspect_done"] is not None and ac["_inspect_done"] <= t:
+                self._set("aircraft", ac, ac["id"], "aircraft", "inspection finished", needs_inspection=False, as_of=t)
+                ac["_inspect_done"] = None
+                self._emit("inspection_completed", "MCI", {"aircraft_id": ac["id"]})
+                self.reproject("inspection finished")
+        self._update_crowd()
+
+    def _burn_duty(self, f, minutes):
+        crew = self.crews.get(f["crew_id"]) if f["crew_id"] else None
+        if crew and crew["pilot_duty_left_min"] is not None and minutes > 0:
+            self._set("crews", crew, crew["id"], "crew", "waiting uses up duty time",
+                      pilot_duty_left_min=max(0, crew["pilot_duty_left_min"] - minutes), as_of=self.t)
+
+    def _update_crowd(self):
+        t, term = self.t, self.ph["terminal"]
+        waiting = sum(f["pax_total"] for f in self.departures
+                      if f["status"] in WAITING_DEP and t >= f["sched_dep"] - term["arrive_before_departure_min"])
+        people = term["base_people"] + round(waiting * term["show_up_fraction"])
+        s = self.surge
+        if s and t >= s["start"]:
+            grown = min(1.0, (t - s["start"]) / max(1, s["ramp"]))
+            if self.restr is None and t >= self.sc.end:
+                grown = min(grown, max(0.0, 1 - (t - self.sc.end) / max(1, s["decay"])))
+            people += round(s["extra"] * grown)
+        self._set("stations", self.mci, "MCI", "station", "people in the terminal changed", people_in_terminal=people)
+
+    # ================================================================ diversion and cancellation
+
+    def _divert(self, f):
+        t, d = self.t, self.ph["diversion"]
+        alt = self.sc.flight_params.get(f["id"], {}).get("alternate", self.ph["inbound_alternates"][0])
+        self._set("flights", f, f["id"], "flight", "diverted: spare fuel used up while holding", status="diverted",
+                  diverted_to=alt, tarmac_since=t, as_of=t)
+        f["_resume_ready"] = t + d["refuel_turn_min"] + d["flight_back_min"]
+        f["_holding"] = False
+        self._mark_disrupted(f)
+        ac = self.aircraft[f["aircraft_id"]]
+        self._set("aircraft", ac, ac["id"], "aircraft", "diverted", airborne=False, current_station=alt, as_of=t)
+        self._emit("flight_diverted", alt, {"flight_id": f["id"], "diverted_to": alt, "pax": f["pax_total"],
+                                            "reason": "spare fuel used up while holding"}, incident=True)
+        self._emit("tarmac_started", alt, {"flight_id": f["id"], "diverted": True})
+        self._mark_pax(f)
+        self.reproject("a flight diverted")
+
+    def _cancel_flight(self, f, reason):
+        t = self.t
+        self._end_tarmac(f, "flight cancelled")
+        self._set("flights", f, f["id"], "flight", "cancelled", status="cancelled", cancel_reason=reason, as_of=t)
+        self._mark_disrupted(f)
+        self._emit("flight_cancelled", f["origin"], {"flight_id": f["id"], "reason": reason, "pax": f["pax_total"]},
+                   incident=True)
+        self._rebook_flight(f)
+        if f["direction"] == "arrival" and f["_outbound"]:
+            nxt = self.flights[f["_outbound"]]
+            if nxt["status"] in WAITING_DEP:
+                self._cancel_flight(nxt, "aircraft will not arrive (inbound flight cancelled)")
+
+    # ================================================================ passengers: rebooking
+
+    def _mark_pax(self, f):
+        self.dirty_flights.add(f["id"])
+
+    def _candidates(self, f):
+        """Later flights on the same route that have not left yet."""
+        out = [g for g in self.flights.values()
+               if g["id"] != f["id"] and g["origin"] == f["origin"] and g["destination"] == f["destination"]
+               and g["direction"] == f["direction"] and g["status"] in (WAITING_DEP if g["direction"] == "departure" else NOT_DEPARTED_ARR)
+               and g["est_dep"] > self.t]
+        return sorted(out, key=lambda g: (g["est_dep"], g["id"]))
+
+    def _room(self, g):
+        return self.aircraft[g["aircraft_id"]]["seats"] - g["pax_total"]
+
+    def _move_count(self, src, dst, seg, n):
+        t = self.t
+        gs, gd = self.groups[(src["id"], seg)], self.groups[(dst["id"], seg)]
+        self._set("passenger_groups", gs, (src["id"], seg), "passenger_group", f"{n} rebooked to {dst['id']}",
+                  count=gs["count"] - n, rebooked=gs["rebooked"] + n, as_of=t)
+        self._set("passenger_groups", gd, (dst["id"], seg), "passenger_group", f"{n} rebooked from {src['id']}",
+                  count=gd["count"] + n, as_of=t)
+        self._set("flights", src, src["id"], "flight", "passengers rebooked away", pax_total=src["pax_total"] - n)
+        self._set("flights", dst, dst["id"], "flight", "passengers rebooked onto flight", pax_total=dst["pax_total"] + n)
+
+    def _rebook_flight(self, f):
+        """Everyone on a cancelled flight goes to the next flights to the same place that have room."""
+        if not self.base["rebook_to_next_flight_with_room"]:
+            return
+        cands = self._candidates(f)
+        chunks = defaultdict(list)                                    # segment -> [[flight, seats left to hand out]]
+        for seg in SEG_ORDER:
+            left = self.groups[(f["id"], seg)]["count"]
+            for g in cands:
+                if left <= 0:
+                    break
+                take = min(left, self._room(g))
+                if take > 0:
+                    self._move_count(f, g, seg, take)
+                    chunks[seg].append([g, take])
+                    left -= take
+        for pid in sorted(self.pax_by_flight[f["id"]], key=lambda p: (SEG_ORDER.index(self.passengers[p]["segment"]), p)):
+            for b in self.bookings[pid]:
+                if b["flight_id"] != f["id"] or b["status"] == "cancelled":
+                    continue
+                seg_chunks = chunks[self.passengers[pid]["segment"]]
+                target = next((c for c in seg_chunks if c[1] > 0), None)
+                if target:
+                    target[1] -= 1
+                    self._rebook_booking(pid, b, target[0])
+                else:
+                    self._strand_booking(pid, b)
+
+    def _rebook_booking(self, pid, b, new_flight):
+        old = b["flight_id"]
+        self._set("bookings", b, (pid, b["seq"]), "booking", f"rebooked from {old} to {new_flight['id']}",
+                  flight_id=new_flight["id"], status="rebooked", as_of=self.t)
+        self.pax_by_flight[old].discard(pid)
+        self.pax_by_flight[new_flight["id"]].add(pid)
+        self.dirty_pax.add(pid)
+        self.rebooked_now.add(pid)
+        for tag in self.bags_by_pax[pid]:
+            bag = self.bags[tag]
+            self._set("bags", bag, tag, "bag", "bag re-tagged after rebooking",
+                      routing=[new_flight["id"] if x == old else x for x in bag["routing"]], status="checked", as_of=self.t)
+
+    def _strand_booking(self, pid, b):
+        self._set("bookings", b, (pid, b["seq"]), "booking", "cancelled: no seat found on a later flight",
+                  status="cancelled", as_of=self.t)
+        self.pax_by_flight[b["flight_id"]].discard(pid)
+        self.dirty_pax.add(pid)
+        for tag in self.bags_by_pax[pid]:
+            self._set("bags", self.bags[tag], tag, "bag", "bag held: passenger has no flight", status="held", as_of=self.t)
+
+    def _missed_connections(self, d):
+        """A flight leaves on time for itself; connecting passengers whose first leg is not in yet are rebooked."""
+        t = self.t
+        for pid in sorted(self.pax_by_flight[d["id"]]):
+            bks = self.bookings[pid]
+            for i, b in enumerate(bks):
+                if b["flight_id"] != d["id"] or i == 0 or b["status"] == "cancelled":
+                    continue
+                prev = bks[i - 1]
+                pf = self.flights[prev["flight_id"]]
+                made_it = prev["status"] != "cancelled" and pf["status"] == "arrived" \
+                    and pf["actual_arr"] + self.ph["min_connection_min"] <= t
+                if made_it:
+                    continue
+                seg = self.passengers[pid]["segment"]
+                gs = self.groups[(d["id"], seg)]
+                target = next((g for g in self._candidates(d) if self._room(g) > 0), None)
+                if target and prev["status"] != "cancelled":
+                    self._move_count(d, target, seg, 1)
+                    self._rebook_booking(pid, b, target)
+                else:
+                    self._set("passenger_groups", gs, (d["id"], seg), "passenger_group", "missed connection",
+                              count=gs["count"] - 1, as_of=t)
+                    self._set("flights", d, d["id"], "flight", "passenger did not make the flight", pax_total=d["pax_total"] - 1)
+                    self._strand_booking(pid, b)
+                self._emit("missed_connection", "MCI", {"passenger_id": pid, "flight_id": d["id"],
+                                                        "rebooked_to": b["flight_id"] if b["status"] == "rebooked" else None})
+
+    # ================================================================ bags
+
+    def _bags_on(self, flight_id):
+        return [tag for pid in sorted(self.pax_by_flight[flight_id]) for tag in self.bags_by_pax[pid]
+                if flight_id in self.bags[tag]["routing"]]
+
+    def _bags_arrive(self, f):
+        for tag in self._bags_on(f["id"]):
+            bag = self.bags[tag]
+            last = bag["routing"][-1] == f["id"]
+            self._set("bags", bag, tag, "bag", "bag arrived", current_location=f["destination"],
+                      status="delivered" if last else "checked", as_of=self.t)
+
+    # ================================================================ what each passenger's truth is
+
+    def _leg_status(self, f, b):
+        if b["status"] == "rebooked":
+            base = "rebooked"
+        else:
+            base = "confirmed"
+        if f["status"] == "diverted":
+            return "diverted"
+        if f["direction"] == "arrival" and f["status"] == "airborne":
+            late = f["est_arr"] - f["sched_arr"] >= self.ph["delay_flag_min"]
+        else:
+            late = f["status"] in ("ground_stop", "delayed", "held") and f["est_dep"] - f["sched_dep"] >= self.ph["delay_flag_min"]
+        return "delayed" if late and base == "confirmed" else base
+
+    def _leg_done(self, f):
+        return f["status"] == "arrived" or (f["direction"] == "departure" and f["status"] == "departed")
+
+    def pax_truth(self, pid) -> dict:
+        """What is really true for this passenger right now (this is what every channel should show)."""
+        bks = self.bookings[pid]
+        live = [b for b in bks if b["status"] != "cancelled"]
+        bag = self.bags[self.bags_by_pax[pid][0]]["routing"] if self.bags_by_pax[pid] else []
+        status, message, worst = "confirmed", "Your trip is complete.", -1
+        for b in live:
+            f = self.flights[b["flight_id"]]
+            if self._leg_done(f):
+                continue
+            s = self._leg_status(f, b)
+            if SEVERITY[s] > worst:
+                worst, status = SEVERITY[s], s
+                when = fmt(f["est_arr"]) if f["direction"] == "arrival" else fmt(f["est_dep"])
+                verb = "expected to land" if f["direction"] == "arrival" else "departing"
+                if s == "delayed":
+                    message = f"Flight {f['id']} is delayed, {verb} {when}."
+                elif s == "rebooked":
+                    message = f"You have been rebooked on flight {f['id']}, {verb} {when}."
+                elif s == "diverted":
+                    message = f"Flight {f['id']} diverted to {f['diverted_to']}. We will update you soon."
+                else:
+                    message = f"Flight {f['id']} is on schedule, {verb} {when}."
+        if len(live) != len(bks):
+            status, message = "cancelled", "Your flight was cancelled and no seat was found yet. Please see an agent."
+        return {"itinerary": tuple(b["flight_id"] for b in live), "status": status,
+                "destination": self.passengers[pid]["final_destination"], "bag_routing": tuple(bag), "message": message}
+
+    def collect_truth_changes(self):
+        """Passengers whose truth changed this minute: (passenger_id, old, new, was_rebooked)."""
+        for fid in self.dirty_flights:
+            self.dirty_pax |= self.pax_by_flight[fid]
+        self.dirty_flights.clear()
+        changes = []
+        for pid in sorted(self.dirty_pax):
+            old, new = self.truth[pid], self.pax_truth(pid)
+            key = lambda x: (x["itinerary"], x["status"], x["destination"], x["bag_routing"])   # noqa: E731
+            if key(old) != key(new):
+                self.audit_rows.append({"t": self.t, "actor": ACTOR, "actor_name": "world", "what": "passenger truth changed",
+                                        "entity_type": "passenger", "entity_id": pid,
+                                        "before": _plain(old), "after": _plain(new)})
+                changes.append((pid, old, new, pid in self.rebooked_now))
+            self.truth[pid] = new
+        self.dirty_pax.clear()
+        self.rebooked_now.clear()
+        return changes
+
+    # ================================================================ numbers for charts
+
+    def status_counts(self) -> dict:
+        out = defaultdict(int)
+        for f in self.flights.values():
+            out[f["status"]] += 1
+        return dict(out)
+
+    def open_tarmac_max(self) -> int:
+        open_ = [self.t - f["tarmac_since"] for f in self.flights.values() if f["tarmac_since"] is not None]
+        return max([self.max_tarmac] + open_)
+
+
+def _plain(v: dict) -> dict:
+    return {k: (list(x) if isinstance(x, tuple) else x) for k, x in v.items()}
