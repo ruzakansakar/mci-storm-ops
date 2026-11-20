@@ -23,24 +23,26 @@ def main():
         a = autonomy_for(action, r)
         print(f"  {action:<34} {a['level']:<15} {a['approver'] or ''}")
 
-    print("\nA31 FROM DENVER, MCI UNDER A GROUND STOP (55 min of extra fuel, 4 h 20 min crew duty, 3 wheelchair)")
+    print("\nA31 FROM DENVER, MCI UNDER A GROUND STOP (55 min of spare holding fuel, 4 h 20 min crew duty, 3 wheelchair)")
     noon = datetime(2026, 10, 6, 12, 0, tzinfo=TZ)
     base = {"international": False, "flight_end": noon + timedelta(hours=2),
             "crew": {"duty_left_min": 260, "rest_hours": 10}, "planned_duty_min": 90,
             "pax": {"wheelchair": 3, "child_alone": 0}, "pax_disrupted": 158, "cost_usd": 0}
 
-    def opt(id_, extra_min, station=None, score=5):
-        o = dict(base, id=id_, minutes_to_alternate=extra_min, network_score=score,
+    def opt(id_, hold_min, extra_min, station=None, score=5):
+        o = dict(base, id=id_, hold_minutes=hold_min, minutes_to_alternate=extra_min, network_score=score,
                  aircraft={"needs_inspection": False, "fuel_minutes_extra": 55})
         if station:
             o["station"] = station
         return o
 
     result = decide([
-        opt("Hold 45 min over MCI", 45, score=9),
-        opt("Divert to St. Louis", 15, {"gates_free": 6, "has_customs": True, "wheelchair_staff": 6}),
-        opt("Divert to Wichita", 0, {"gates_free": 2, "has_customs": False, "wheelchair_staff": 2}, score=6),
-        opt("Divert to Tulsa", 0, {"gates_free": 0, "has_customs": False, "wheelchair_staff": 3}),
+        opt("Hold 45 min over MCI", 45, 0, score=9),
+        opt("Hold 50 min over MCI", 50, 0, score=9),
+        opt("Hold 30 min, then divert to St. Louis (15 min extra flying)", 30, 15,
+            {"gates_free": 6, "has_customs": True, "wheelchair_staff": 6}),
+        opt("Divert to Wichita", 0, 0, {"gates_free": 2, "has_customs": False, "wheelchair_staff": 2}, score=6),
+        opt("Divert to Tulsa", 0, 0, {"gates_free": 0, "has_customs": False, "wheelchair_staff": 3}),
     ], r)
     for o in result["ranked"]:
         print(f"  KEEP    {o['id']}")

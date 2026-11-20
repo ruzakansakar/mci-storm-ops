@@ -63,9 +63,11 @@ def fuel_reserve(o, lim):
         return None
     if extra is None:
         return "fuel on board is unknown"
-    to_alt = o.get("minutes_to_alternate", 0)
-    if extra - to_alt < lim["fuel_reserve_min"]:
-        return f"only {extra - to_alt} min of fuel left after reaching the alternate (need {lim['fuel_reserve_min']})"
+    # hold_minutes: planned holding. minutes_to_alternate: extra flying beyond the planned destination.
+    # The legal reserve is already on board and is not part of fuel_minutes_extra.
+    left = extra - o.get("hold_minutes", 0) - o.get("minutes_to_alternate", 0)
+    if left < lim["fuel_buffer_min"]:
+        return f"only {left} min of spare holding fuel would be left (need {lim['fuel_buffer_min']})"
 
 
 def station_has_gate(o, lim):

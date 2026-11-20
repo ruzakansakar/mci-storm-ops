@@ -125,6 +125,15 @@ def test_a_copy_always_arrives_after_the_change(data):
     assert copies and all(e["payload"]["lag_min"] >= 1 for e in copies)
 
 
+# ------------------------------------------------------------------ rules and simulator agree on fuel
+
+def test_fuel_floor_in_simulator_equals_fuel_buffer_in_rules():
+    import yaml
+    rules = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))
+    simulator = yaml.safe_load((ROOT / "config" / "simulator.yaml").read_text(encoding="utf-8"))
+    assert simulator["physics"]["diversion"]["fuel_floor_min"] == rules["limits"]["fuel_buffer_min"]
+
+
 # ------------------------------------------------------------------ the simulator does not decide
 
 def test_copilot_mode_not_built_yet():

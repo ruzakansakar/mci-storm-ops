@@ -69,6 +69,12 @@ who approves what, and compensation. Change a number there and rerun `pytest`.
   then network, convenience, cost (these only rank what's left). Unknown data counts as unsafe.
 - **Who decides:** `auto`, `needs_approval` (with the approver's role) or `human_only`. Anything not listed is human-only,
   and nothing that touches rungs 1-4 can be automatic.
+- **Fuel:** `aircraft.fuel_minutes_extra` is spare *holding* fuel above the legal reserve (fuel to reach the alternate plus
+  45 min, 14 CFR 121.639), which is already on board and not counted. A plan is unsafe if
+  `fuel_minutes_extra - hold_minutes - minutes_to_alternate` is below `limits.fuel_buffer_min` (10 min). Unknown fuel counts as unsafe.
+  A31 example (55 min): hold 45 min is kept (10 left), hold 30 then divert to St. Louis with 15 min extra flying is kept (10 left),
+  hold 50 min is removed (5 left), Tulsa is removed (no gate). The simulator uses the same 10 min as the point where a holding plane
+  diverts (`diversion.fuel_floor_min` in `config/simulator.yaml`); a test keeps the two numbers equal.
 - **Compensation:** legal floor for everyone (refund if cancelled or 3+ h late, 6+ h international, and rebooking declined),
   Southwest commitments only for controllable causes (meal + $75 voucher at 3+ h, hotel if overnight and not local),
   optional goodwill that a supervisor approves.

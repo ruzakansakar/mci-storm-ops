@@ -125,10 +125,11 @@ physics:
   delay_update_min: 30           # assumption: log a new "delay updated" event when the delay moves this much
   reproject_every_min: 5         # assumption: how often flight times are re-worked out
   clock_update_every_min: 5      # assumption: fuel, crew duty and crowd numbers change in steps of this many minutes
-  fuel_extra_min: [30, 90]       # assumption: spare holding fuel when a flight takes off
+  fuel_extra_min: [30, 90]       # assumption: spare HOLDING fuel above the legal reserve (the reserve is already on board)
   inbound_alternates: [STL, ICT, OMA, DSM, TUL]   # assumption: where flights divert to
   diversion:
-    fuel_floor_min: 10           # assumption: a holding flight diverts when spare fuel drops to this
+    fuel_floor_min: 10           # assumption: a holding flight diverts when spare holding fuel drops to this.
+                                 # MUST equal limits.fuel_buffer_min in config/rules.yaml (a test checks this)
     refuel_turn_min: 60          # assumption: time on the ground at the alternate before flying back
     flight_back_min: 40          # assumption: flying time from the alternate back to MCI
   terminal:

@@ -28,7 +28,10 @@ limits:
   tarmac_food_water_min: 120          # law: food and water by 2 h
   pilot_min_rest_hours: 10            # law: 14 CFR 117.25
   crew_duty_buffer_min: 30            # assumption: never plan a crew to the last minute
-  fuel_reserve_min: 45                # assumption: keep 45 min of fuel after reaching the alternate
+  # fuel_minutes_extra = spare HOLDING fuel above the legal reserve. The legal reserve (fuel to reach the
+  # alternate airport plus 45 min, 14 CFR 121.639) is already on board and is NOT part of fuel_minutes_extra.
+  # A plan is unsafe if: fuel_minutes_extra - hold_minutes - minutes_to_alternate < fuel_buffer_min
+  fuel_buffer_min: 10                 # assumption: minimum spare holding fuel left after the plan
   min_connection_min: 45              # assumption: same as the data loader
 
 # ------------------------------------------------------------------ WHO DECIDES WHAT

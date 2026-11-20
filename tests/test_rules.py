@@ -35,10 +35,11 @@ def a31(**over):
 
 # ------------------------------------------------------------------ the story
 
-def test_a31_only_the_safe_diversion_survives():
+def test_a31_fuel_story_only_the_safe_options_survive():
     options = [
-        a31(id="hold_45_min", minutes_to_alternate=45, network_score=9, pax_disrupted=42),
-        a31(id="divert_STL", minutes_to_alternate=15,
+        a31(id="hold_45_min", hold_minutes=45, network_score=9, pax_disrupted=42),       # 55-45 = 10 left: kept
+        a31(id="hold_50_min", hold_minutes=50, network_score=9, pax_disrupted=42),       # 55-50 = 5 left: removed
+        a31(id="divert_STL", hold_minutes=30, minutes_to_alternate=15,                    # 55-30-15 = 10 left: kept
             station={"gates_free": 6, "has_customs": True, "wheelchair_staff": 6}),
         a31(id="divert_ICT", minutes_to_alternate=0, network_score=6,
             station={"gates_free": 2, "has_customs": False, "wheelchair_staff": 2}),
@@ -46,10 +47,10 @@ def test_a31_only_the_safe_diversion_survives():
             station={"gates_free": 0, "has_customs": False, "wheelchair_staff": 3}),
     ]
     result = decide(options, R)
-    assert [o["id"] for o in result["ranked"]] == ["divert_ICT"]
+    assert [o["id"] for o in result["ranked"]] == ["hold_45_min", "divert_ICT", "divert_STL"]
     why = {r["option"]: (r["rung"], r["reasons"][0]) for r in result["removed"]}
-    assert why["hold_45_min"][0] == 2 and "fuel" in why["hold_45_min"][1]
-    assert why["divert_STL"][0] == 2
+    assert set(why) == {"hold_50_min", "divert_TUL_no_gate"}
+    assert why["hold_50_min"][0] == 2 and "fuel" in why["hold_50_min"][1] and "5 min" in why["hold_50_min"][1]
     assert why["divert_TUL_no_gate"][0] == 3
 
 
@@ -169,7 +170,7 @@ def test_unknown_cause_waits_for_a_human():
 
 def test_changing_a_number_in_the_file_changes_the_decision():
     stricter = copy.deepcopy(R)
-    stricter["limits"]["fuel_reserve_min"] = 60
+    stricter["limits"]["fuel_buffer_min"] = 60
     o = a31(id="divert_ICT", minutes_to_alternate=0)
     assert screen([o], R)[0] and not screen([o], stricter)[0]
 
