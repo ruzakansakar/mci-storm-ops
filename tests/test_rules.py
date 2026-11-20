@@ -10,10 +10,11 @@ import pytest
 from backend.rules.autonomy import autonomy_for
 from backend.rules.compensation import compensation_for
 from backend.rules.loader import RulesError, load_rules, validate
-from backend.rules.safety import CHECKS, decide, screen
+from backend.rules.safety import CHECKS, decide, limits_for, screen
 from backend.settings import TZ
 
 R = load_rules()
+L = limits_for(R)
 NOON = datetime(2026, 10, 6, 12, 0, tzinfo=TZ)
 
 
@@ -96,8 +97,88 @@ def test_maintenance_due_before_the_plan_ends():
 
 def test_child_alone_blocked_on_international_and_needs_a_plan():
     cun = {"international": True, "pax": {"child_alone": 2}}
-    assert CHECKS["child_alone_international"](cun, R["limits"])
-    assert CHECKS["child_alone_has_plan"]({"pax": {"child_alone": 1}}, R["limits"])
+    assert CHECKS["child_alone_international"](cun, L)
+    assert CHECKS["child_alone_has_plan"]({"pax": {"child_alone": 1}}, L)
+
+
+# ------------------------------------------------------------------ new rules (Phase 3 cleanup)
+
+def test_child_alone_rule_section_is_the_source_of_the_international_check():
+    cun = {"international": True, "pax": {"child_alone": 2}}
+    assert CHECKS["child_alone_international"](cun, L)
+    allowed = copy.deepcopy(R)
+    allowed["child_alone"]["international_allowed"] = True              # change the rule file: the check follows
+    assert not CHECKS["child_alone_international"](cun, limits_for(allowed))
+
+
+def test_child_alone_can_not_be_rebooked_onto_a_connection():
+    nonstop = a31(id="nonstop", pax={"child_alone": 1, "wheelchair": 0}, plane_changes=0, child_alone_plan=True)
+    connection = a31(id="via_DEN", pax={"child_alone": 1, "wheelchair": 0}, plane_changes=1, child_alone_plan=True)
+    unknown = a31(id="unknown", pax={"child_alone": 1, "wheelchair": 0}, plane_changes=None, child_alone_plan=True)
+    no_child = a31(id="adults", pax={"child_alone": 0, "wheelchair": 0}, plane_changes=1)
+    assert not CHECKS["child_alone_no_connection"](nonstop, L)
+    assert CHECKS["child_alone_no_connection"](connection, L)
+    assert CHECKS["child_alone_no_connection"](unknown, L)              # unknown counts as unsafe
+    assert not CHECKS["child_alone_no_connection"](no_child, L)
+    kept, removed = screen([nonstop, connection], R)
+    assert [o["id"] for o in kept] == ["nonstop"] and removed[0]["rung_name"] == "legal"
+
+
+def test_child_alone_must_be_5_to_11():
+    assert not CHECKS["child_alone_age"]({"pax": {"child_alone": 2, "child_alone_ages": [5, 11]}}, L)
+    assert CHECKS["child_alone_age"]({"pax": {"child_alone": 1, "child_alone_ages": [4]}}, L)
+    assert CHECKS["child_alone_age"]({"pax": {"child_alone": 1, "child_alone_ages": [12]}}, L)
+
+
+def test_two_hours_on_the_tarmac_needs_a_food_and_water_plan():
+    assert not CHECKS["tarmac_food_water"]({"tarmac_min": 119}, L)
+    assert CHECKS["tarmac_food_water"]({"tarmac_min": 120}, L)
+    assert CHECKS["tarmac_food_water"]({"tarmac_min": 150, "food_water_plan": False}, L)
+    assert not CHECKS["tarmac_food_water"]({"tarmac_min": 150, "food_water_plan": True}, L)
+    kept, removed = screen([a31(id="no_plan", tarmac_min=130), a31(id="with_plan", tarmac_min=130, food_water_plan=True)], R)
+    assert [o["id"] for o in kept] == ["with_plan"]
+    assert removed[0]["rung_name"] == "life" and "food" in removed[0]["reasons"][0]
+
+
+def test_delayed_bag_refunds_the_fee_by_the_dot_hours():
+    fee = R["compensation"]["bag_fee_usd"]
+    base = {"cause": "weather", "bag_fee_paid": True}
+    def items(**kw):
+        return [i["item"] for i in compensation_for({**base, **kw}, R)["items"]]
+    assert "refund of the checked-bag fee" not in items(bag_delivery_hours=12)            # on time (12 h is the limit)
+    assert "refund of the checked-bag fee" in items(bag_delivery_hours=13)
+    c = compensation_for({**base, "bag_delivery_hours": 13}, R)
+    assert c["total_usd"] == fee and c["items"][0]["kind"] == "legal"                    # legal floor, even in a storm
+    assert "refund of the checked-bag fee" not in items(bag_delivery_hours=14, international=True, flight_hours=8)  # 15 h
+    assert "refund of the checked-bag fee" in items(bag_delivery_hours=16, international=True, flight_hours=8)
+    assert "refund of the checked-bag fee" not in items(bag_delivery_hours=29, international=True, flight_hours=14)  # 30 h
+    assert "refund of the checked-bag fee" in items(bag_delivery_hours=31, international=True, flight_hours=14)
+    assert "refund of the checked-bag fee" not in items(bag_delivery_hours=20, bag_fee_paid=False)     # nothing paid, nothing to refund
+    assert "refund of the checked-bag fee" not in items(bag_delivery_hours=20, bag_report_filed=False)  # law needs a report
+
+
+def test_every_rule_in_the_file_says_where_it_comes_from():
+    """Each line of rules.yaml that holds a rule must carry a 'source:' note (law, southwest or assumption)."""
+    import re
+    from backend.rules.loader import RULES_FILE
+    lines = RULES_FILE.read_text(encoding="utf-8").splitlines()
+    in_block = None
+    missing = []
+    for n, line in enumerate(lines, 1):
+        top = re.match(r"^([a-z_]+):", line)
+        if top:
+            in_block = top.group(1)
+            if in_block in ("never_auto_rungs",) and "source:" not in line:
+                missing.append(n)
+            continue
+        is_rule = re.match(r"^  (- )?\{?[a-z_0-9]+:", line) and not line.lstrip().startswith("#")
+        if in_block in ("limits", "child_alone", "autonomy", "compensation") and is_rule and "source:" not in line:
+            missing.append(n)
+        if in_block == "safety_ladder" and line.lstrip().startswith("- {rung: 6") is False and line.lstrip().startswith("- {rung:"):
+            prev = lines[n - 2]
+            if "source" not in prev and "source:" not in line:
+                missing.append(n)
+    assert not missing, f"rules without a source note on lines {missing}"
     assert not CHECKS["child_alone_has_plan"]({"pax": {"child_alone": 1}, "child_alone_plan": True}, R["limits"])
 
 

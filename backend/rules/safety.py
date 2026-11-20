@@ -32,6 +32,16 @@ def tarmac_limit(o, lim):
         return f"passengers would sit on the tarmac {minutes} min (limit {limit})"
 
 
+def tarmac_food_water(o, lim):
+    """Law (14 CFR 259.4): food and water by 2 hours. A plan with 2+ hours on the tarmac needs a food-and-water plan."""
+    applies, minutes = _need(o, "tarmac_min")
+    if not applies or minutes is None:          # unknown time is already stopped by tarmac_limit
+        return None
+    if minutes >= lim["tarmac_food_water_min"] and not o.get("food_water_plan"):
+        return (f"passengers would sit on the tarmac {minutes} min and there is no food-and-water plan "
+                f"(required by {lim['tarmac_food_water_min']} min)")
+
+
 def ramp_closed_for_lightning(o, lim):
     if not o.get("needs_ramp"):
         return None
@@ -103,8 +113,30 @@ def crew_rest(o, lim):
 
 
 def child_alone_international(o, lim):
-    if o.get("international") and o.get("pax", {}).get("child_alone", 0) > 0:
+    rule = lim["child_alone"]
+    if not rule["international_allowed"] and o.get("international") and o.get("pax", {}).get("child_alone", 0) > 0:
         return "children flying alone can't be booked on international flights"
+
+
+def child_alone_no_connection(o, lim):
+    """Southwest: a child flying alone goes nonstop or on the same plane. Never rebook onto a connection."""
+    rule = lim["child_alone"]
+    if not rule["nonstop_or_same_plane_only"] or not o.get("pax", {}).get("child_alone", 0):
+        return None
+    applies, changes = _need(o, "plane_changes")
+    if applies and (changes is None or changes > 0):
+        return "children flying alone can't be put on a connection (nonstop or same plane only)" \
+            if changes is not None else "plane changes for children flying alone are unknown"
+
+
+def child_alone_age(o, lim):
+    """Southwest: unaccompanied minor service is for ages 5-11."""
+    rule = lim["child_alone"]
+    ages = o.get("pax", {}).get("child_alone_ages")
+    if ages is None:
+        return None
+    if any(a is None or not rule["min_age"] <= a <= rule["max_age"] for a in ages):
+        return f"children flying alone must be {rule['min_age']}-{rule['max_age']} years old"
 
 
 def wheelchair_help_available(o, lim):
@@ -122,10 +154,15 @@ def child_alone_has_plan(o, lim):
 
 
 CHECKS = {f.__name__: f for f in [
-    tarmac_limit, ramp_closed_for_lightning, maintenance_due, needs_inspection, fuel_reserve,
+    tarmac_limit, tarmac_food_water, ramp_closed_for_lightning, maintenance_due, needs_inspection, fuel_reserve,
     station_has_gate, customs_for_international, crew_duty_left, crew_rest, child_alone_international,
-    wheelchair_help_available, child_alone_has_plan,
+    child_alone_no_connection, child_alone_age, wheelchair_help_available, child_alone_has_plan,
 ]}
+
+
+def limits_for(rules: dict) -> dict:
+    """Everything the checks read: the numbers in `limits` plus the `child_alone` section."""
+    return {**rules["limits"], "child_alone": rules["child_alone"]}
 
 
 def screen(options: list[dict], rules: dict) -> tuple[list[dict], list[dict]]:
@@ -133,7 +170,7 @@ def screen(options: list[dict], rules: dict) -> tuple[list[dict], list[dict]]:
 
     Removed options say which rung stopped them and why, so a human can see what was ruled out.
     """
-    lim = rules["limits"]
+    lim = limits_for(rules)
     kept, removed = [], []
     for o in options:
         stopped = None

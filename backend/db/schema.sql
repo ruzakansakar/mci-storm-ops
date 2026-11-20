@@ -127,6 +127,7 @@ CREATE TABLE passengers (
     segment           text NOT NULL,                     -- same segment names as passenger_groups
     final_destination char(3) NOT NULL REFERENCES stations(code),
     lives_locally     boolean NOT NULL DEFAULT false,    -- Kansas City area: could go home instead of a hotel
+    overnight         boolean NOT NULL DEFAULT false,    -- stranded: no seat left today, rebooked on a next-day flight
     loyalty_tier      text,                              -- none | A-List | A-List Preferred
     contact_channels  text[] NOT NULL,                   -- app, sms, email
     is_synthetic      boolean NOT NULL DEFAULT true,

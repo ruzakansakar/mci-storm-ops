@@ -13,7 +13,7 @@ and remembers it so the writer can save it to the database in a batch.
 """
 from collections import defaultdict
 
-from simulator.clock import at, fmt, minute_of
+from simulator.clock import at, fmt, hhmm, minute_of
 
 SEG_ORDER = ["child_alone", "wheelchair", "international", "connecting", "standard"]
 TIME_FIELDS = {"est_dep", "est_arr", "edct", "tarmac_since", "sched_dep", "sched_arr"}
@@ -21,7 +21,8 @@ TIME_FIELDS = {"est_dep", "est_arr", "edct", "tarmac_since", "sched_dep", "sched
 WAITING_DEP = ("scheduled", "ground_stop", "delayed", "held")      # a departure that has not left yet
 NOT_DEPARTED_ARR = ("scheduled", "ground_stop", "delayed")          # an inbound still on the ground at its origin
 DEPARTED_STATES = ("departed", "airborne", "diverted", "arrived")
-SEVERITY = {"confirmed": 0, "delayed": 1, "rebooked": 2, "diverted": 3, "cancelled": 4}
+SEVERITY = {"confirmed": 0, "delayed": 1, "rebooked": 2, "diverted": 3, "overnight": 4, "cancelled": 5}
+CREW_ROLES = (("pilot", "pilot_duty_left_min", "pilot_pair"), ("fa", "fa_duty_left_min", "fa_team"))
 ACTOR = "simulator"
 
 
@@ -31,6 +32,7 @@ class World:
         self.start = start
         self.ph = cfg["physics"]
         self.base = cfg["baseline"]
+        self.lim = cfg["limits"]                  # legal and safety numbers, read from config/rules.yaml
         self.incident = scenario.incident
 
         # ---- load the truth from the seed rows (copies; the input is never changed)
@@ -62,7 +64,7 @@ class World:
         self.crews = {r["id"]: {**r, "as_of": start} for r in data["crews"]}
         self.stations = {r["code"]: {**r, "as_of": start} for r in data["stations"]}
         self.mci = self.stations["MCI"]
-        self.passengers = {r["id"]: dict(r) for r in data["passengers"]}
+        self.passengers = {r["id"]: {**r, "overnight": False} for r in data["passengers"]}
         self.bookings = defaultdict(list)
         for r in sorted(data["bookings"], key=lambda r: (r["passenger_id"], r["seq"])):
             self.bookings[r["passenger_id"]].append({**r, "status": "confirmed", "as_of": start, "_original": r["flight_id"]})
@@ -72,6 +74,26 @@ class World:
             self.bags_by_pax[b["passenger_id"]].append(b["tag"])
         self.groups = {(r["flight_id"], r["segment"]): {**r, "rebooked": 0, "as_of": start} for r in data["passenger_groups"]}
         self.orig_groups = {k: g["count"] for k, g in self.groups.items()}
+
+        # ---- crews: how much duty a flight needs, which crews were legal at the start, and the reserve list
+        crew_cfg = self.base["crew"]
+        for d in self.departures:
+            d["_crew_need"] = d["_block"] + crew_cfg["onward_leg_min"] + self.lim["crew_duty_buffer_min"]
+        self.crew_checked = set()          # (crew id, role) that we check for running out of duty
+        for d in self.departures:
+            crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
+            for role, field, _ in CREW_ROLES:
+                if crew and crew[field] is not None and crew[field] >= d["_crew_need"]:
+                    self.crew_checked.add((crew["id"], role))      # a crew already short in the class data is left as it is
+        self.reserves = sorted((c for c in self.crews.values() if c.get("is_reserve")),
+                               key=lambda c: (minute_of(c["available_from"]), c["id"]))
+        for c in self.reserves:
+            c["_avail"] = minute_of(c["available_from"])
+        self.thinned = set()               # flights cancelled to thin the schedule
+        self.next_day = defaultdict(list)  # (origin, destination, direction) -> next-day flights we created
+        self.new_flights = []              # created flights, waiting for the writer
+        self.new_flights_all = []          # every flight created today
+        self.overnight_pax = 0             # passengers (all, not just tracked) sent to a next-day flight
         self.pax_by_flight = defaultdict(set)
         for pid, bks in self.bookings.items():
             for b in bks:
@@ -181,8 +203,10 @@ class World:
         if type_.endswith("_started"):
             self.restr = {"program": p["program"], "start": t, "end": p["expected_end"]}
             self._start_tarmac_for_imminent()
+            self._thin_schedule()
         elif type_.endswith("_extended"):
             self.restr["end"] = p["expected_end"]
+            self._thin_schedule()
         elif type_.endswith("_ended"):
             self.restr = None
         elif type_ == "ramp_closed":
@@ -208,6 +232,7 @@ class World:
             if crew:
                 self._set("crews", crew, crew["id"], "crew", "crew duty clock low",
                           pilot_duty_left_min=p["minutes_left"], as_of=t)
+                self.crew_checked.add((crew["id"], "pilot"))
         elif type_ == "terminal_crowd_growth":
             self.surge = {"start": t, "extra": p["extra_people"], "ramp": p["ramp_up_min"], "decay": p["decay_min"]}
         self.reproject(f"event {type_}")
@@ -339,7 +364,12 @@ class World:
             while not self._departure_open(slot):
                 slot += 1
             if slot - d["sched_dep"] > limit:
-                cancels.append((d, f"{self.sc.cause}: would leave more than {limit} min late"))
+                inb = self.flights[d["_inbound"]] if d["_inbound"] else None
+                if inb and inb["diverted_to"]:
+                    why = f"aircraft out of position after diverting to {inb['diverted_to']}: would leave more than {limit} min late"
+                else:
+                    why = f"{self.sc.cause}: would leave more than {limit} min late"
+                cancels.append((d, why))
                 continue
             prev = slot
             self._set("flights", d, d["id"], "flight", "times re-worked out", est_dep=slot,
@@ -489,15 +519,10 @@ class World:
             elif f["status"] == "diverted" and not f["_resumed"]:
                 self._burn_duty(f, n)
         for d in self.departures:
-            if d["status"] in WAITING_DEP and t > d["sched_dep"] and self._aircraft_present(d):
+            if d["status"] in WAITING_DEP and t > d["sched_dep"]:             # waiting uses up the crew's duty time
                 self._burn_duty(d, min(n, t - d["sched_dep"]))
-        for d in self.departures:
-            crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
-            if d["status"] in WAITING_DEP and crew and crew["pilot_duty_left_min"] is not None \
-                    and crew["pilot_duty_left_min"] <= 0:
-                self._emit("crew_out_of_duty", "MCI", {"flight_id": d["id"], "crew_id": crew["id"]}, incident=True)
-                self._cancel_flight(d, "crew ran out of legal duty time while waiting")
-        limit = self.base["tarmac_deplane_after_min"]
+        self._check_crews()
+        limit = self.lim["tarmac_domestic_min"]
         for f in self.flights.values():
             if f["tarmac_since"] is not None and t - f["tarmac_since"] >= limit:
                 self._end_tarmac(f, f"passengers let off after {limit} min")
@@ -526,7 +551,7 @@ class World:
 
         Same sum as the fuel check in the rules: spare fuel - extra flying to the alternate must stay above the floor.
         """
-        t, floor = self.t, self.ph["diversion"]["fuel_floor_min"]
+        t, floor = self.t, self.lim["fuel_buffer_min"]
         for f in self.arrivals:
             if f["status"] != "airborne" or t < self._over_mci(f):    # still airborne after the landing step = still holding
                 continue
@@ -541,11 +566,74 @@ class World:
             elif t % self.ph["clock_update_every_min"] == 0:
                 self._set("aircraft", ac, ac["id"], "aircraft", "holding: fuel burned", fuel_minutes_extra=fuel)
 
+    def _check_crews(self):
+        """A crew that no longer has enough duty left for its flight (plus buffer) is replaced by a reserve crew, or the
+        flight is cancelled. This is today's process: it only reacts, it does not plan ahead."""
+        for d in sorted(self.departures, key=lambda d: (d["sched_dep"], d["id"])):
+            crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
+            if d["status"] not in WAITING_DEP or not crew:
+                continue
+            for role, field, _ in CREW_ROLES:
+                left = crew[field]
+                if (crew["id"], role) not in self.crew_checked or left is None or left >= d["_crew_need"]:
+                    continue
+                reserve = self._find_reserve(role, d)
+                if reserve:
+                    self._assign_reserve(d, crew, role, field, reserve)
+                else:
+                    self._emit("crew_out_of_duty", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "role": role,
+                                                          "duty_left_min": left, "needed_min": d["_crew_need"],
+                                                          "reserve_found": False}, incident=True)
+                    self._cancel_flight(d, "crew out of legal duty")
+                    break
+
+    def _find_reserve(self, role, d):
+        """First reserve crew of the right kind that is free, available in time, long enough on duty and allowed to fly it."""
+        crew_cfg = self.base["crew"]
+        kind = next(k for r, _, k in CREW_ROLES if r == role)
+        field = next(f for r, f, _ in CREW_ROLES if r == role)
+        late = d["est_dep"] % 1440 >= hhmm(crew_cfg["late_night_after"])
+        international = self.stations[d["destination"]].get("region") == crew_cfg["international_region"]
+        for c in self.reserves:
+            if c["kind"] != kind or c.get("_used") or c["reserve_status"] not in crew_cfg["reserve_usable_status"]:
+                continue
+            restr = c["restrictions"] or []
+            wait = max(0, d["est_dep"] - self.t)                  # the reserve's duty also has to cover the wait
+            if c["_avail"] > max(self.t, d["est_dep"]) or c[field] is None or c[field] < d["_crew_need"] + wait:
+                continue
+            if (late and "Late-night restriction" in restr) or (international and "International capable" not in restr):
+                continue
+            return c
+        return None
+
+    def _assign_reserve(self, d, crew, role, field, reserve):
+        reserve["_used"] = True
+        self._set("crews", reserve, reserve["id"], "crew", f"reserve crew assigned to {d['id']}", reserve_status="Assigned")
+        self._set("crews", crew, crew["id"], "crew", f"reserve {role} crew took over {d['id']}", **{field: reserve[field]})
+        self._emit("reserve_crew_assigned", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "role": role,
+                                                    "reserve_id": reserve["id"]})
+
+    def _thin_schedule(self):
+        """Today's process when a long ground stop is announced: cancel some of the lowest-priority departures."""
+        th, r = self.base["thinning"], self.restr
+        if not r or r["program"] != "ground_stop" or r["end"] - r["start"] < th["min_stop_min"]:
+            return
+        lo, hi = r["start"], r["end"] + th["window_after_min"]
+        in_window = [d for d in self.departures if lo <= d["sched_dep"] <= hi]
+        room = int(th["max_fraction_of_window"] * len(in_window)) - len(self.thinned)
+        pool = [d for d in in_window if d["status"] in WAITING_DEP and d["priority"] in th["priorities"]
+                and d["tarmac_since"] is None]
+        pool.sort(key=lambda d: (th["priorities"].index(d["priority"]), d["sched_dep"], d["id"]))
+        for d in pool[:max(0, room)]:
+            self.thinned.add(d["id"])
+            self._cancel_flight(d, f"schedule thinning: {r['end'] - r['start']} min ground stop announced")
+
     def _burn_duty(self, f, minutes):
         crew = self.crews.get(f["crew_id"]) if f["crew_id"] else None
-        if crew and crew["pilot_duty_left_min"] is not None and minutes > 0:
-            self._set("crews", crew, crew["id"], "crew", "waiting uses up duty time",
-                      pilot_duty_left_min=max(0, crew["pilot_duty_left_min"] - minutes), as_of=self.t)
+        if crew and minutes > 0:
+            kv = {field: max(0, crew[field] - minutes) for _, field, _ in CREW_ROLES if crew[field] is not None}
+            if kv:
+                self._set("crews", crew, crew["id"], "crew", "waiting uses up duty time", **kv)
 
     def _update_crowd(self):
         t, term = self.t, self.ph["terminal"]
@@ -599,15 +687,61 @@ class World:
         self.dirty_flights.add(f["id"])
 
     def _candidates(self, f):
-        """Later flights on the same route that have not left yet."""
+        """Later same-day flights on the same route that have not left yet."""
         out = [g for g in self.flights.values()
-               if g["id"] != f["id"] and g["origin"] == f["origin"] and g["destination"] == f["destination"]
-               and g["direction"] == f["direction"] and g["status"] in (WAITING_DEP if g["direction"] == "departure" else NOT_DEPARTED_ARR)
+               if g["id"] != f["id"] and not g.get("_next_day") and g["origin"] == f["origin"]
+               and g["destination"] == f["destination"] and g["direction"] == f["direction"]
+               and g["status"] in (WAITING_DEP if g["direction"] == "departure" else NOT_DEPARTED_ARR)
                and g["est_dep"] > self.t]
         return sorted(out, key=lambda g: (g["est_dep"], g["id"]))
 
     def _room(self, g):
-        return self.aircraft[g["aircraft_id"]]["seats"] - g["pax_total"]
+        """Seats left that today's process is willing to sell (it never fills a plane past max_load_factor)."""
+        seats = g["_seats"] if g.get("_seats") else self.aircraft[g["aircraft_id"]]["seats"]
+        return max(0, int(seats * self.base["max_load_factor"]) - g["pax_total"])
+
+    def _next_day_flight(self, f):
+        """A next-day (7 Oct) flight on the same route with a free seat. Creates one if needed, up to a limit."""
+        nd = self.base["next_day"]
+        key = (f["origin"], f["destination"], f["direction"])
+        for g in self.next_day[key]:
+            if self._room(g) > 0:
+                return g
+        if len(self.next_day[key]) >= nd["max_flights_per_route"]:
+            return None
+        k = len(self.next_day[key])
+        dep = 1440 + hhmm(nd["first_departure"]) + k * nd["spacing_min"]
+        fid = f"WN3{sum(len(v) for v in self.next_day.values()) + 1:03d}"
+        g = {"id": fid, "direction": f["direction"], "schedule_no": None, "origin": f["origin"],
+             "destination": f["destination"], "sched_dep": dep, "sched_arr": dep + f["_block"], "est_dep": dep,
+             "est_arr": dep + f["_block"], "edct": None, "aircraft_id": None, "crew_id": None,
+             "next_destination": None, "priority": f["priority"], "status": "scheduled", "diverted_to": None,
+             "tarmac_since": None, "cancel_reason": None, "controllable": None, "pax_total": 0,
+             "source": "simulator", "as_of": self.t, "_next_day": True, "_seats": nd["seats"], "_block": f["_block"],
+             "_orig_pax": 0, "actual_dep": None, "actual_arr": None, "_logged_delay": None, "_holding": False,
+             "_resumed": False, "_resume_ready": None, "_land_key": None, "_tarmac_max": 0, "_inbound": None,
+             "_outbound": None}
+        self.flights[fid] = g
+        for seg in SEG_ORDER:
+            self.groups[(fid, seg)] = {"flight_id": fid, "segment": seg, "count": 0, "rebooked": 0, "refunded": 0,
+                                       "need_hotel": 0, "source": "simulator", "as_of": self.t}
+            self.orig_groups[(fid, seg)] = 0
+        self.next_day[key].append(g)
+        self.new_flights.append(fid)
+        self.new_flights_all.append(fid)
+        self._emit("next_day_flight_created", f["origin"], {"flight_id": fid, "route": f"{f['origin']}-{f['destination']}",
+                                                            "departs": fmt(dep)})
+        return g
+
+    def _ready_for(self, pid, b):
+        """Earliest minute this passenger can be at the airport for this booking (after their earlier leg), or None."""
+        bks = self.bookings[pid]
+        i = bks.index(b)
+        if i == 0 or bks[i - 1]["status"] == "cancelled":
+            return None
+        pf = self.flights[bks[i - 1]["flight_id"]]
+        arrives = pf["actual_arr"] if pf["status"] == "arrived" else pf["est_arr"]
+        return arrives + self.lim["min_connection_min"]
 
     def _move_count(self, src, dst, seg, n):
         t = self.t
@@ -620,7 +754,8 @@ class World:
         self._set("flights", dst, dst["id"], "flight", "passengers rebooked onto flight", pax_total=dst["pax_total"] + n)
 
     def _rebook_flight(self, f):
-        """Everyone on a cancelled flight goes to the next flights to the same place that have room."""
+        """Everyone on a cancelled flight goes to the next flights to the same place that have room.
+        If no seat is left today, they go on a next-day flight (7 Oct) and are marked as stranded overnight."""
         if not self.base["rebook_to_next_flight_with_room"]:
             return
         cands = self._candidates(f)
@@ -635,17 +770,31 @@ class World:
                     self._move_count(f, g, seg, take)
                     chunks[seg].append([g, take])
                     left -= take
+            while left > 0:                                           # nothing left today: next day
+                g = self._next_day_flight(f)
+                if g is None:
+                    break
+                take = min(left, self._room(g))
+                self._move_count(f, g, seg, take)
+                self.overnight_pax += take
+                chunks[seg].append([g, take])
+                left -= take
         for pid in sorted(self.pax_by_flight[f["id"]], key=lambda p: (SEG_ORDER.index(self.passengers[p]["segment"]), p)):
             for b in self.bookings[pid]:
                 if b["flight_id"] != f["id"] or b["status"] == "cancelled":
                     continue
+                ready = self._ready_for(pid, b)
                 seg_chunks = chunks[self.passengers[pid]["segment"]]
-                target = next((c for c in seg_chunks if c[1] > 0), None)
+                target = next((c for c in seg_chunks if c[1] > 0 and (ready is None or c[0]["est_dep"] >= ready)), None)
                 if target:
                     target[1] -= 1
                     self._rebook_booking(pid, b, target[0])
-                else:
-                    self._strand_booking(pid, b)
+                else:                                                 # they can't make any of today's seats
+                    nd = self._next_day_flight(f)
+                    if nd:
+                        self._rebook_booking(pid, b, nd)
+                    else:
+                        self._strand_booking(pid, b)
 
     def _rebook_booking(self, pid, b, new_flight):
         old = b["flight_id"]
@@ -655,6 +804,13 @@ class World:
         self.pax_by_flight[new_flight["id"]].add(pid)
         self.dirty_pax.add(pid)
         self.rebooked_now.add(pid)
+        if new_flight.get("_next_day"):
+            person = self.passengers[pid]
+            self._set("passengers", person, pid, "passenger_overnight_flag", "stranded overnight: rebooked on a next-day flight",
+                      overnight=True)
+            self._emit("passenger_stranded_overnight", "MCI",
+                       {"passenger_id": pid, "lives_locally": person["lives_locally"], "from_flight": old,
+                        "rebooked_to": new_flight["id"], "departs": fmt(new_flight["sched_dep"])}, incident=True)
         for tag in self.bags_by_pax[pid]:
             bag = self.bags[tag]
             self._set("bags", bag, tag, "bag", "bag re-tagged after rebooking",
@@ -669,7 +825,8 @@ class World:
             self._set("bags", self.bags[tag], tag, "bag", "bag held: passenger has no flight", status="held", as_of=self.t)
 
     def _missed_connections(self, d):
-        """A flight leaves on time for itself; connecting passengers whose first leg is not in yet are rebooked."""
+        """A flight leaves on time for itself; connecting passengers whose first leg is not in yet are rebooked,
+        on a later flight they can reach today or, if there is none, on a next-day flight."""
         t = self.t
         for pid in sorted(self.pax_by_flight[d["id"]]):
             bks = self.bookings[pid]
@@ -679,16 +836,22 @@ class World:
                 prev = bks[i - 1]
                 pf = self.flights[prev["flight_id"]]
                 made_it = prev["status"] != "cancelled" and pf["status"] == "arrived" \
-                    and pf["actual_arr"] + self.ph["min_connection_min"] <= t
+                    and pf["actual_arr"] + self.lim["min_connection_min"] <= t
                 if made_it:
                     continue
+                ready = self._ready_for(pid, b)
                 seg = self.passengers[pid]["segment"]
-                gs = self.groups[(d["id"], seg)]
-                target = next((g for g in self._candidates(d) if self._room(g) > 0), None)
-                if target and prev["status"] != "cancelled":
+                target = next((g for g in self._candidates(d)
+                               if self._room(g) > 0 and (ready is None or g["est_dep"] >= ready)), None)
+                if target is None:
+                    target = self._next_day_flight(d)
+                if target is not None:
                     self._move_count(d, target, seg, 1)
+                    if target.get("_next_day"):
+                        self.overnight_pax += 1
                     self._rebook_booking(pid, b, target)
                 else:
+                    gs = self.groups[(d["id"], seg)]
                     self._set("passenger_groups", gs, (d["id"], seg), "passenger_group", "missed connection",
                               count=gs["count"] - 1, as_of=t)
                     self._set("flights", d, d["id"], "flight", "passenger did not make the flight", pax_total=d["pax_total"] - 1)
@@ -716,6 +879,8 @@ class World:
             base = "rebooked"
         else:
             base = "confirmed"
+        if f.get("_next_day"):
+            return "overnight"
         if f["status"] == "diverted":
             return "diverted"
         if f["direction"] == "arrival" and f["status"] == "airborne":
@@ -746,6 +911,8 @@ class World:
                     message = f"Flight {f['id']} is delayed, {verb} {when}."
                 elif s == "rebooked":
                     message = f"You have been rebooked on flight {f['id']}, {verb} {when}."
+                elif s == "overnight":
+                    message = f"You are stranded overnight. You are rebooked on flight {f['id']} tomorrow, departing {fmt(f['est_dep'])}."
                 elif s == "diverted":
                     message = f"Flight {f['id']} diverted to {f['diverted_to']}. We will update you soon."
                 else:
@@ -779,7 +946,8 @@ class World:
     def status_counts(self) -> dict:
         out = defaultdict(int)
         for f in self.flights.values():
-            out[f["status"]] += 1
+            if not f.get("_next_day"):
+                out[f["status"]] += 1
         return dict(out)
 
     def open_tarmac_max(self) -> int:

@@ -1,4 +1,7 @@
 """Phase 1 checks: is the shared live view loaded correctly from the class files?"""
+import hashlib
+import json
+
 from backend.seed.build import build
 from tests.conftest import one
 
@@ -71,3 +74,11 @@ def test_conflicts_in_the_class_files_are_recorded(db):
 
 def test_same_seed_gives_identical_data():
     assert build() == build()
+
+
+def test_seed_data_is_exactly_what_it_was_before_the_numbers_moved_into_config_seed_yaml():
+    """Checksum taken from build() before the hard-coded numbers moved to config/seed.yaml (SEED=42, SAMPLE_PASSENGERS=300)."""
+    from backend.settings import SAMPLE_PASSENGERS, SEED
+    assert (SEED, SAMPLE_PASSENGERS) == (42, 300), "the checksum is only valid for the default SEED and SAMPLE_PASSENGERS"
+    blob = json.dumps(build(), sort_keys=True, default=str).encode()
+    assert hashlib.sha256(blob).hexdigest() == "4b435dea4e508ccdfeea2359fc426566ec05b11dcd9afc9b552fcb7622029999"

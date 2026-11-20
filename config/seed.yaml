@@ -1,0 +1,104 @@
+# Numbers used to build the starting data (backend/seed/build.py).
+#
+# "# class slides" = taken from the class slides / class files.
+# "# assumption"   = made up for the class project (change freely, then rerun `python -m scripts.reset_db`).
+# Names of places and people stay in build.py. Legal and safety numbers (e.g. the minimum connection time)
+# live only in config/rules.yaml.
+
+day_start: "05:00"                 # assumption: the data is "as of" this time on the simulated day
+
+aircraft:
+  seats:                           # assumption: Southwest seat counts per aircraft type
+    "737-700": 143                 # assumption
+    "737-800": 175                 # assumption
+    "737 MAX 8": 175               # assumption
+  default_seats: 175               # assumption: for a type not listed above
+  overnight_count: 11              # class slides: 11 aircraft overnight at MCI
+
+bases: [DEN, DAL, MDW, BWI]        # class slides: Southwest's big bases
+diversion_options: [STL, OMA, DSM, ICT, TUL, DEN, DAL, MDW, BWI]   # assumption: airports a flight can divert to
+
+turn_min: 50                       # assumption: an inbound flight lands this long before its aircraft's departure
+max_connection_min: 240            # assumption: longest wait we still call a "connection" for sample passengers
+
+default_block_min: 120             # assumption: flight time when the region is not listed
+block_min_by_region:               # assumption: rough flight times from MCI by region
+  "Central / Midwest": 75          # assumption
+  "Texas/South Central": 100       # assumption
+  "Mountain / Southwest": 120      # assumption
+  "West Coast": 210                # assumption
+  "East/Northeast": 150            # assumption
+  "Southeast": 145                 # assumption
+  "Mexico / Caribbean": 200        # assumption
+
+station_facilities:                # assumption: facilities at stations that matter for diversions
+  MCI: {gates: 118, wheelchair_staff: 12, has_customs: true,  terminal_capacity: 12000}   # assumption
+  ICT: {gates: 12,  wheelchair_staff: 2,  has_customs: false, terminal_capacity: 2500}    # assumption
+  TUL: {gates: 18,  wheelchair_staff: 3,  has_customs: false, terminal_capacity: 3000}    # assumption
+  OMA: {gates: 20,  wheelchair_staff: 3,  has_customs: false, terminal_capacity: 3500}    # assumption
+  DSM: {gates: 12,  wheelchair_staff: 2,  has_customs: false, terminal_capacity: 2500}    # assumption
+  STL: {gates: 60,  wheelchair_staff: 6,  has_customs: true,  terminal_capacity: 8000}    # assumption
+  DEN: {gates: 150, wheelchair_staff: 20, has_customs: true,  terminal_capacity: 40000}   # assumption
+  DAL: {gates: 20,  wheelchair_staff: 10, has_customs: true,  terminal_capacity: 9000}    # assumption
+  MDW: {gates: 43,  wheelchair_staff: 12, has_customs: true,  terminal_capacity: 12000}   # assumption
+  BWI: {gates: 70,  wheelchair_staff: 14, has_customs: true,  terminal_capacity: 20000}   # assumption
+
+missing_priority: P4               # agreed with the project owner: a flight with no priority is a consolidation candidate
+
+inbound:                           # generated inbound flights (the schedule only lists departures)
+  pax_range: [110, 170]            # assumption: passengers on a generated inbound flight
+  connecting_fraction: [0.2, 0.35] # assumption: share of connecting passengers
+  minors_choices: [0, 0, 1]        # assumption: children flying alone on a generated inbound flight (picked at random)
+  wheelchair_range: [1, 4]         # assumption
+  international_range: [0, 3]      # assumption
+
+a31:                               # the class story
+  inbound_origin: DEN              # class slides
+  pax: 158                         # class slides
+  connecting: 42                   # class slides
+  wheelchair: 3                    # class slides
+  minors: 0                        # class slides
+  international: 0                 # class slides
+  crew:                            # class slides: crew with 4 h 20 min of duty left
+    id: CX31
+    pilots: 2                      # assumption
+    flight_attendants: 4           # assumption
+    base: DEN                      # class slides
+    duty_left_min: 260             # class slides (4 h 20 min)
+    min_rest_hours: 10             # assumption
+    legality_risk: MEDIUM          # assumption
+    hotel_if_cancelled: true       # assumption
+    deadhead_planned: false        # assumption
+
+crews:
+  pilots: 2                        # assumption: pilots in a full crew
+  flight_attendants: 4             # assumption: flight attendants in a full crew
+
+passengers:                        # the ~300 sample passengers we follow one by one
+  contact_channels:                # assumption: how passengers can be reached (weights)
+    - {channels: [app, sms],   weight: 60}
+    - {channels: [sms],        weight: 20}
+    - {channels: [app, email], weight: 15}
+    - {channels: [email],      weight: 5}
+  loyalty:                         # assumption: loyalty tier weights
+    none: 75
+    A-List: 18
+    A-List Preferred: 7
+  bags:                            # assumption: number of checked bags (weights)
+    counts: [0, 1, 2]
+    weights: [30, 55, 15]
+  child_alone_no_bag_chance: 0.5   # assumption
+  lives_locally_chance:            # assumption: share who live in the Kansas City area
+    arrival: 0.7
+    departure: 0.8
+  a31_sample: 15                   # assumption: sample passengers on WN2031 (so the story has people to follow)
+
+staff:                             # assumption: MCI staff roster
+  roles:
+    gate_agent: 24
+    ramp: 40
+    wheelchair: 12
+    customer_service: 10
+    station_manager: 2
+  shift_starts: ["04:00", "04:30", "08:00", "12:00", "13:00"]
+  shift_length_min: 510            # 8 h 30 min

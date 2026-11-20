@@ -20,7 +20,7 @@ def load_rules(path: Path = RULES_FILE) -> dict:
 
 
 def validate(rules: dict) -> None:
-    for key in ("safety_ladder", "limits", "autonomy", "compensation", "never_auto_rungs"):
+    for key in ("safety_ladder", "limits", "child_alone", "autonomy", "compensation", "never_auto_rungs"):
         if key not in rules:
             raise RulesError(f"rules.yaml is missing '{key}'")
 
@@ -46,3 +46,19 @@ def validate(rules: dict) -> None:
     for k, v in rules["limits"].items():
         if not isinstance(v, (int, float)) or v < 0:
             raise RulesError(f"limits.{k} must be a non-negative number")
+
+    ca = rules["child_alone"]
+    for k in ("min_age", "max_age"):
+        if not isinstance(ca.get(k), int) or ca[k] < 0:
+            raise RulesError(f"child_alone.{k} must be a non-negative whole number")
+    if ca["min_age"] > ca["max_age"]:
+        raise RulesError("child_alone.min_age can't be above max_age")
+    for k in ("nonstop_or_same_plane_only", "international_allowed"):
+        if not isinstance(ca.get(k), bool):
+            raise RulesError(f"child_alone.{k} must be true or false")
+
+    for k in ("bag_refund_hours_domestic", "bag_refund_hours_international", "bag_refund_hours_international_long",
+              "long_flight_hours", "bag_fee_usd"):
+        v = rules["compensation"].get(k)
+        if not isinstance(v, (int, float)) or v < 0:
+            raise RulesError(f"compensation.{k} must be a non-negative number")

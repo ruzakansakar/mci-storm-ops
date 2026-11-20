@@ -173,7 +173,9 @@ $('incident').innerHTML = I ? `<b>${esc(I.title)}</b> (${esc(I.kind)}, ${I.contr
 // ---------- metrics
 const LABEL = {flights_total:'Flights in the day',flights_delayed:'Flights delayed (30+ min)',flights_cancelled:'Flights cancelled',flights_diverted:'Flights diverted',
  avg_delay_min:'Average delay of delayed flights (min)',max_delay_min:'Longest delay (min)',passengers_disrupted:'Passengers disrupted (counting each flight)',
- passengers_rebooked:'Passengers moved to another flight',tracked_passengers:'Sample passengers we follow one by one',tracked_passengers_stranded:'Sample passengers with no seat found',
+ passengers_rebooked:'Passengers moved to another flight',tracked_passengers:'Sample passengers we follow one by one',tracked_passengers_stranded:'Sample passengers with no seat at all (not even tomorrow)',
+ passengers_stranded_overnight:'Passengers stranded overnight (rebooked for 7 Oct)',tracked_passengers_overnight:'Sample passengers stranded overnight',
+ tracked_overnight_who_live_locally:'...of them live in the Kansas City area',next_day_flights_created:'Next-day flights created',
  peak_passengers_disagreeing:'Most sample passengers with a wrong screen at once',avg_passengers_disagreeing:'Average sample passengers with a wrong screen (whole day)',
  avg_passengers_disagreeing_during_stop:'Average sample passengers with a wrong screen (during the stop)',passenger_minutes_of_disagreement:'Passenger-minutes of disagreement',
  minutes_until_all_channels_agree_after_stop:'Minutes after the stop ends until every screen first agrees (lost messages aside)',

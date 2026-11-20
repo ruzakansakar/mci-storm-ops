@@ -14,7 +14,12 @@ day:
   end: "23:59"                   # last minute simulated (the --until default)
   write_every_min: 60            # assumption: write to the database in batches of this many simulated minutes
 
+# Legal and safety numbers (fuel buffer, tarmac limit, minimum connection time, crew duty buffer) are NOT here:
+# they live only in config/rules.yaml and the simulator reads them from there.
+
 # ------------------------------------------------------------------ WHAT CAN GO WRONG
+scenario:
+  min_stop_before_extension_min: 30   # assumption: a stop must run at least this long before it can be extended
 # weight = how likely the random scenario picks this cause (relative numbers).
 # programs = how likely each kind of FAA/airport restriction is, given the cause.
 #   ground_stop  = nothing lands or leaves MCI
@@ -91,6 +96,7 @@ side_events:
   aircraft_inspection:           # an aircraft needs an inspection before it can fly
     chance: 0.4                  # assumption
     start_offset_min: [10, 90]   # assumption
+    window_after_stop_min: 120   # assumption: the flight needing inspection leaves up to this long after the stop ends
     duration_min: [60, 120]      # assumption
   terminal_crowd_growth:         # extra people pile into the terminal
     chance: 0.8                  # assumption
@@ -107,7 +113,7 @@ scenarios:
     stop_start: "11:30"          # class slides: "about 11:30-14:00"
     announced_end: "13:00"       # assumption: first announced end; extended at that time
     extended_end: "14:00"        # class slides
-    ramp_closure: {start: "12:10", end: "12:45"}   # assumption: lightning inside the stop
+    lightning_closure: {start: "12:10", end: "12:45"}   # assumption: lightning inside the stop
     flight: WN2031               # A31 inbound from Denver
     fuel_minutes_extra: 55       # class slides
     alternate: STL               # assumption: A31's pre-planned diversion airport
@@ -120,7 +126,6 @@ physics:
   slot_spacing_min: 2            # assumption: normal minutes between landings / between takeoffs at MCI
   ground_delay_spacing_min: 6    # assumption: minutes between landings during a ground delay program
   min_turn_min: 35               # assumption: fastest turnaround from landing to next takeoff
-  min_connection_min: 45         # assumption: same minimum connection time as the seed data
   pushback_lead_min: 25          # assumption: a flight leaving within this many minutes is already pushed back
   delay_flag_min: 15             # assumption: a delay this long is shown to passengers as "delayed"
   delay_update_min: 30           # assumption: log a new "delay updated" event when the delay moves this much
@@ -135,8 +140,6 @@ physics:
     DSM: 25                      # assumption
     TUL: 20                      # assumption
   diversion:
-    fuel_floor_min: 10           # assumption: a holding flight diverts when spare holding fuel drops to this.
-                                 # MUST equal limits.fuel_buffer_min in config/rules.yaml (a test checks this)
     refuel_turn_min: 60          # assumption: time on the ground at the alternate before flying back
     flight_back_min: 40          # assumption: flying time from the alternate back to MCI
   terminal:
@@ -148,9 +151,24 @@ physics:
 # ------------------------------------------------------------------ TODAY'S BEHAVIOUR (no co-pilot)
 # Simple fixed rules that stand in for what Southwest does today. Not the co-pilot.
 baseline:
-  cancel_if_delay_over_min: 150  # assumption: a flight that would leave more than this late is cancelled
-  tarmac_deplane_after_min: 180  # assumption: people are let off a plane stuck this long
+  cancel_if_delay_over_min: 165  # assumption: a flight that would leave more than this late is cancelled
   rebook_to_next_flight_with_room: true
+  max_load_factor: 0.93          # assumption: today's rebooking never fills a plane beyond this share of its seats
+  thinning:                      # when a long ground stop is announced, cancel some low-priority departures
+    min_stop_min: 60             # assumption: only for stops announced as at least this long
+    window_after_min: 120        # assumption: flights scheduled during the stop and up to this long after it
+    priorities: [P4, P3]         # assumption: cancel P4 flights first, then P3 (never P1 or P2)
+    max_fraction_of_window: 0.25 # assumption: cap: at most this share of the departures in that window
+  crew:                          # crews run out of legal duty time while they wait
+    onward_leg_min: 120          # assumption: a crew's duty plan also covers about one more leg after this flight
+    reserve_usable_status: [Available, On Call]   # assumption: reserve crews we may call in ("Assigned after trigger" ones are already committed)
+    late_night_after: "21:00"    # assumption: "Late-night restriction" reserves can't fly departures after this time
+    international_region: "Mexico / Caribbean"   # flights to this region need an "International capable" reserve
+  next_day:                      # passengers with no seat today go on a next-day flight (7 Oct)
+    first_departure: "06:30"     # assumption
+    spacing_min: 90              # assumption: minutes between extra next-day flights on the same route
+    max_flights_per_route: 6     # assumption
+    seats: 175                   # assumption: seats on a next-day flight
 
 # ------------------------------------------------------------------ WHAT EACH SCREEN KNOWS
 # Each channel copies the truth late. Copy delay = base_min + (changes in the last load_window_min / 100)
@@ -173,3 +191,12 @@ labels:
 # ------------------------------------------------------------------ WHAT WE MEASURE
 metrics:
   series_every_min: 5            # assumption: how often the chart numbers are recorded
+
+# ------------------------------------------------------------------ REALISM CHECK (used by the tests)
+# In a storm or any ground stop of at least min_stop_min, today's process should cancel between min_pct and max_pct of the
+# departures scheduled from the start of the stop to window_after_min after it ends.
+realism:
+  min_stop_min: 120              # assumption
+  window_after_min: 120          # assumption
+  min_cancelled_pct: 5           # assumption
+  max_cancelled_pct: 25          # assumption

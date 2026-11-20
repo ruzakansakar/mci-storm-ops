@@ -10,12 +10,23 @@ import random
 import string
 from datetime import datetime, time, timedelta
 
+import yaml
+
 from backend.seed import class_files as cf
-from backend.settings import SAMPLE_PASSENGERS, SEED, SIM_DATE, TZ
+from backend.settings import ROOT, SAMPLE_PASSENGERS, SEED, SIM_DATE, TZ
+
+# Every number comes from config/seed.yaml; legal and safety numbers come from config/rules.yaml.
+CFG = yaml.safe_load((ROOT / "config" / "seed.yaml").read_text(encoding="utf-8"))
+LIMITS = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))["limits"]
+
+
+def _hhmm(text: str) -> int:
+    h, m = text.split(":")
+    return int(h) * 60 + int(m)
 
 # ---------------------------------------------------------------- constants and assumptions
 
-AS_OF = datetime.combine(SIM_DATE, time(5, 0), TZ)   # start of the simulated day
+AS_OF = datetime.combine(SIM_DATE, time(0, 0), TZ) + timedelta(minutes=_hhmm(CFG["day_start"]))   # start of the simulated day
 
 SOR = {  # which official system owns each kind of fact (simulated stand-ins)
     "flights": "Amadeus Altea (simulated)",
@@ -29,13 +40,13 @@ SOR = {  # which official system owns each kind of fact (simulated stand-ins)
     "capacity": "Revenue management (simulated)",
 }
 
-SEATS = {"737-700": 143, "737-800": 175, "737 MAX 8": 175}          # assumption: Southwest layouts
-BASES = {"DEN", "DAL", "MDW", "BWI"}                                   # from the class slides
-DIVERSION_OPTIONS = {"STL", "OMA", "DSM", "ICT", "TUL", "DEN", "DAL", "MDW", "BWI"}
-OVERNIGHT_AIRCRAFT = 11                                                # class slides: 11 aircraft overnight at MCI
-TURN_MIN = 50                                                          # assumption: inbound arrives 50 min before departure
-MIN_CONNECT_MIN = 45                                                   # assumption: minimum connection time at MCI
-MAX_CONNECT_MIN = 240
+SEATS = CFG["aircraft"]["seats"]
+BASES = set(CFG["bases"])
+DIVERSION_OPTIONS = set(CFG["diversion_options"])
+OVERNIGHT_AIRCRAFT = CFG["aircraft"]["overnight_count"]
+TURN_MIN = CFG["turn_min"]
+MIN_CONNECT_MIN = LIMITS["min_connection_min"]                         # a rule: lives in rules.yaml
+MAX_CONNECT_MIN = CFG["max_connection_min"]
 
 EXTRA_NAMES = {
     "MCI": "Kansas City", "ICT": "Wichita", "TUL": "Tulsa", "OMA": "Omaha", "DSM": "Des Moines",
@@ -48,24 +59,10 @@ EXTRA_NAMES = {
     "PUJ": "Punta Cana", "PVD": "Providence", "MDW": "Chicago Midway", "LGA": "New York LaGuardia",
 }
 
-BLOCK_MIN = {  # assumption: rough flight times from MCI by region
-    "Central / Midwest": 75, "Texas/South Central": 100, "Mountain / Southwest": 120,
-    "West Coast": 210, "East/Northeast": 150, "Southeast": 145, "Mexico / Caribbean": 200,
-}
+BLOCK_MIN = CFG["block_min_by_region"]
 
-# Simulated facilities at stations that matter for diversions (assumptions, labelled as such).
-STATION_FACILITIES = {
-    "MCI": {"gates": 118, "wheelchair_staff": 12, "has_customs": True, "terminal_capacity": 12000},
-    "ICT": {"gates": 12, "wheelchair_staff": 2, "has_customs": False, "terminal_capacity": 2500},
-    "TUL": {"gates": 18, "wheelchair_staff": 3, "has_customs": False, "terminal_capacity": 3000},
-    "OMA": {"gates": 20, "wheelchair_staff": 3, "has_customs": False, "terminal_capacity": 3500},
-    "DSM": {"gates": 12, "wheelchair_staff": 2, "has_customs": False, "terminal_capacity": 2500},
-    "STL": {"gates": 60, "wheelchair_staff": 6, "has_customs": True, "terminal_capacity": 8000},
-    "DEN": {"gates": 150, "wheelchair_staff": 20, "has_customs": True, "terminal_capacity": 40000},
-    "DAL": {"gates": 20, "wheelchair_staff": 10, "has_customs": True, "terminal_capacity": 9000},
-    "MDW": {"gates": 43, "wheelchair_staff": 12, "has_customs": True, "terminal_capacity": 12000},
-    "BWI": {"gates": 70, "wheelchair_staff": 14, "has_customs": True, "terminal_capacity": 20000},
-}
+# Simulated facilities at stations that matter for diversions (assumptions, labelled as such in seed.yaml).
+STATION_FACILITIES = CFG["station_facilities"]
 
 FIRST = ["Maya", "Liam", "Olivia", "Noah", "Emma", "Elijah", "Ava", "James", "Sophia", "Lucas", "Isabella",
          "Mateo", "Mia", "Aiden", "Amelia", "Ethan", "Harper", "Daniel", "Evelyn", "Leo", "Aria", "Omar",
@@ -127,15 +124,15 @@ def build() -> dict:
     flights, groups, aircraft, crews = [], [], [], []
 
     def block(code):
-        return BLOCK_MIN.get(regions.get(code), 120)
+        return BLOCK_MIN.get(regions.get(code), CFG["default_block_min"])
 
     for s in sched:
         fid = f"WN{1000 + s['n']}"
         priority = s["priority"]
         if not priority:
-            priority = "P4"
+            priority = CFG["missing_priority"]
             issue("missing_priority", fid, f"Flight {s['n']} has no priority in the schedule",
-                  "Set to P4 (consolidation candidate), as agreed")
+                  f"Set to {CFG['missing_priority']} (consolidation candidate), as agreed")
         flights.append({
             "id": fid, "direction": "departure", "schedule_no": s["n"], "origin": "MCI",
             "destination": s["dest"], "sched_dep": at(s["dep_min"]),
@@ -167,17 +164,21 @@ def build() -> dict:
         if s["aircraft"] in overnight:
             continue
         fid = f"WN{2000 + s['n']}"
-        origin = "DEN" if s["aircraft"] == "A31" else rng.choice(hubs)
+        a31 = CFG["a31"]
+        origin = a31["inbound_origin"] if s["aircraft"] == "A31" else rng.choice(hubs)
         arr = s["dep_min"] - TURN_MIN
-        pax = 158 if s["aircraft"] == "A31" else rng.randint(110, 170)
+        pax = a31["pax"] if s["aircraft"] == "A31" else rng.randint(*CFG["inbound"]["pax_range"])
         crew_id = None
         if s["aircraft"] == "A31":
-            crew_id = "CX31"
+            c = a31["crew"]
+            crew_id = c["id"]
             crews.append({
-                "id": "CX31", "kind": "full_crew", "pilots": 2, "flight_attendants": 4, "base": "DEN",
-                "current_station": "DEN", "is_reserve": False, "reserve_status": None, "available_from": None,
-                "pilot_duty_left_min": 260, "fa_duty_left_min": 260, "min_rest_hours": 10, "legality_risk": "MEDIUM",
-                "hotel_if_cancelled": True, "deadhead_planned": False, "restrictions": None, "source": "class_slides",
+                "id": c["id"], "kind": "full_crew", "pilots": c["pilots"], "flight_attendants": c["flight_attendants"],
+                "base": c["base"], "current_station": c["base"], "is_reserve": False, "reserve_status": None,
+                "available_from": None, "pilot_duty_left_min": c["duty_left_min"], "fa_duty_left_min": c["duty_left_min"],
+                "min_rest_hours": c["min_rest_hours"], "legality_risk": c["legality_risk"],
+                "hotel_if_cancelled": c["hotel_if_cancelled"], "deadhead_planned": c["deadhead_planned"],
+                "restrictions": None, "source": "class_slides",
             })
         flights.append({
             "id": fid, "direction": "arrival", "schedule_no": s["n"], "origin": origin, "destination": "MCI",
@@ -187,11 +188,15 @@ def build() -> dict:
         })
         inbound_by_ac[s["aircraft"]] = origin
         if s["aircraft"] == "A31":
-            fake = {"Connecting Pax": 42, "Unaccompanied Minors": 0, "Wheelchair/Service": 3, "International Pax": 0}
+            fake = {"Connecting Pax": a31["connecting"], "Unaccompanied Minors": a31["minors"],
+                    "Wheelchair/Service": a31["wheelchair"], "International Pax": a31["international"]}
             groups += _split_groups(fid, pax, fake, "class_slides")
         else:
-            fake = {"Connecting Pax": round(pax * rng.uniform(0.2, 0.35)), "Unaccompanied Minors": rng.choice([0, 0, 1]),
-                    "Wheelchair/Service": rng.randint(1, 4), "International Pax": rng.randint(0, 3)}
+            ib = CFG["inbound"]
+            fake = {"Connecting Pax": round(pax * rng.uniform(*ib["connecting_fraction"])),
+                    "Unaccompanied Minors": rng.choice(ib["minors_choices"]),
+                    "Wheelchair/Service": rng.randint(*ib["wheelchair_range"]),
+                    "International Pax": rng.randint(*ib["international_range"])}
             groups += _split_groups(fid, pax, fake, "generated")
     issue("inbound_flights", "56 inbound flights",
           "The schedule only lists departures, and the dataset puts every aircraft at MCI. But the slides say only 11 aircraft overnight at MCI and A31 arrives from Denver.",
@@ -205,7 +210,7 @@ def build() -> dict:
             issue("aircraft_type", ac_id, f"{s['type']} in the schedule vs {r['Type']} in the dataset",
                   "Schedule type used", "info")
         aircraft.append({
-            "id": ac_id, "type": s["type"], "seats": SEATS.get(s["type"], 175),
+            "id": ac_id, "type": s["type"], "seats": SEATS.get(s["type"], CFG["aircraft"]["default_seats"]),
             "current_station": inbound_by_ac.get(ac_id, "MCI"), "fuel_pct": r.get("Fuel %"),
             "maint_status": r.get("Maintenance Status") or "Routine",
             "maint_due_at": _due(r.get("Maintenance Deadline")),
@@ -216,11 +221,12 @@ def build() -> dict:
     # ------------------------------------------------------------ crews (schedule crews + reserves)
     for cid, r in sorted(crew_by_id.items()):
         rest = r["Minimum Rest Hrs"]
-        if rest is not None and rest < 10:
-            issue("crew_rest", cid, f"Minimum rest listed as {rest} h, below the 10 h legal minimum for pilots",
+        if rest is not None and rest < LIMITS["pilot_min_rest_hours"]:
+            issue("crew_rest", cid, f"Minimum rest listed as {rest} h, below the {LIMITS['pilot_min_rest_hours']} h legal minimum for pilots",
                   "Kept as listed; the Guardrail must flag it")
         crews.append({
-            "id": cid, "kind": "full_crew", "pilots": 2, "flight_attendants": 4, "base": r["Crew Base"],
+            "id": cid, "kind": "full_crew", "pilots": CFG["crews"]["pilots"],
+            "flight_attendants": CFG["crews"]["flight_attendants"], "base": r["Crew Base"],
             "current_station": r["Current Location"], "is_reserve": False, "reserve_status": None, "available_from": None,
             "pilot_duty_left_min": round(r["Pilot Duty Hrs Remaining"] * 60),
             "fa_duty_left_min": round(r["FA Duty Hrs Remaining"] * 60), "min_rest_hours": rest,
@@ -237,7 +243,8 @@ def build() -> dict:
         mins = round(r["Duty Hrs Available"] * 60)
         crews.append({
             "id": r["Reserve ID"], "kind": "pilot_pair" if pilots else "fa_team",
-            "pilots": 2 if pilots else 0, "flight_attendants": 0 if pilots else 4, "base": r["Location"],
+            "pilots": CFG["crews"]["pilots"] if pilots else 0,
+            "flight_attendants": 0 if pilots else CFG["crews"]["flight_attendants"], "base": r["Location"],
             "current_station": r["Location"], "is_reserve": True, "reserve_status": r["Status"],
             "available_from": at(_hhmm(r["Available Time"])),
             "pilot_duty_left_min": mins if pilots else None, "fa_duty_left_min": None if pilots else mins,
@@ -357,15 +364,18 @@ def _sample_passengers(rng: random.Random, flights: list[dict], groups: list[dic
         while not ref or ref in used_refs:
             ref = "".join(rng.choices(string.ascii_uppercase + string.digits, k=6))
         used_refs.add(ref)
-        contacts = rng.choices([["app", "sms"], ["sms"], ["app", "email"], ["email"]], weights=[60, 20, 15, 5])[0]
-        loyalty = rng.choices(["none", "A-List", "A-List Preferred"], weights=[75, 18, 7])[0]
+        pc = CFG["passengers"]
+        contacts = rng.choices([c["channels"] for c in pc["contact_channels"]],
+                               weights=[c["weight"] for c in pc["contact_channels"]])[0]
+        loyalty = rng.choices(list(pc["loyalty"]), weights=list(pc["loyalty"].values()))[0]
         passengers.append({
             "id": pid, "full_name": name, "booking_ref": ref, "segment": seg, "final_destination": final,
             "lives_locally": local, "loyalty_tier": loyalty, "contact_channels": contacts, "source": "generated",
         })
         for i, f in enumerate(itinerary, 1):
             bookings.append({"passenger_id": pid, "seq": i, "flight_id": f["id"], "source": "generated"})
-        n_bags = 0 if seg == "child_alone" and rng.random() < 0.5 else rng.choices([0, 1, 2], weights=[30, 55, 15])[0]
+        n_bags = 0 if seg == "child_alone" and rng.random() < pc["child_alone_no_bag_chance"] \
+            else rng.choices(pc["bags"]["counts"], weights=pc["bags"]["weights"])[0]
         routing = [f["id"] for f in itinerary]
         my_bags = []
         for _ in range(n_bags):
@@ -387,7 +397,7 @@ def _sample_passengers(rng: random.Random, flights: list[dict], groups: list[dic
     # How many individuals to sample from each flight (A31's inbound gets extra so the story has people to follow)
     total_pax = sum(f["pax_total"] for f in flights)
     quota = {f["id"]: max(1, round(f["pax_total"] * SAMPLE_PASSENGERS / total_pax)) for f in flights}
-    quota["WN2031"] = 15
+    quota["WN2031"] = CFG["passengers"]["a31_sample"]
 
     for f in sorted(flights, key=lambda f: f["id"]):
         for _ in range(quota[f["id"]] - (1 if f["id"] == "WN2031" else 0)):
@@ -409,22 +419,22 @@ def _sample_passengers(rng: random.Random, flights: list[dict], groups: list[dic
                     continue
             take(f["id"], seg)
             if f["direction"] == "arrival":
-                add(name, seg, [f], "MCI", local=rng.random() < 0.7)
+                add(name, seg, [f], "MCI", local=rng.random() < CFG["passengers"]["lives_locally_chance"]["arrival"])
             else:
-                add(name, seg, [f], f["destination"], local=rng.random() < 0.8)
+                add(name, seg, [f], f["destination"], local=rng.random() < CFG["passengers"]["lives_locally_chance"]["departure"])
     return passengers, bookings, bags, views
 
 
 def _staff(rng: random.Random) -> list[dict]:
-    roles = [("gate_agent", 24), ("ramp", 40), ("wheelchair", 12), ("customer_service", 10), ("station_manager", 2)]
-    starts = [4 * 60, 4 * 60 + 30, 8 * 60, 12 * 60, 13 * 60]
+    roles = list(CFG["staff"]["roles"].items())
+    starts = [_hhmm(x) for x in CFG["staff"]["shift_starts"]]
     out = []
     for role, n in roles:
         for i in range(n):
             start = at(rng.choice(starts))
             out.append({
                 "id": f"{role[:3].upper()}{i + 1:03d}", "role": role, "station": "MCI",
-                "shift_start": start, "shift_end": start + timedelta(hours=8, minutes=30),
+                "shift_start": start, "shift_end": start + timedelta(minutes=CFG["staff"]["shift_length_min"]),
                 "last_break": start, "source": "generated",
             })
     return out

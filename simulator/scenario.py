@@ -90,7 +90,7 @@ def _a31_storm(seed, flights, cfg) -> Scenario:
     cause = cfg["causes"][s["cause"]]
     events: list[dict] = []
     _restriction_events(events, s["program"], start, announced, end)
-    r0, r1 = hhmm(s["ramp_closure"]["start"]), hhmm(s["ramp_closure"]["end"])
+    r0, r1 = hhmm(s["lightning_closure"]["start"]), hhmm(s["lightning_closure"]["end"])
     _event(events, r0, "ramp_closed", {"reason": "lightning", "expected_end": r1})
     _event(events, r1, "ramp_reopened", {"reason": "lightning cleared"})
     return Scenario("a31_storm", seed, s["cause"], s["program"], start, end, announced,
@@ -119,7 +119,7 @@ def _random(seed, flights, cfg) -> Scenario:
     announced = end
     if rng.random() < cause["extension_chance"]:
         extra = rng.randint(*cause["extension_min"])
-        if total - extra >= 30:
+        if total - extra >= cfg["scenario"]["min_stop_before_extension_min"]:
             announced = end - extra
 
     events: list[dict] = []
@@ -151,7 +151,7 @@ def _random(seed, flights, cfg) -> Scenario:
     if rng.random() < ie["chance"]:
         t = start + rng.randint(*ie["start_offset_min"])
         inbound_arr = {f["aircraft_id"]: f["sched_arr"] for f in flights if f["direction"] == "arrival"}
-        pool = [f for f in deps if t < f["sched_dep"] <= end + 120 and inbound_arr.get(f["aircraft_id"], -1) < t]
+        pool = [f for f in deps if t < f["sched_dep"] <= end + ie["window_after_stop_min"] and inbound_arr.get(f["aircraft_id"], -1) < t]
         if pool:
             f = rng.choice(pool)
             _event(events, t, "aircraft_inspection_needed",

@@ -25,6 +25,7 @@ class Writer:
     def flush(self, world, channels):
         ev, au = world.drain()
         with self.conn.cursor() as cur:
+            self._new_flights(cur, world)
             rows = []
             for e in ev:
                 eid = self.next_event_id
@@ -45,6 +46,24 @@ class Writer:
             self._state(cur, world)
             self._views(cur, channels)
         self.conn.commit()
+
+    def _new_flights(self, cur, world):
+        """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""
+        ids, world.new_flights = world.new_flights, []
+        if not ids:
+            return
+        from simulator.world import SEG_ORDER
+        cur.executemany(
+            "INSERT INTO flights (id, direction, schedule_no, origin, destination, sched_dep, sched_arr, est_dep, est_arr, "
+            "priority, status, pax_total, source, system_of_record, as_of) VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,'scheduled',0,"
+            "'simulator','Amadeus Altea (simulated)',%s)",
+            [(f["id"], f["direction"], f["origin"], f["destination"], at(f["sched_dep"]), at(f["sched_arr"]),
+              at(f["est_dep"]), at(f["est_arr"]), f["priority"], at(world.t))
+             for f in (world.flights[i] for i in ids)])
+        cur.executemany(
+            "INSERT INTO passenger_groups (flight_id, segment, count, rebooked, refunded, need_hotel, source, system_of_record, as_of) "
+            "VALUES (%s,%s,0,0,0,0,'simulator','Amadeus Altea (simulated)',%s)",
+            [(i, seg, at(world.t)) for i in ids for seg in SEG_ORDER])
 
     def _take(self, world, table):
         keys, world.dirty[table] = sorted(world.dirty[table]), set()
@@ -86,6 +105,10 @@ class Writer:
                 b = next(x for x in world.bookings[pid] if x["seq"] == seq)
                 rows.append((b["flight_id"], b["status"], _t(b["as_of"]), pid, seq))
             cur.executemany("UPDATE bookings SET flight_id=%s, status=%s, as_of=%s WHERE passenger_id=%s AND seq=%s", rows)
+        k = self._take(world, "passengers")
+        if k:
+            cur.executemany("UPDATE passengers SET overnight=%s, as_of=%s WHERE id=%s",
+                            [(p["overnight"], _t(world.t), p["id"]) for p in (world.passengers[i] for i in k)])
         k = self._take(world, "passenger_groups")
         if k:
             cur.executemany("UPDATE passenger_groups SET count=%s, rebooked=%s, as_of=%s WHERE flight_id=%s AND segment=%s",

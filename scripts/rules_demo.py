@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from backend.rules import load_rules
 from backend.rules.autonomy import autonomy_for
 from backend.rules.compensation import compensation_for
-from backend.rules.safety import decide
+from backend.rules.safety import decide, limits_for, screen
 from backend.settings import TZ
 
 
@@ -49,6 +49,21 @@ def main():
     for o in result["removed"]:
         print(f"  REMOVE  {o['option']} (rung {o['rung']}, {o['rung_name']}): {o['reasons'][0]}")
     print(f"  Who decides the diversion: {autonomy_for('divert_flight', r)['approver']}")
+
+    print("\nOTHER RULES, ONE EXAMPLE EACH")
+    kept, removed = screen([
+        {"id": "Child alone on a nonstop", "pax": {"child_alone": 1}, "plane_changes": 0, "child_alone_plan": True},
+        {"id": "Child alone on a connection via Denver", "pax": {"child_alone": 1}, "plane_changes": 1, "child_alone_plan": True},
+        {"id": "2 h 10 min on the tarmac, no food plan", "tarmac_min": 130},
+        {"id": "2 h 10 min on the tarmac, with food and water", "tarmac_min": 130, "food_water_plan": True},
+    ], r)
+    for o in kept:
+        print(f"  KEEP    {o['id']}")
+    for o in removed:
+        print(f"  REMOVE  {o['option']} (rung {o['rung']}, {o['rung_name']}): {o['reasons'][0]}")
+    bag = compensation_for({"cause": "weather", "bag_delivery_hours": 14, "bag_fee_paid": True}, r)
+    print(f"  Checked bag delivered 14 h after a domestic flight landed (limit {r['compensation']['bag_refund_hours_domestic']} h): "
+          + "; ".join(f"{i['item']} (${i['usd']}, {i['kind']})" for i in bag["items"]))
 
     print("\nWHAT MAYA IS OWED")
     for label, case in [("Storm (weather), 4 h late, takes the rebooking", {"cause": "weather", "delay_min": 240, "rebooking_accepted": True}),

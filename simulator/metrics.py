@@ -47,7 +47,8 @@ class Recorder:
     def finish(self, world, channels, until: int) -> dict:
         ph = world.ph
         delayed, cancelled, diverted, delays = [], [], [], []
-        for f in world.flights.values():
+        today = [f for f in world.flights.values() if not f.get("_next_day")]
+        for f in today:
             if f["status"] == "cancelled":
                 cancelled.append(f)
                 continue
@@ -69,7 +70,7 @@ class Recorder:
         if self.last_fixable_t is not None and self.fixable_now == 0:
             last_min = max(0, self.last_fixable_t - self.sc.end + 1)
         return {
-            "flights_total": len(world.flights),
+            "flights_total": len(today),
             "flights_delayed": len(delayed),
             "flights_cancelled": len(cancelled),
             "flights_diverted": len(diverted),
@@ -79,6 +80,11 @@ class Recorder:
             "passengers_rebooked": rebooked,
             "tracked_passengers": len(world.passengers),
             "tracked_passengers_stranded": stranded,
+            "passengers_stranded_overnight": world.overnight_pax,
+            "tracked_passengers_overnight": sum(1 for p in world.passengers.values() if p["overnight"]),
+            "tracked_overnight_who_live_locally": sum(1 for p in world.passengers.values()
+                                                      if p["overnight"] and p["lives_locally"]),
+            "next_day_flights_created": len(world.new_flights_all),
             "peak_passengers_disagreeing": self.peak_pax,
             "avg_passengers_disagreeing": round(self.sum_pax / max(1, self.minutes), 2),
             "avg_passengers_disagreeing_during_stop": round(self.sum_pax_incident / max(1, self.incident_minutes), 2),

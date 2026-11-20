@@ -10,6 +10,7 @@ from backend.database import connect
 from backend.seed.build import build
 from simulator.channels import count_disagreements
 from simulator.clock import hhmm
+from simulator.config import load_config
 from simulator.run import NotBuiltYet, run, simulate
 from tests.conftest import one
 
@@ -88,18 +89,126 @@ def test_a31_diverts_after_about_30_minutes_of_holding(data):
     assert status_at(r.world, "WN2031", hhmm("12:15")) == "diverted"
 
 
-def test_no_diverted_flight_reaches_its_alternate_below_the_fuel_floor():
-    from simulator.config import load_config
-    floor = load_config()["physics"]["diversion"]["fuel_floor_min"]
+def test_no_diverted_flight_reaches_its_alternate_below_the_fuel_floor(data):
+    floor = load_config()["limits"]["fuel_buffer_min"]
     seen = 0
     for seed in range(1, 21):
         for scenario in ("random", "a31_storm"):
-            for e in simulate(seed, scenario).world.events:
+            for e in sim(data, seed, scenario).world.events:
                 if e["type"] == "flight_diverted":
                     seen += 1
                     p = e["payload"]
                     assert p["fuel_minutes_extra"] - p["extra_flying_min"] >= floor, (seed, scenario, p)
     assert seen > 20                                          # the check really looked at diversions
+
+
+def test_a31_story_comes_from_knock_on_causes(data):
+    r = sim(data, 7, "a31_storm")
+    assert r.metrics["flights_cancelled"] >= 5
+    reasons = [e["payload"]["reason"] for e in r.world.events if e["type"] == "flight_cancelled"]
+    assert any(x.startswith("schedule thinning") for x in reasons)
+    assert "crew out of legal duty" in reasons
+    # A31's own fuel and diversion behaviour did not change
+    div = next(e for e in r.world.events if e["type"] == "flight_diverted" and e["payload"]["flight_id"] == "WN2031")
+    assert (div["t"], div["station"]) == (hhmm("12:15"), "STL")
+
+
+def test_maya_flight_cancelled_for_crew_hours_and_she_is_stranded_overnight(data):
+    r = sim(data, 7, "a31_storm")
+    w = r.world
+    f = w.flights["WN1033"]                                          # Maya's flight to Baltimore
+    assert f["status"] == "cancelled" and f["cancel_reason"] == "crew out of legal duty"
+    out = next(e for e in w.events if e["type"] == "crew_out_of_duty" and e["payload"]["flight_id"] == "WN1033")
+    assert out["payload"]["reserve_found"] is False and out["payload"]["duty_left_min"] < out["payload"]["needed_min"]
+    maya = w.passengers["PAX0001"]
+    assert maya["full_name"] == "Maya Torres" and maya["overnight"] is True
+    booking = w.bookings["PAX0001"][-1]
+    nxt = w.flights[booking["flight_id"]]
+    assert booking["status"] == "rebooked" and nxt["_next_day"] and nxt["destination"] == "BWI"
+    assert nxt["sched_dep"] >= 1440                                   # 7 Oct, next morning
+    event = next(e for e in w.events if e["type"] == "passenger_stranded_overnight" and e["payload"]["passenger_id"] == "PAX0001")
+    assert event["payload"]["lives_locally"] is False                 # recorded, nothing else decided (no hotel, no money)
+    assert w.truth["PAX0001"]["status"] == "overnight"
+
+
+def test_thinning_only_cancels_low_priority_flights_up_to_the_cap(data):
+    th = load_config()["baseline"]["thinning"]
+    for seed in (1, 4, 7):
+        r = sim(data, seed, "a31_storm")
+        thinned = [r.world.flights[i] for i in r.world.thinned]
+        assert thinned and all(f["priority"] in th["priorities"] for f in thinned)
+        assert all(f["status"] == "cancelled" for f in thinned)
+        window = [f for f in r.world.departures if r.scenario.start <= f["sched_dep"] <= r.scenario.end + th["window_after_min"]]
+        assert len(thinned) <= th["max_fraction_of_window"] * len(window)
+
+
+def test_thinning_does_nothing_for_a_short_stop(data):
+    cfg = load_config()
+    short = [r for r in (sim(data, seed, "random") for seed in range(1, 21))
+             if r.scenario.program == "ground_stop" and r.scenario.end - r.scenario.start < cfg["baseline"]["thinning"]["min_stop_min"]]
+    # (there may be none among these seeds; the rule is also checked directly)
+    assert all(not r.world.thinned for r in short)
+    assert cfg["baseline"]["thinning"]["min_stop_min"] == 60
+
+
+def test_reserve_crews_are_used_once_and_only_when_available(data):
+    r = sim(data, 7, "a31_storm")
+    used = [e["payload"]["reserve_id"] for e in r.world.events if e["type"] == "reserve_crew_assigned"]
+    assert used and len(used) == len(set(used))
+    usable = load_config()["baseline"]["crew"]["reserve_usable_status"]
+    for rid in used:
+        reserve = r.world.crews[rid]
+        assert reserve["reserve_status"] == "Assigned"
+    seed_status = {c["id"]: c["reserve_status"] for c in data["crews"] if c.get("is_reserve")}
+    assert all(seed_status[rid] in usable for rid in used)
+
+
+def test_a_diverted_aircraft_that_cannot_get_back_in_time_cancels_its_next_flight(data):
+    found = False
+    for seed in range(1, 21):
+        for e in sim(data, seed, "random").world.events:
+            if e["type"] == "flight_cancelled" and e["payload"]["reason"].startswith("aircraft out of position after diverting"):
+                found = True
+    assert found
+
+
+def test_next_day_flights_are_on_7_oct_and_group_counts_still_add_up(data):
+    r = sim(data, 7, "a31_storm")
+    w = r.world
+    nd = [f for f in w.flights.values() if f.get("_next_day")]
+    assert nd and all(f["sched_dep"] >= 1440 and f["id"].startswith("WN3") for f in nd)
+    for f in w.flights.values():
+        assert sum(g["count"] for (fid, _), g in w.groups.items() if fid == f["id"]) == f["pax_total"]
+    assert r.metrics["passengers_stranded_overnight"] > 0
+    assert r.metrics["tracked_passengers_overnight"] == sum(p["overnight"] for p in w.passengers.values())
+
+
+def test_rebooking_never_fills_a_plane_beyond_the_load_factor(data):
+    r = sim(data, 7, "a31_storm")
+    cap = load_config()["baseline"]["max_load_factor"]
+    for f in r.world.flights.values():
+        if f["_orig_pax"] < int(cap * (f.get("_seats") or (r.world.aircraft[f["aircraft_id"]]["seats"] if f["aircraft_id"] else 0))):
+            seats = f.get("_seats") or r.world.aircraft[f["aircraft_id"]]["seats"]
+            assert f["pax_total"] <= int(cap * seats)
+
+
+def test_realism_cancellations_are_5_to_25_percent_in_long_stops(data):
+    """Across seeds 1-20, every storm / ground stop of 2+ hours cancels a believable share of the flights at MCI."""
+    rl = load_config()["realism"]
+    checked = []
+    for seed in range(1, 21):
+        for scenario in ("random", "a31_storm"):
+            r = sim(data, seed, scenario)
+            sc = r.scenario
+            if sc.program != "ground_stop" or sc.end - sc.start < rl["min_stop_min"]:
+                continue
+            lo, hi = sc.start, sc.end + rl["window_after_min"]
+            flights = [f for f in r.world.departures if lo <= f["sched_dep"] <= hi] + \
+                      [f for f in r.world.arrivals if lo <= f["sched_arr"] <= hi]
+            pct = 100 * sum(f["status"] == "cancelled" for f in flights) / len(flights)
+            checked.append((scenario, seed, round(pct, 1)))
+            assert rl["min_cancelled_pct"] <= pct <= rl["max_cancelled_pct"], (scenario, seed, pct)
+    assert len(checked) >= 25
 
 
 def test_a31_ramp_closes_inside_stop_then_reopens(data):
@@ -150,11 +259,30 @@ def test_a_copy_always_arrives_after_the_change(data):
 
 # ------------------------------------------------------------------ rules and simulator agree on fuel
 
-def test_fuel_floor_in_simulator_equals_fuel_buffer_in_rules():
+def _keys(node, out=None):
+    out = set() if out is None else out
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out.add(str(k))
+            _keys(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _keys(v, out)
+    return out
+
+
+def test_simulator_yaml_does_not_redefine_numbers_that_rules_yaml_owns():
     import yaml
     rules = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))
     simulator = yaml.safe_load((ROOT / "config" / "simulator.yaml").read_text(encoding="utf-8"))
-    assert simulator["physics"]["diversion"]["fuel_floor_min"] == rules["limits"]["fuel_buffer_min"]
+    shared = (_keys(rules) & _keys(simulator)) - {"version"}
+    assert not shared, f"simulator.yaml defines keys that rules.yaml already owns: {sorted(shared)}"
+
+
+def test_simulator_reads_its_legal_numbers_from_rules_yaml():
+    import yaml
+    rules = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))
+    assert load_config()["limits"] == rules["limits"]
 
 
 # ------------------------------------------------------------------ the simulator does not decide
@@ -184,13 +312,13 @@ def test_simulator_never_touches_rules():
 
 @pytest.fixture(scope="module")
 def saved():
-    """Run a random day (seed 4: a storm with many cancellations) into the database, noting events after each batch."""
+    """Run the class story into the database, noting what the events looked like after each batch."""
     snaps = []
 
     def on_flush(conn):
         snaps.append(conn.execute("SELECT id, md5(payload::text || type) FROM events ORDER BY id").fetchall())
 
-    res = run(4, "random", write=True, on_flush=on_flush)
+    res = run(7, "a31_storm", write=True, on_flush=on_flush)
     with connect() as conn, conn.cursor() as cur:
         yield res, snaps, cur
 
@@ -242,3 +370,14 @@ def test_truth_in_database_matches_the_run(saved):
     db = dict(cur.execute("SELECT id, status FROM flights").fetchall())
     assert db == {f["id"]: f["status"] for f in res.world.flights.values()}
     assert one(cur, "SELECT ramp_open FROM stations WHERE code='MCI'") is True
+
+
+def test_overnight_passengers_and_next_day_flights_are_saved(saved):
+    res, _, cur = saved
+    assert one(cur, "SELECT overnight FROM passengers WHERE id='PAX0001'") is True
+    assert one(cur, "SELECT count(*) FROM passengers WHERE overnight") == res.metrics["tracked_passengers_overnight"]
+    assert one(cur, "SELECT count(*) FROM flights f WHERE substr(f.id,1,3)='WN3'") == res.metrics["next_day_flights_created"] > 0
+    assert one(cur, "SELECT count(*) FROM flights f WHERE substr(f.id,1,3)='WN3' AND sched_dep::date = DATE '2026-10-07'") \
+        == res.metrics["next_day_flights_created"]
+    assert one(cur, """SELECT count(*) FROM bookings b JOIN flights f ON f.id=b.flight_id
+                      WHERE substr(f.id,1,3)='WN3' AND b.passenger_id='PAX0001'""") == 1

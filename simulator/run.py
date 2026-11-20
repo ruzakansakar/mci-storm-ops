@@ -113,7 +113,9 @@ def summary(res: Result, seconds: float | None = None) -> str:
         f"  Flights    : {m['flights_total']} total | {m['flights_delayed']} delayed (avg {m['avg_delay_min']} min, "
         f"max {m['max_delay_min']}) | {m['flights_cancelled']} cancelled | {m['flights_diverted']} diverted",
         f"  Passengers : {m['passengers_disrupted']} disrupted | {m['passengers_rebooked']} rebooked | "
-        f"{m['tracked_passengers_stranded']} of {m['tracked_passengers']} tracked with no seat found",
+        f"{m['passengers_stranded_overnight']} stranded overnight on {m['next_day_flights_created']} next-day flights "
+        f"({m['tracked_passengers_overnight']} of {m['tracked_passengers']} tracked, {m['tracked_overnight_who_live_locally']} of them local) | "
+        f"{m['tracked_passengers_stranded']} tracked with no seat at all",
         f"  Tarmac     : longest wait {m['max_tarmac_min']} min | peak {m['peak_people_in_terminal']} people in the terminal",
         f"  Special    : {m['wheelchair_passengers_disrupted']} wheelchair, {m['child_alone_passengers_disrupted']} children alone disrupted",
         f"  Screens    : up to {m['peak_passengers_disagreeing']} of {m['tracked_passengers']} tracked passengers saw wrong info "
