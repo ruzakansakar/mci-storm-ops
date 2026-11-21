@@ -15,6 +15,6 @@ def autonomy_for(action: str, rules: dict, safety_rung: int | None = None, rooms
         a = {"level": "needs_approval", "approver": "station_manager"}
         reason = f"touches safety rung {safety_rung}, so it can't be automatic"
     if a["level"] == "auto" and rooms is not None and "max_rooms" in a and rooms > a["max_rooms"]:
-        a = {"level": "needs_approval", "approver": "customer_service_supervisor"}
+        a = {"level": "needs_approval", "approver": a.get("over_limit_approver", "customer_service_supervisor")}
         reason = f"{rooms} rooms is above the automatic limit"
     return {"action": action, "level": a["level"], "approver": a.get("approver"), "reason": reason}

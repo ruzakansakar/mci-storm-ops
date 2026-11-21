@@ -47,6 +47,8 @@ def check_entries(entries: list[dict], checkers: dict | None = None) -> None:
             raise RulesError(f"rule '{who}': source must be one of {sorted(SOURCES)}")
         if not isinstance(e["enforced"], bool):
             raise RulesError(f"rule '{who}': enforced must be true or false")
+        if e.get("override_by") is not None and (e.get("file") != "law.yaml" or not isinstance(e["override_by"], list)):
+            raise RulesError(f"rule '{who}': only a law rule can name override_by, and it must be a list of human roles")
         if e["enforced"] and e.get("checked_by") not in checkers:
             raise RulesError(f"rule '{who}' is enforced but has no function named '{e.get('checked_by')}'")
 

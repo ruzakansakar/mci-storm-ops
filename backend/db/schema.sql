@@ -73,6 +73,8 @@ CREATE TABLE crews (
     deadhead_planned    boolean,
     restrictions        text[],
     fatigue_reported    boolean NOT NULL DEFAULT false,
+    availability        text NOT NULL DEFAULT 'on_duty'
+                        CHECK (availability IN ('on_duty', 'reserve', 'sick', 'fatigued', 'on_leave')),  -- agents only read this
     source              text NOT NULL,
     system_of_record    text NOT NULL,
     as_of               timestamptz NOT NULL
@@ -309,10 +311,12 @@ CREATE TABLE recommendations (
     deadline         timestamptz,
     rank             int,
     safety_rung      int,
-    guardrail_ok     boolean,
-    guardrail_notes  text[],
+    decision_ids     text[],                             -- which decisions in config/decisions.yaml it answers
+    rule_check_ok    boolean,                            -- the orchestrator's rule check (backend/rules/check.py); NULL = not checked yet
+    rule_check_notes text[],
+    rule_ids         text[],                             -- the rules that blocked it (ids in config/rules/)
     data_as_of       timestamptz,
-    status           text NOT NULL DEFAULT 'pending',    -- pending | approved | rejected | expired | done_automatically | blocked_by_guardrail
+    status           text NOT NULL DEFAULT 'pending',    -- pending | approved | rejected | expired | done_automatically | blocked_by_rule_check
     run_id           text,
     created_at       timestamptz NOT NULL,
     updated_at       timestamptz NOT NULL DEFAULT now()

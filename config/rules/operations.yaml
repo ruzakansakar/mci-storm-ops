@@ -179,3 +179,158 @@ rules:
     citation: "Southwest has not been confirmed to publish this; common unaccompanied-minor practice. Class-project choice."
     enforced: true
     checked_by: child_alone_has_plan
+
+  # ------------------------------------------------------------------ THE ORCHESTRATOR'S RULE CHECK (backend/rules/check.py)
+  - id: missing_or_stale_data_blocks
+    path: rule_check.missing_or_stale_data_blocks
+    description: A proposal whose facts are missing, unknown, or older than its agent's allowed data age is blocked, never passed.
+    value: true
+    source: assumption
+    citation: "Class-project choice (shared AI guardrail)"
+    enforced: true
+    checked_by: check
+
+  - id: proposal_conflicts_block
+    path: rule_check.conflicts_block
+    description: Two pending proposals that can't both happen (delay and cancel the same flight; rebook onto a flight another proposal cancels, or that is full) are blocked and sent to a human.
+    value: true
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: check
+
+  - id: message_matches_truth
+    path: rule_check.message_matches_truth
+    description: A message to passengers must match the truth and every approved decision.
+    value: true
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: check
+
+  - id: offer_needs_approved_decision
+    path: rule_check.offer_needs_approved_decision
+    description: Nobody is promised a hotel, money, a rebooking or a time unless an approved decision backs it.
+    value: true
+    source: assumption
+    citation: "Class-project choice (shared AI guardrail)"
+    enforced: true
+    checked_by: check
+
+  - id: no_double_assignment
+    path: rule_check.no_double_assignment
+    description: The same crew or the same aircraft can't be put on two flights by two proposals.
+    value: true
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: check
+
+  - id: override_only_by_named_human
+    path: rule_check.override_only_by_named_human
+    description: >-
+      A block can be lifted only by a named person in the role a law rule names (override_by), only for the exception that law allows,
+      and the person's role and reason are written to the audit log. The orchestrator can never override.
+    value: true
+    source: assumption
+    citation: "Class-project choice; the exceptions themselves come from 14 CFR 259.4(c)(3) and (c)(4)"
+    enforced: true
+    checked_by: human_override
+
+  - id: crew_availability
+    path: limits_crew.availability_usable
+    description: Only crews marked on_duty or reserve can be assigned. Sick, fatigued or on-leave crews are never assigned; agents only read this, they never plan leave.
+    value: [on_duty, reserve]
+    source: assumption
+    citation: "Class-project choice; a fatigue report also stops a pilot by law (14 CFR 117.5)"
+    enforced: true
+    checked_by: crew_available
+
+  # ------------------------------------------------------------------ ADDED FOR THE DECISION CATALOG (assumptions, not yet enforced)
+  - id: incident_cost_cap_usd
+    path: money.incident_cost_cap_usd
+    description: When the running cost of an incident passes these amounts, the orchestrator escalates to the named role.
+    value: {station_manager: 25000, director_of_operations: 100000}
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: human_answer_deadline_min
+    path: rule_check.human_answer_deadline_min
+    description: If the named human doesn't answer within this many minutes (or before the decision's own deadline, if sooner), the orchestrator escalates to the next role.
+    value: 10
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: seat_priority_order
+    path: rebooking.seat_priority_order
+    description: Who gets scarce seats first. Children flying alone, then medical and wheelchair passengers, then the last connection of the day, then families, then everyone else in booking order.
+    value: [child_alone, medical_or_wheelchair, last_connection_of_day, families, booking_order]
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: loyalty_priority_fairness
+    path: rebooking.loyalty_only_breaks_ties
+    description: Loyalty status may only break a tie between otherwise equal passengers; it never puts anyone ahead of a vulnerable passenger.
+    value: true
+    source: assumption
+    citation: "Class-project choice (fairness check)"
+    enforced: false
+
+  - id: keep_families_together
+    path: rebooking.keep_families_together
+    description: People on the same booking are rebooked together unless they ask otherwise.
+    value: true
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: status_update_interval_min
+    path: messages.status_update_interval_min
+    description: After the first notice, passengers (on board and in the terminal) get an update at least this often while the stop lasts.
+    value: 30
+    source: assumption
+    citation: "Class-project choice; the law only requires the first one at 30 minutes on the tarmac (14 CFR 259.4(c)(6))"
+    enforced: false
+
+  - id: terminal_crowding_alert_share
+    path: airports.terminal_crowding_alert_share
+    description: Ask the airport for more space when the terminal is this full.
+    value: 0.85
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: send_locals_home
+    path: hotels.send_locals_home
+    description: Passengers who live in the Kansas City area are offered transport home instead of a hotel.
+    value: true
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: terminal_care_after_min
+    path: terminal.care_after_min
+    description: After this long waiting in the terminal, offer water, snacks, baby supplies, relief areas for service animals and quiet seating for medical needs.
+    value: 120
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: poc_battery_check
+    path: terminal.poc_battery_check
+    description: Passengers using a portable oxygen concentrator are asked about battery time when a delay passes 1 hour, and offered power.
+    value: {after_min: 60}
+    source: assumption
+    citation: "Class-project choice; the oxygen concentrator rules are in 14 CFR 382.133 (not read)"
+    enforced: false
+
+  - id: travel_waiver_after_min
+    path: money.travel_waiver_after_min
+    description: When a stop is expected to last this long, offer a free same-day change for flights in the next 24 hours.
+    value: 120
+    source: assumption
+    citation: "Class-project choice; Southwest's actual waiver practice was not checked"
+    enforced: false

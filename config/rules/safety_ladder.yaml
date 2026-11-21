@@ -36,7 +36,7 @@ rules:
       rung: 4
       name: legal
       kind: filter
-      checks: [crew_duty_left, crew_rest, pilot_fdp_limit, pilot_cumulative_limits, pilot_not_fatigued, fa_duty_limit, fa_rest,
+      checks: [crew_duty_left, crew_rest, crew_available, pilot_fdp_limit, pilot_cumulative_limits, pilot_not_fatigued, fa_duty_limit, fa_rest,
                ground_staff_limits, child_alone_international, child_alone_no_connection, child_alone_age]
     source: law
     citation: "14 CFR part 117 and 121.467 (crew); Southwest unaccompanied minor policy (children)"

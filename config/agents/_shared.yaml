@@ -1,0 +1,71 @@
+# SHARED AI GUARDRAILS: rules every agent follows (orchestrator + the five agents).
+# This file is not a contract; the contract loader skips files whose name starts with "_".
+# enforced_in: where the rule is enforced in code.  checked_by: the exact function (module:name), tested in tests/test_shared_guardrails.py.
+guardrails:
+  - id: G01_source_and_time
+    rule: Never state a fact without its source and its as_of time.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.context:AgentContext.propose
+    how: Every output must list sources, each with a source name and an ISO as_of time; anything else is refused.
+
+  - id: G02_no_stale_data
+    rule: Never act on data older than the contract's max_data_age_sec.
+    enforced_in: AgentContext and orchestrator rule check
+    checked_by: backend.contracts.context:AgentContext.check_fresh
+    how: AgentContext refuses to save a proposal built on old data; the rule check also blocks one whose data_as_of is too old.
+
+  - id: G03_no_human_only_decisions
+    rule: Never decide anything marked human_only, and never make a safety exception.
+    enforced_in: AgentContext and orchestrator rule check
+    checked_by: backend.rules.check:check
+    how: >-
+      A contract can't list a human-only action, AgentContext refuses one at run time (the agent can only ask_human with the facts),
+      and the rule check blocks any proposal for a human-only action or one that relies on a tarmac safety exception.
+
+  - id: G04_no_unapproved_promises
+    rule: Never promise compensation, a rebooking or a time that a human hasn't approved.
+    enforced_in: orchestrator rule check
+    checked_by: backend.rules.check:check
+    how: A message or offer that promises something must name the approved decision that backs it, or it is blocked.
+
+  - id: G05_personal_data
+    rule: Only see passenger personal data if the contract allows it, and only for the passengers the agent is working on.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.context:AgentContext.read
+    how: Names and contacts are refused to the other agents; passenger_care and communication must first say which passengers they are working on (working_on), and may only read those.
+
+  - id: G06_schema
+    rule: Every output matches its schema; anything else is rejected.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.jsonschema_lite:validate
+    how: AgentContext.propose checks the output against the contract's JSON schema before saving it.
+
+  - id: G07_hand_to_a_named_human
+    rule: When unsure, or when two rules conflict, hand it to the named human with the reason.
+    enforced_in: orchestrator rule check
+    checked_by: backend.rules.check:check
+    how: Every block names the human role it goes to and why; an agent that is unsure uses AgentContext.ask_human with the decision id.
+
+  - id: G08_decision_ids
+    rule: Every recommendation names the decision id(s) from config/decisions.yaml that it answers.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.context:AgentContext.propose
+    how: Unknown decision ids, or decisions another agent is responsible for, are refused.
+
+  - id: G09_rule_check_first
+    rule: Every proposal goes through the orchestrator's rule check before any human sees it; an agent's own check never counts as final.
+    enforced_in: orchestrator rule check
+    checked_by: backend.contracts.review:shown_to_humans
+    how: Proposals are saved unchecked (rule_check_ok is empty, whatever the agent says about its own checks); humans only see those the rule check passed.
+
+  - id: G10_ai_text_checked
+    rule: If a language model is used, its text is checked against the facts before anyone sees it; if the check fails, the template is used.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.context:AgentContext.ai_text
+    how: Every flight number, time and amount in the model's text must appear in the facts; only situation and communication may use a model at all.
+
+  - id: G11_audit_everything
+    rule: Everything is written to the audit log.
+    enforced_in: AgentContext
+    checked_by: backend.contracts.context:AgentContext.write
+    how: Every write an agent makes (proposals, events, rule-check results) also writes an audit_log row, and so does every contract violation and override.

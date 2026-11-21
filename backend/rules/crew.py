@@ -86,6 +86,15 @@ def pilot_cumulative_limits(o, lim):
                 else "time off duty in the last 168 h is unknown"
 
 
+def crew_available(o, lim):
+    """Only crews marked on_duty or reserve can be assigned (sick, fatigued and on-leave crews never are)."""
+    c = o.get("crew")
+    if not isinstance(c, dict) or "availability" not in c:
+        return None
+    if c["availability"] not in lim["limits_crew"]["availability_usable"]:
+        return f"crew is marked '{c['availability']}' and can't be assigned" if c["availability"] else "crew availability is unknown"
+
+
 def pilot_not_fatigued(o, lim):
     """A pilot who reported being too fatigued cannot be scheduled or kept on duty (14 CFR 117.5)."""
     c = o.get("crew")

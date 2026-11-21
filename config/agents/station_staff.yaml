@@ -1,63 +1,202 @@
-# CONTRACT: station_staff. Gates, ramp, wheelchair and customer service staff at the airport.
+# CONTRACT: station_staff. Ground staff (gate, ramp, wheelchair, customer service), gates, ramp and deplaning help.
 agent: station_staff
-purpose: "Makes sure the people on the ground can cope: enough staff in the right places, breaks and shift limits respected, and help ready for passengers who need it."
-
+purpose: 'Makes sure the people on the ground can cope: enough staff in the right places, breaks and shift limits respected, and help ready for
+  passengers who need it.'
 reads:
-  staff: [id, role, station, shift_start, shift_end, last_break, on_duty, as_of]
-  stations: [code, name, gates, wheelchair_staff, has_customs, terminal_capacity, people_in_terminal, ramp_open, as_of]
-  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, status, tarmac_since, diverted_to, pax_total, as_of]
-  passenger_groups: [flight_id, segment, count, as_of]
-  incidents: [id, kind, status, expected_end_min, expected_end_max, run_id]
-  events: [id, occurred_at, type, station, payload, run_id]
-
+  staff:
+  - id
+  - role
+  - station
+  - shift_start
+  - shift_end
+  - last_break
+  - on_duty
+  - as_of
+  stations:
+  - code
+  - name
+  - gates
+  - wheelchair_staff
+  - has_customs
+  - terminal_capacity
+  - people_in_terminal
+  - ramp_open
+  - as_of
+  flights:
+  - id
+  - direction
+  - origin
+  - destination
+  - sched_dep
+  - sched_arr
+  - est_dep
+  - est_arr
+  - status
+  - tarmac_since
+  - diverted_to
+  - pax_total
+  - as_of
+  passenger_groups:
+  - flight_id
+  - segment
+  - count
+  - as_of
+  incidents:
+  - id
+  - kind
+  - status
+  - expected_end_min
+  - expected_end_max
+  - run_id
+  events:
+  - id
+  - occurred_at
+  - type
+  - station
+  - payload
+  - run_id
 writes:
-  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id, created_at]}
-  events: {mode: insert, types: [staffing_gap_found, break_due, wheelchair_wait_warning, deplaning_options_drafted]}
-  audit_log: {mode: insert}
-
-actions: [request_wheelchair_help, call_in_ground_staff, start_deplaning]
-
+  recommendations:
+    mode: insert
+    columns:
+    - incident_id
+    - agent
+    - title
+    - why
+    - options
+    - autonomy
+    - approver_role
+    - deadline
+    - rank
+    - safety_rung
+    - data_as_of
+    - status
+    - run_id
+    - created_at
+    - decision_ids
+  events:
+    mode: insert
+    types:
+    - staffing_gap_found
+    - break_due
+    - wheelchair_wait_warning
+    - deplaning_options_drafted
+    - human_decision_needed
+  audit_log:
+    mode: insert
+actions:
+- adjust_checkin_cutoffs
+- arrange_diversion_deplaning
+- arrange_food_water
+- assign_gates
+- call_in_ground_staff
+- contact_partner
+- flag_ramp_service_impact
+- hold_bags
+- move_gate_agents
+- request_airport_resources
+- request_rescreening
+- request_service_vehicle
+- request_wheelchair_help
+- set_bag_priority
+- start_deplaning
+- supervise_child_alone
 never:
-  - Never propose a shift longer than the shift limit, a stretch without a break, a short gap between shifts, or too many days in a row.
-  - Never leave a wheelchair passenger waiting alone for more than 30 minutes without raising it.
-  - Never decide to keep people on board past the tarmac limit. It lists blockers; the captain decides.
-  - Never close the ramp or reopen it. That is human only.
-  - Never edit staff, station or flight records.
-  - Never see passenger names or contact details; it counts passengers by group.
-
+- Never propose a shift longer than the shift limit, a stretch without a break, a short gap between shifts, or too many days in a row.
+- Never leave a wheelchair passenger waiting alone for more than 30 minutes without raising it.
+- Never decide to keep people on board past the tarmac limit. It lists blockers; the captain decides.
+- Never close the ramp or reopen it. That is human only.
+- Never edit staff, station or flight records.
+- Never see passenger names or contact details; it counts passengers by group.
 stores:
   temporary:
-    what: "Who is where this hour, and the waits it is tracking."
-    kept_until: "the incident is closed, then deleted"
+    what: Who is where this hour, and the waits it is tracking.
+    kept_until: the incident is closed, then deleted
   permanent:
-    - {table: recommendations, kept: "for the life of the project"}
-    - {table: events, kept: "for the life of the project, append only"}
-    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
-
+  - table: recommendations
+    kept: for the life of the project
+  - table: events
+    kept: for the life of the project, append only
+  - table: audit_log
+    kept: for the life of the project, never edited or deleted
 output:
   type: object
   additionalProperties: false
-  required: [title, why, data_as_of, options, station, staff_short, wheelchair_waiting_over_limit, breaks_due]
+  required:
+  - title
+  - why
+  - data_as_of
+  - options
+  - sources
+  - decision_ids
+  - station
+  - staff_short
+  - wheelchair_waiting_over_limit
+  - breaks_due
   properties:
-    title: {type: string, minLength: 1}
-    why: {type: string, minLength: 1}
-    data_as_of: {type: string}
-    options: {type: array, items: {type: object}}
-    station: {type: string, minLength: 3, maxLength: 3}
-    staff_short: {type: object}
-    wheelchair_waiting_over_limit: {type: integer, minimum: 0}
-    breaks_due: {type: array, items: {type: string}}
-
+    title:
+      type: string
+      minLength: 1
+    why:
+      type: string
+      minLength: 1
+    data_as_of:
+      type: string
+    options:
+      type: array
+      items:
+        type: object
+    station:
+      type: string
+      minLength: 3
+      maxLength: 3
+    staff_short:
+      type: object
+    wheelchair_waiting_over_limit:
+      type: integer
+      minimum: 0
+    breaks_due:
+      type: array
+      items:
+        type: string
+    decision_ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 3
+    sources:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - source
+        - as_of
+        properties:
+          fact:
+            type: string
+          source:
+            type: string
+            minLength: 1
+          as_of:
+            type: string
+            minLength: 10
 max_data_age_sec: 90
 time_budget_sec: 20
 escalate_when:
-  - Fewer wheelchair staff than wheelchair passengers waiting.
-  - A plane has been on the tarmac for 90 minutes with something blocking deplaning.
-  - No staff can be found without breaking a shift or break limit.
-
-ai_allowed: {allowed: false, for: [], fallback: "not needed, it uses no language model"}
-
+- Fewer wheelchair staff than wheelchair passengers waiting.
+- A plane has been on the tarmac for 90 minutes with something blocking deplaning.
+- No staff can be found without breaking a shift or break limit.
+ai_allowed:
+  allowed: false
+  for: []
+  fallback: not needed, it uses no language model
 success:
-  - {metric: "wheelchair passengers left alone more than 30 minutes", target: "0"}
-  - {metric: "staff shifts that break a limit", target: "0"}
-  - {metric: "minutes to get help to a gate after a request", target: "10 or fewer"}
+- metric: wheelchair passengers left alone more than 30 minutes
+  target: '0'
+- metric: staff shifts that break a limit
+  target: '0'
+- metric: minutes to get help to a gate after a request
+  target: 10 or fewer

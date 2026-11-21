@@ -47,6 +47,8 @@ def load(conn, data: dict) -> dict:
                 sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})"
                 cur.executemany(sql, [[r[c] for c in cols] for r in rows])
             counts[table] = len(rows)
+            if table == "crews":       # every crew starts on duty; reserve crews start as reserve (sick / fatigued / on_leave come later)
+                cur.execute("UPDATE crews SET availability = 'reserve' WHERE is_reserve")
         systems = sorted(set(SOR.values()))
         cur.executemany(
             "INSERT INTO system_health (system, status, last_heartbeat, data_age_sec, note) "

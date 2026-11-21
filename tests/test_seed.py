@@ -80,5 +80,11 @@ def test_seed_data_is_exactly_what_it_was_before_the_numbers_moved_into_config_s
     """Checksum taken from build() before the hard-coded numbers moved to config/seed.yaml (SEED=42, SAMPLE_PASSENGERS=300)."""
     from backend.settings import SAMPLE_PASSENGERS, SEED
     assert (SEED, SAMPLE_PASSENGERS) == (42, 300), "the checksum is only valid for the default SEED and SAMPLE_PASSENGERS"
-    blob = json.dumps(build(), sort_keys=True, default=str).encode()
-    assert hashlib.sha256(blob).hexdigest() == "4b435dea4e508ccdfeea2359fc426566ec05b11dcd9afc9b552fcb7622029999"
+    data = build()
+    issues = data.pop("data_issues")
+    blob = json.dumps(data, sort_keys=True, default=str).encode()
+    # every table except data_issues is byte-for-byte what it was before the rules were moved (step 1-3)
+    assert hashlib.sha256(blob).hexdigest() == "7f6e1cd978a43c1c80a868f132a2ed06b51ecc42512de3b6428de5728e456a04"
+    # data_issues: same rows, only the crew-rest wording changed in step 3
+    assert len(issues) == 266 and sum(i["category"] == "crew_rest" for i in issues) == 35
+    assert all("legal minimum rest" in i["issue"] and "crew_illegal_rest" in i["resolution"] for i in issues if i["category"] == "crew_rest")

@@ -118,6 +118,9 @@ def summary(res: Result, seconds: float | None = None) -> str:
         f"{m['tracked_passengers_stranded']} tracked with no seat at all",
         f"  Tarmac     : longest wait {m['max_tarmac_min']} min | peak {m['peak_people_in_terminal']} people in the terminal",
         f"  Special    : {m['wheelchair_passengers_disrupted']} wheelchair, {m['child_alone_passengers_disrupted']} children alone disrupted",
+        f"  Crews      : {m['crews_illegal_rest']} flying with rest below the legal minimum (flagged at 05:00) | "
+        f"{m['crews_short_for_plan']} short only for our plan (not illegal) | {m['pilot_duty_extensions']} pilot duty extension(s) "
+        f"(decided by the captain and crew scheduling)",
         f"  Screens    : up to {m['peak_passengers_disagreeing']} of {m['tracked_passengers']} tracked passengers saw wrong info "
         f"(avg {m['avg_passengers_disagreeing']}); {m['passenger_minutes_of_disagreement']} passenger-minutes wrong",
         "  Recovery   : " + (f"all screens (except lost messages) first agreed {agree} min after the stop ended"

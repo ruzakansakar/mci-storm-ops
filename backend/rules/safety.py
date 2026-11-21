@@ -171,14 +171,14 @@ CHECKS = {f.__name__: f for f in [
     station_has_gate, customs_for_international, crew_duty_left, crew_rest, child_alone_international,
     child_alone_no_connection, child_alone_age, wheelchair_help_available, child_alone_has_plan,
     child_alone_not_to_hotel_alone,
-    crew.pilot_fdp_limit, crew.pilot_cumulative_limits, crew.pilot_not_fatigued, crew.fa_duty_limit, crew.fa_rest,
+    crew.crew_available, crew.pilot_fdp_limit, crew.pilot_cumulative_limits, crew.pilot_not_fatigued, crew.fa_duty_limit, crew.fa_rest,
     crew.ground_staff_limits,
     airport.airport_curfew, airport.tsa_rescreening, airport.station_staffed, airport.wheelchair_unattended,
     airport.tarmac_exception_needs_human, airport.lightning_strike_inspection,
 ]}
 
 # The parts of the rules that the checks read, next to the plain numbers in `limits`.
-SECTIONS = ("child_alone", "pilot", "fa", "ground_staff", "tarmac", "lightning", "airports", "wheelchair")
+SECTIONS = ("limits_crew", "child_alone", "pilot", "fa", "ground_staff", "tarmac", "lightning", "airports", "wheelchair")
 
 
 def limits_for(rules: dict) -> dict:

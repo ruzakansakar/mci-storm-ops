@@ -171,7 +171,7 @@ $('incident').innerHTML = I ? `<b>${esc(I.title)}</b> (${esc(I.kind)}, ${I.contr
   (${I.actual_end-I.opened} min). Status: ${esc(I.status)}.` : 'No incident was recorded.';
 
 // ---------- metrics
-const LABEL = {flights_total:'Flights in the day',flights_delayed:'Flights delayed (30+ min)',flights_cancelled:'Flights cancelled',flights_diverted:'Flights diverted',
+const LABEL = {flights_total:'Flights in the day',flights_delayed:'Flights delayed (30+ min)',flights_cancelled:'Flights cancelled',crews_illegal_rest:'Crews flying with rest below the legal minimum (flagged at 05:00)',crews_short_for_plan:'Crews short only for our planning estimate (not illegal)',pilot_duty_extensions:'Pilot duty extensions (human decision: captain + crew scheduling)',flights_diverted:'Flights diverted',
  avg_delay_min:'Average delay of delayed flights (min)',max_delay_min:'Longest delay (min)',passengers_disrupted:'Passengers disrupted (counting each flight)',
  passengers_rebooked:'Passengers moved to another flight',tracked_passengers:'Sample passengers we follow one by one',tracked_passengers_stranded:'Sample passengers with no seat at all (not even tomorrow)',
  passengers_stranded_overnight:'Passengers stranded overnight (rebooked for 7 Oct)',tracked_passengers_overnight:'Sample passengers stranded overnight',

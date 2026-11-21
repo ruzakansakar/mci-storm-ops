@@ -9,7 +9,11 @@ from backend.contracts.jsonschema_lite import check_schema
 from backend.settings import ROOT, SCHEMA
 
 AGENTS_DIR = ROOT / "config" / "agents"
-AGENT_NAMES = ("orchestrator", "situation", "network_recovery", "station_staff", "passenger_care", "communication", "guardrail")
+# The agreed setup: the orchestrator (plain code, no AI) + five agents. There is no guardrail agent and no separate crew agent:
+# rule checking is plain code in backend/rules/check.py, run by the orchestrator.
+AGENT_NAMES = ("orchestrator", "situation", "network_recovery", "station_staff", "passenger_care", "communication")
+AGENTS = AGENT_NAMES[1:]
+RULE_CHECK_COLUMNS = {"rule_check_ok", "rule_check_notes", "rule_ids"}   # only the orchestrator writes these
 
 # The facts of the world. No agent may ever write to these directly: a truth change happens only through an approved action.
 TRUTH_TABLES = {
@@ -31,7 +35,7 @@ AI_AGENTS = {"situation", "communication"}
 
 REQUIRED_FIELDS = ("agent", "purpose", "reads", "writes", "actions", "never", "stores", "output", "max_data_age_sec",
                    "time_budget_sec", "escalate_when", "ai_allowed", "success")
-OUTPUT_FIELDS = ("title", "why", "data_as_of", "options")        # every agent's output has these
+OUTPUT_FIELDS = ("title", "why", "data_as_of", "options", "decision_ids", "sources")   # every output has these
 
 
 class ContractError(ValueError):
@@ -65,6 +69,7 @@ class Contract:
         self.max_data_age_sec: int = data["max_data_age_sec"]
         self.time_budget_sec: int = data["time_budget_sec"]
         self.ai_allowed: bool = data["ai_allowed"]["allowed"]
+        self.required_checks: dict = data.get("required_checks") or {}
 
     def __getitem__(self, key):
         return self.data[key]
@@ -114,6 +119,10 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
         for c in w.get("columns", []):
             if c not in tables[table]:
                 raise ContractError(f"{name}: writes unknown column {table}.{c}")
+        if table == "recommendations" and RULE_CHECK_COLUMNS & set(w.get("columns", [])) and name != "orchestrator":
+            raise ContractError(f"{name}: only the orchestrator records the rule check")
+        if w.get("mode") in ("update", "insert_or_update") and table == "recommendations" and name != "orchestrator":
+            raise ContractError(f"{name}: only the orchestrator may update a recommendation (to record the rule check)")
         if table == "events" and not w.get("types"):
             raise ContractError(f"{name}: writes.events needs the list of event types it may write")
     if "events" not in writes or "audit_log" not in writes:
@@ -122,6 +131,16 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
     unknown = [a for a in data["actions"] if a not in rules["autonomy"]]
     if unknown:
         raise ContractError(f"{name}: actions not in the autonomy rules: {unknown}")
+    human = [a for a in data["actions"] if rules["autonomy"][a]["level"] == "human_only"]
+    if human:
+        raise ContractError(f"{name}: may not propose human-only decisions {human}; it can only show facts (ask_human)")
+    from backend.rules.safety import CHECKS
+    for action, names in (data.get("required_checks") or {}).items():
+        if action not in data["actions"]:
+            raise ContractError(f"{name}: required_checks names '{action}', which it can't propose")
+        bad = [n for n in names if n not in CHECKS]
+        if bad:
+            raise ContractError(f"{name}: required_checks names unknown checks {bad}")
 
     if not isinstance(data["never"], list) or not all(isinstance(x, str) and x.strip() for x in data["never"]):
         raise ContractError(f"{name}: never must be a list of plain-English sentences")
@@ -179,6 +198,8 @@ def load_contracts(directory: Path = AGENTS_DIR) -> dict[str, Contract]:
     """All seven contracts, by agent name. Fails if one is missing, broken, or unexpected."""
     found = {}
     for path in sorted(Path(directory).glob("*.yaml")):
+        if path.name.startswith("_"):          # _shared.yaml: the rules every agent follows, not a contract
+            continue
         c = load_contract_file(path)
         found[c.agent] = c
     missing = [a for a in AGENT_NAMES if a not in found]

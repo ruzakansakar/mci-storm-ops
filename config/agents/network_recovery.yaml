@@ -1,80 +1,310 @@
-# CONTRACT: network_recovery. Plans flights, planes and crews. Never moves anything itself.
+# CONTRACT: network_recovery. Flights, aircraft, AND pilots and flight attendants. Proposes only; never moves anything itself.
 agent: network_recovery
-purpose: "Proposes which flights to delay, cancel or swap aircraft on, and which reserve crews to call in, to get the network moving again."
-
+purpose: 'Plans flights, aircraft, pilots and flight attendants: crew legality, reserve crews, deadheads, crew hotels, tomorrow''s crew legality,
+  and the rebooking plans that go with them.'
 reads:
-  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, edct, aircraft_id, crew_id, reserve_crew_ids, next_destination, priority, status, diverted_to, cancel_reason, controllable, pax_total, as_of]
-  aircraft: [id, type, seats, current_station, airborne, fuel_minutes_extra, maint_status, maint_due_at, needs_inspection, next_legs, recovery_priority, as_of]
-  crews: [id, kind, pilots, flight_attendants, base, current_station, is_reserve, reserve_status, available_from, pilot_duty_left_min, fa_duty_left_min, min_rest_hours, legality_risk, restrictions, fatigue_reported, as_of]
-  passenger_groups: [flight_id, segment, count, rebooked, refunded, as_of]
-  later_capacity: [destination, scheduled_flights, later_flights, open_seats_later, next_later_departure, as_of]
-  route_tiers: [destination, region, tier]
-  stations: [code, name, region, is_base, is_diversion_option, gates, ramp_open, as_of]
-  incidents: [id, kind, status, expected_end_min, expected_end_max, run_id]
-  events: [id, occurred_at, type, station, payload, run_id]
-
+  flights:
+  - id
+  - direction
+  - origin
+  - destination
+  - sched_dep
+  - sched_arr
+  - est_dep
+  - est_arr
+  - edct
+  - aircraft_id
+  - crew_id
+  - reserve_crew_ids
+  - next_destination
+  - priority
+  - status
+  - diverted_to
+  - cancel_reason
+  - controllable
+  - pax_total
+  - as_of
+  aircraft:
+  - id
+  - type
+  - seats
+  - current_station
+  - airborne
+  - fuel_minutes_extra
+  - maint_status
+  - maint_due_at
+  - needs_inspection
+  - next_legs
+  - recovery_priority
+  - as_of
+  crews:
+  - id
+  - kind
+  - pilots
+  - flight_attendants
+  - base
+  - current_station
+  - is_reserve
+  - reserve_status
+  - available_from
+  - pilot_duty_left_min
+  - fa_duty_left_min
+  - min_rest_hours
+  - legality_risk
+  - hotel_if_cancelled
+  - deadhead_planned
+  - restrictions
+  - fatigue_reported
+  - availability
+  - as_of
+  passenger_groups:
+  - flight_id
+  - segment
+  - count
+  - rebooked
+  - refunded
+  - as_of
+  later_capacity:
+  - destination
+  - scheduled_flights
+  - later_flights
+  - open_seats_later
+  - next_later_departure
+  - as_of
+  route_tiers:
+  - destination
+  - region
+  - tier
+  stations:
+  - code
+  - name
+  - region
+  - is_base
+  - is_diversion_option
+  - gates
+  - ramp_open
+  - as_of
+  incidents:
+  - id
+  - kind
+  - status
+  - expected_end_min
+  - expected_end_max
+  - run_id
+  events:
+  - id
+  - occurred_at
+  - type
+  - station
+  - payload
+  - run_id
+  hotels:
+  - id
+  - name
+  - station
+  - rooms_total
+  - rooms_available
+  - rooms_held
+  - rate_usd
+  - distance_miles
+  - as_of
 writes:
-  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id, created_at]}
-  events: {mode: insert, types: [recovery_plan_drafted, crew_shortfall_found, aircraft_swap_found]}
-  audit_log: {mode: insert}
-
-actions: [delay_flight, cancel_flight, swap_aircraft, call_in_reserve_crew, rebook_passenger]
-
+  recommendations:
+    mode: insert
+    columns:
+    - incident_id
+    - agent
+    - title
+    - why
+    - options
+    - autonomy
+    - approver_role
+    - deadline
+    - rank
+    - safety_rung
+    - data_as_of
+    - status
+    - run_id
+    - created_at
+    - decision_ids
+  events:
+    mode: insert
+    types:
+    - recovery_plan_drafted
+    - crew_shortfall_found
+    - aircraft_swap_found
+    - human_decision_needed
+  audit_log:
+    mode: insert
+actions:
+- add_extra_flight
+- book_crew_hotel
+- call_in_reserve_crew
+- cancel_flight
+- combine_flights
+- deadhead_crew
+- delay_flight
+- flag_crew_for_tomorrow
+- flag_crew_legality
+- flag_curfew_risk
+- flag_maintenance_deadline
+- hold_departure_at_gate
+- hold_departure_for_connections
+- prepare_faa_extension_report
+- rebook_passenger
+- recover_diverted_aircraft
+- refuel_at_diversion
+- reposition_aircraft
+- request_maintenance_support
+- request_new_edct
+- set_flight_protection_order
+- swap_aircraft
+- swap_crews
 never:
-  - Never propose a crew that would go beyond its legal duty or rest. Duty extensions are for the captain and the airline to decide, never proposed as a plan.
-  - Never decide a diversion. It may show facts about fuel and alternates, nothing more.
-  - Never decide, or assume, a keep-on-board exception.
-  - Never propose a plane that needs an inspection, or is struck by lightning and not yet inspected.
-  - Never edit a flight, crew or aircraft record; it only proposes, and a human approves.
-  - Never see passenger names or contact details; it counts passengers by group.
-
+- Never propose any crew assignment that breaks a law.yaml crew rule (Table B, rest, cumulative limits, flight attendant limits).
+- 'Never decide a duty extension. That is human only: the captain and crew scheduling.'
+- Never decide a fatigue removal. That is human only, and the crew member's report stands.
+- Never plan leave or long-term schedules. It only reads crew availability.
+- Never assign a crew marked sick, fatigued or on leave.
+- Never decide a diversion or a keep-on-board exception. It may show facts about fuel and alternates, nothing more.
+- Never propose a plane that needs an inspection, or was struck by lightning and not yet inspected.
+- Never edit a flight, crew or aircraft record; it only proposes, and a human approves.
+- Never see passenger names or contact details; it counts passengers by group.
+- 'Never treat its own crew checks as final: the orchestrator''s rule check decides.'
 stores:
   temporary:
-    what: "Candidate plans it is comparing, before it picks the ones to propose."
-    kept_until: "the incident is closed, then deleted"
+    what: Candidate plans it is comparing, before it picks the ones to propose.
+    kept_until: the incident is closed, then deleted
   permanent:
-    - {table: recommendations, kept: "for the life of the project"}
-    - {table: events, kept: "for the life of the project, append only"}
-    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
-
+  - table: recommendations
+    kept: for the life of the project
+  - table: events
+    kept: for the life of the project, append only
+  - table: audit_log
+    kept: for the life of the project, never edited or deleted
 output:
   type: object
   additionalProperties: false
-  required: [title, why, data_as_of, options, flights_affected, passengers_affected, reserve_crews_needed]
+  required:
+  - title
+  - why
+  - data_as_of
+  - options
+  - sources
+  - decision_ids
+  - flights_affected
+  - passengers_affected
+  - reserve_crews_needed
   properties:
-    title: {type: string, minLength: 1}
-    why: {type: string, minLength: 1}
-    data_as_of: {type: string}
+    title:
+      type: string
+      minLength: 1
+    why:
+      type: string
+      minLength: 1
+    data_as_of:
+      type: string
     options:
       type: array
       minItems: 1
       items:
         type: object
         additionalProperties: false
-        required: [id, summary, flights, passengers_disrupted, cost_usd, network_score]
+        required:
+        - id
+        - summary
+        - flights
+        - passengers_disrupted
+        - cost_usd
+        - network_score
         properties:
-          id: {type: string}
-          summary: {type: string}
-          flights: {type: array, items: {type: string}}
-          passengers_disrupted: {type: integer, minimum: 0}
-          cost_usd: {type: number, minimum: 0}
-          network_score: {type: number}
-    flights_affected: {type: array, items: {type: string}}
-    passengers_affected: {type: integer, minimum: 0}
-    reserve_crews_needed: {type: array, items: {type: string}}
-    safety_rung: {type: integer, minimum: 1, maximum: 8}
-
+          id:
+            type: string
+          summary:
+            type: string
+          flights:
+            type: array
+            items:
+              type: string
+          passengers_disrupted:
+            type: integer
+            minimum: 0
+          cost_usd:
+            type: number
+            minimum: 0
+          network_score:
+            type: number
+    flights_affected:
+      type: array
+      items:
+        type: string
+    passengers_affected:
+      type: integer
+      minimum: 0
+    reserve_crews_needed:
+      type: array
+      items:
+        type: string
+    safety_rung:
+      type: integer
+      minimum: 1
+      maximum: 8
+    decision_ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 3
+    sources:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - source
+        - as_of
+        properties:
+          fact:
+            type: string
+          source:
+            type: string
+            minLength: 1
+          as_of:
+            type: string
+            minLength: 10
 max_data_age_sec: 120
 time_budget_sec: 30
 escalate_when:
-  - No option survives the safety ladder.
-  - Every reserve crew is used or unavailable.
-  - A plan needs a duty extension, a diversion, or a keep-on-board exception.
-  - The best plan still strands more than 100 passengers overnight.
-
-ai_allowed: {allowed: false, for: [], fallback: "not needed, it uses no language model"}
-
+- No option survives the safety ladder.
+- Every reserve crew is used or unavailable.
+- A plan needs a duty extension, a diversion, or a keep-on-board exception.
+- The best plan still strands more than 100 passengers overnight.
+- A crew is marked sick, fatigued or on leave and no reserve is free.
+- Tomorrow's first wave would start with a crew short of legal rest.
+ai_allowed:
+  allowed: false
+  for: []
+  fallback: not needed, it uses no language model
 success:
-  - {metric: "flights recovered compared with today's process", target: "10% more"}
-  - {metric: "proposals the guardrail blocks", target: "5% or fewer"}
-  - {metric: "passenger minutes of delay compared with today's process", target: "20% less"}
+- metric: flights recovered compared with today's process
+  target: 10% more
+- metric: passenger minutes of delay compared with today's process
+  target: 20% less
+- metric: proposals the orchestrator's rule check blocks
+  target: 5% or fewer
+required_checks:
+  delay_flight: &id001
+  - crew_duty_left
+  - crew_rest
+  - crew_available
+  - pilot_fdp_limit
+  - pilot_cumulative_limits
+  - pilot_not_fatigued
+  - fa_duty_limit
+  - fa_rest
+  swap_aircraft: *id001
+  call_in_reserve_crew: *id001
+  swap_crews: *id001
+  deadhead_crew: *id001
+  hold_departure_for_connections: *id001

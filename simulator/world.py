@@ -617,7 +617,9 @@ class World:
         self.extended.add(crew["id"])
         self._set("crews", crew, crew["id"], "crew", f"captain and airline extended the pilots' duty for {d['id']}", **{field: left + ext})
         self._emit("pilot_duty_extended", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "extension_min": ext,
-                                                  "duty_left_before_min": left, "decided_by": "captain and airline"})
+                                                  "duty_left_before_min": left, "decision": "human",
+                                                  "decided_by": "captain and crew scheduling", "decision_id": "D02",
+                                                  "legal_basis": "pilot_fdp_extension_before_takeoff_max_h"})
         return True
 
     def _find_reserve(self, role, d):
@@ -687,15 +689,21 @@ class World:
         """At the start of the day: one event for each crew that already breaks a rule in the class data.
         Today's process lets them fly anyway; the event lets the co-pilot flag them later."""
         self.flagged_start = True
+        rest_rule = self.base["crew"]["source_data_rules"]["short_rest"]
         for cid in sorted(self.illegal_crews):
             info = self.illegal_crews[cid]
-            rules = []
-            for b in info["breaks"]:
-                if b["rule"] not in rules:
-                    rules.append(b["rule"])
-            self._emit("crew_illegal_in_source_data", "MCI",
-                       {"crew_id": cid, "flight_id": info["flight_id"], "rule": rules[0], "rules": rules,
-                        "breaks": info["breaks"], "data_issue": info["data_issue"]})
+            rest = [b for b in info["breaks"] if b["rule"] == rest_rule]
+            short = [b for b in info["breaks"] if b["rule"] != rest_rule]
+            if rest:       # a real legal problem: rest below the legal minimum
+                self._emit("crew_illegal_rest", "MCI",
+                           {"crew_id": cid, "flight_id": info["flight_id"], "rule": rest_rule, "legal_problem": True,
+                            "min_rest_hours": rest[0]["min_rest_hours"], "required_hours": rest[0]["required_hours"],
+                            "data_issue": info["data_issue"]})
+            if short:      # only short for OUR planning estimate (flight + one more leg + buffer); not illegal
+                self._emit("crew_short_for_plan", "MCI",
+                           {"crew_id": cid, "flight_id": info["flight_id"], "rule": short[0]["rule"], "legal_problem": False,
+                            "note": "short only for our planning estimate (flight + one more leg + buffer), not a legal limit",
+                            "short": short, "data_issue": None})
 
     def _update_crowd(self):
         t, term = self.t, self.ph["terminal"]

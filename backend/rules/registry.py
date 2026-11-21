@@ -3,5 +3,8 @@ from backend.rules.autonomy import autonomy_for
 from backend.rules.compensation import compensation_for
 from backend.rules.safety import CHECKS
 from backend.rules.tarmac import tarmac_timeline
+from backend.rules.check import check
+from backend.rules.override import human_override
 
-CHECKERS = {**CHECKS, "compensation_for": compensation_for, "autonomy_for": autonomy_for, "tarmac_timeline": tarmac_timeline}
+CHECKERS = {**CHECKS, "compensation_for": compensation_for, "autonomy_for": autonomy_for, "tarmac_timeline": tarmac_timeline,
+            "check": check, "human_override": human_override}

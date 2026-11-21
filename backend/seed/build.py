@@ -222,8 +222,10 @@ def build() -> dict:
     for cid, r in sorted(crew_by_id.items()):
         rest = r["Minimum Rest Hrs"]
         if rest is not None and rest < LIMITS["pilot_min_rest_hours"]:
-            issue("crew_rest", cid, f"Minimum rest listed as {rest} h, below the {LIMITS['pilot_min_rest_hours']} h legal minimum for pilots",
-                  "Kept as listed; the Guardrail must flag it")
+            issue("crew_rest", cid, f"Minimum rest listed as {rest} h, below the {LIMITS['pilot_min_rest_hours']} h legal minimum rest "
+                                    "for pilots (14 CFR 117.25(e)): a real legal problem",
+                  "Kept as listed. The simulator flags it at 05:00 as crew_illegal_rest; the orchestrator's rule check blocks "
+                  "any plan that uses this crew")
         crews.append({
             "id": cid, "kind": "full_crew", "pilots": CFG["crews"]["pilots"],
             "flight_attendants": CFG["crews"]["flight_attendants"], "base": r["Crew Base"],

@@ -2,6 +2,8 @@
 #
 # Every rule has: id, path (where its value shows up in the merged rules), description, value, source, citation,
 # enforced (true = a function in backend/rules checks it), checked_by (that function's name).
+# override_by (law rules only): the human role that may lift a rule-check block on this rule, because the law itself
+# allows that exception. Nobody else can override anything, and the orchestrator never can.
 # source is one of: law | southwest | assumption | class_files
 rules:
 
@@ -297,6 +299,7 @@ rules:
     citation: "14 CFR 259.4(c)(4)"
     enforced: true
     checked_by: tarmac_food_water
+    override_by: [captain]              # "unless the pilot-in-command determines that safety or security considerations preclude such service"
 
   - id: tarmac_lavatories_medical
     path: tarmac.lavatories_and_medical_always
@@ -326,6 +329,7 @@ rules:
     citation: "14 CFR 259.4(c)(3)(ii)"
     enforced: true
     checked_by: tarmac_exception_needs_human
+    override_by: [captain]              # the only role that may lift a rule-check block on this rule (logged)
 
   - id: tarmac_exception_atc
     path: tarmac.exception_atc
@@ -337,6 +341,7 @@ rules:
     citation: "14 CFR 259.4(c)(3)(iii)"
     enforced: true
     checked_by: tarmac_exception_needs_human
+    override_by: [captain]
 
   - id: tarmac_dot_report_days
     path: tarmac.dot_report_days
@@ -424,4 +429,21 @@ rules:
     value: {effective: "2025-01-16", paused_sections: ["382.125(e)", "382.130(a)", "382.132", "382.141(a)(6)"], paused_until: "2027-04-30"}
     source: law
     citation: "89 FR 102398 (17 Dec 2024); DOT enforcement-discretion notices (Federal Register 2025-10250, 2025-18980, and an August 2026 extension). Found by web search; the August 2026 notice was not read in full."
+    enforced: false
+
+  # ------------------------------------------------------------------ REFUNDS AND COMPLAINTS (added for the decision catalog)
+  - id: refund_timing_days
+    path: money.refund_timing
+    description: A refund is paid within 7 business days for credit-card purchases, and within 20 calendar days for cash, check or debit.
+    value: {credit_card_business_days: 7, other_calendar_days: 20}
+    source: law
+    citation: "14 CFR 260.2 (prompt refund) and 260.10; 14 CFR 374.3"
+    enforced: false
+
+  - id: disability_complaint_response_days
+    path: wheelchair.complaint_response_days
+    description: A written disability complaint gets a written answer within 30 days that admits or denies a violation and explains the passenger's right to go to DOT.
+    value: 30
+    source: law
+    citation: "14 CFR 382.155(d)"
     enforced: false

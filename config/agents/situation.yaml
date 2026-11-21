@@ -1,67 +1,216 @@
-# CONTRACT: situation. Works out what is going on and how long it will last.
+# CONTRACT: situation. Works out what is going on, the likely cause and how long it will last.
 agent: situation
-purpose: "Reads the signals, names the likely cause and the expected end, and writes a plain-English summary of the situation."
-
+purpose: Reads the signals, names the likely cause and the expected end, and writes a plain-English summary of the situation.
 reads:
-  events: [id, occurred_at, type, actor, station, payload, run_id]
-  incidents: [id, kind, station, title, likely_cause, confidence, controllable, status, expected_end_min, expected_end_max, opened_at, run_id]
-  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, edct, status, priority, pax_total, cancel_reason, controllable, diverted_to, tarmac_since, as_of]
-  aircraft: [id, current_station, airborne, fuel_minutes_extra, needs_inspection, as_of]
-  stations: [code, name, ramp_open, people_in_terminal, terminal_capacity, as_of]
-  system_health: [system, status, last_heartbeat, data_age_sec, note]
-
+  events:
+  - id
+  - occurred_at
+  - type
+  - actor
+  - station
+  - payload
+  - run_id
+  incidents:
+  - id
+  - kind
+  - station
+  - title
+  - likely_cause
+  - confidence
+  - controllable
+  - status
+  - expected_end_min
+  - expected_end_max
+  - opened_at
+  - run_id
+  flights:
+  - id
+  - direction
+  - origin
+  - destination
+  - sched_dep
+  - sched_arr
+  - est_dep
+  - est_arr
+  - edct
+  - status
+  - priority
+  - pax_total
+  - cancel_reason
+  - controllable
+  - diverted_to
+  - tarmac_since
+  - as_of
+  aircraft:
+  - id
+  - current_station
+  - airborne
+  - fuel_minutes_extra
+  - needs_inspection
+  - as_of
+  stations:
+  - code
+  - name
+  - ramp_open
+  - people_in_terminal
+  - terminal_capacity
+  - as_of
+  system_health:
+  - system
+  - status
+  - last_heartbeat
+  - data_age_sec
+  - note
 writes:
-  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, safety_rung, data_as_of, status, run_id, created_at]}
-  events: {mode: insert, types: [situation_assessed, cause_suspected, expected_end_updated]}
-  audit_log: {mode: insert}
-
-actions: [send_status_update]            # it may propose a plain status update about the situation, nothing operational
-
+  recommendations:
+    mode: insert
+    columns:
+    - incident_id
+    - agent
+    - title
+    - why
+    - options
+    - autonomy
+    - approver_role
+    - safety_rung
+    - data_as_of
+    - status
+    - run_id
+    - created_at
+    - decision_ids
+  events:
+    mode: insert
+    types:
+    - situation_assessed
+    - cause_suspected
+    - expected_end_updated
+    - human_decision_needed
+  audit_log:
+    mode: insert
+actions:
+- assess_situation
+- classify_cause
+- contact_partner
+- flag_stale_data
+- replan_after_program_change
+- resolve_source_conflict
+- send_status_update
+- switch_to_manual_fallback
+- update_expected_end
 never:
-  - Never state a cause as fact when it is only suspected; always give a confidence.
-  - Never promise an end time to passengers. It gives the earliest and latest, and says how sure it is.
-  - Never decide a diversion, a ramp closure, or a keep-on-board exception.
-  - Never change any flight, crew, aircraft or station record.
-  - Never see passenger names or contact details.
-
+- Never state a cause as fact when it is only suspected; always give a confidence.
+- Never promise an end time to passengers. It gives the earliest and latest, and says how sure it is.
+- Never decide a diversion, a ramp closure, or a keep-on-board exception.
+- Never change any flight, crew, aircraft or station record.
+- Never see passenger names or contact details.
 stores:
   temporary:
-    what: "Signals it has collected and its working guesses about the cause."
-    kept_until: "the incident is closed, then deleted"
+    what: Signals it has collected and its working guesses about the cause.
+    kept_until: the incident is closed, then deleted
   permanent:
-    - {table: recommendations, kept: "for the life of the project"}
-    - {table: events, kept: "for the life of the project, append only"}
-    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
-
+  - table: recommendations
+    kept: for the life of the project
+  - table: events
+    kept: for the life of the project, append only
+  - table: audit_log
+    kept: for the life of the project, never edited or deleted
 output:
   type: object
   additionalProperties: false
-  required: [title, why, data_as_of, options, likely_cause, confidence, controllable, expected_end_earliest, expected_end_latest, summary]
+  required:
+  - title
+  - why
+  - data_as_of
+  - options
+  - sources
+  - decision_ids
+  - likely_cause
+  - confidence
+  - controllable
+  - expected_end_earliest
+  - expected_end_latest
+  - summary
   properties:
-    title: {type: string, minLength: 1}
-    why: {type: string, minLength: 1}
-    data_as_of: {type: string}
-    options: {type: array, items: {type: object}}
-    likely_cause: {type: string, enum: [weather, faa_program, it_outage, airport, security, crew, other, unknown]}
-    confidence: {type: number, minimum: 0, maximum: 1}
-    controllable: {type: [boolean, "null"]}
-    expected_end_earliest: {type: string}
-    expected_end_latest: {type: string}
-    summary: {type: string, minLength: 1, maxLength: 1200}
-
+    title:
+      type: string
+      minLength: 1
+    why:
+      type: string
+      minLength: 1
+    data_as_of:
+      type: string
+    options:
+      type: array
+      items:
+        type: object
+    likely_cause:
+      type: string
+      enum:
+      - weather
+      - faa_program
+      - it_outage
+      - airport
+      - security
+      - crew
+      - other
+      - unknown
+    confidence:
+      type: number
+      minimum: 0
+      maximum: 1
+    controllable:
+      type:
+      - boolean
+      - 'null'
+    expected_end_earliest:
+      type: string
+    expected_end_latest:
+      type: string
+    summary:
+      type: string
+      minLength: 1
+      maxLength: 1200
+    decision_ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 3
+    sources:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - source
+        - as_of
+        properties:
+          fact:
+            type: string
+          source:
+            type: string
+            minLength: 1
+          as_of:
+            type: string
+            minLength: 10
 max_data_age_sec: 120
 time_budget_sec: 20
 escalate_when:
-  - Confidence in the cause is below 0.5 after two updates.
-  - Signals disagree with each other (for example the airport says open and the ramp is closed).
-  - A system the summary depends on has been down for more than 5 minutes.
-
+- Confidence in the cause is below 0.5 after two updates.
+- Signals disagree with each other (for example the airport says open and the ramp is closed).
+- A system the summary depends on has been down for more than 5 minutes.
 ai_allowed:
   allowed: true
-  for: [situation summaries in plain English]
-  fallback: "a fixed template filled with the numbers; the template is used whenever the language model is slow, down, or its output is rejected"
-  never_for: [choosing a cause, an end time, or any action]
-
+  for:
+  - situation summaries in plain English
+  fallback: a fixed template filled with the numbers; the template is used whenever the language model is slow, down, or its output is rejected
+  never_for:
+  - choosing a cause
+  - an end time
+  - or any action
 success:
-  - {metric: "cause named correctly at first summary", target: "80% or better"}
-  - {metric: "expected end falls inside the earliest-latest range", target: "90% or better"}
+- metric: cause named correctly at first summary
+  target: 80% or better
+- metric: expected end falls inside the earliest-latest range
+  target: 90% or better

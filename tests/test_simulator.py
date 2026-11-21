@@ -218,23 +218,55 @@ def test_seed_7_story_is_still_five_cancellations(data):
     assert r.world.flights["WN1033"]["cancel_reason"] == "crew out of legal duty"
 
 
-def test_crews_that_are_already_illegal_in_the_class_data_are_flagged_once_at_5am_and_still_fly(data):
+def test_crews_with_illegal_rest_and_crews_short_for_our_plan_get_different_flags_at_5am_and_still_fly(data):
     w = sim(data, 7, "a31_storm").world
-    flagged = [e for e in w.events if e["type"] == "crew_illegal_in_source_data"]
-    assert flagged and all(e["t"] == hhmm("05:00") for e in flagged)
-    ids = [e["payload"]["crew_id"] for e in flagged]
-    assert len(ids) == len(set(ids))                                    # one event per crew
-    rest = {c["id"] for c in data["crews"] if not c["is_reserve"] and c["min_rest_hours"] is not None and c["min_rest_hours"] < 10}
-    flown = {c for c in rest if any(f["crew_id"] == c for f in w.departures)}
-    assert flown and flown <= set(ids)
+    rest = [e for e in w.events if e["type"] == "crew_illegal_rest"]
+    plan = [e for e in w.events if e["type"] == "crew_short_for_plan"]
+    assert rest and plan and all(e["t"] == hhmm("05:00") for e in rest + plan)
+    assert not [e for e in w.events if e["type"] == "crew_illegal_in_source_data"]          # the old mixed flag is gone
+    for group in (rest, plan):
+        ids = [e["payload"]["crew_id"] for e in group]
+        assert len(ids) == len(set(ids))                                                     # one event per crew per type
+    short_rest = {c["id"] for c in data["crews"] if not c["is_reserve"] and c["min_rest_hours"] is not None and c["min_rest_hours"] < 10}
+    flown = {c for c in short_rest if any(f["crew_id"] == c for f in w.departures)}
+    assert {e["payload"]["crew_id"] for e in rest} == flown
     issues = {i["item"] for i in data["data_issues"] if i["category"] == "crew_rest"}
-    for e in flagged:
+    for e in rest:
         p = e["payload"]
-        assert p["rule"] in ("pilot_min_rest_hours", "crew_duty_buffer_min") and p["breaks"]
-        if "pilot_min_rest_hours" in p["rules"]:
-            assert p["data_issue"] == {"category": "crew_rest", "item": p["crew_id"]} and p["crew_id"] in issues
-    # today's baseline still lets them fly: nothing was cancelled just because the class data lists them as short
+        assert p["rule"] == "pilot_min_rest_hours" and p["legal_problem"] is True and p["min_rest_hours"] < p["required_hours"]
+        assert p["data_issue"] == {"category": "crew_rest", "item": p["crew_id"]} and p["crew_id"] in issues
+    for e in plan:
+        p = e["payload"]
+        assert p["legal_problem"] is False and "not a legal limit" in p["note"] and p["data_issue"] is None
+        assert all(b["duty_left_min"] < b["needed_min"] for b in p["short"])
+    # today's baseline still lets them fly
     assert any(w.flights[f["id"]]["status"] in ("departed", "airborne", "arrived") for f in w.departures if f["crew_id"] in flown)
+
+
+def test_story_lock_seed_7(data):
+    """Frozen numbers for the class story. If this fails: the seed 7 story changed; check with the project owner before updating this test."""
+    msg = "the seed 7 story changed; check with the project owner before updating this test"
+    r = sim(data, 7, "a31_storm")
+    w, m = r.world, r.metrics
+    assert (m["flights_delayed"], m["flights_cancelled"], m["flights_diverted"]) == (17, 5, 9), msg
+    assert m["passengers_stranded_overnight"] == 559, msg
+    cancelled = sorted((f["id"], f["cancel_reason"]) for f in w.flights.values() if f["status"] == "cancelled")
+    assert cancelled == [("WN1032", "schedule thinning: 90 min ground stop announced"),
+                         ("WN1033", "crew out of legal duty"),
+                         ("WN1035", "schedule thinning: 90 min ground stop announced"),
+                         ("WN1038", "schedule thinning: 90 min ground stop announced"),
+                         ("WN1040", "schedule thinning: 150 min ground stop announced")], msg
+    div = next(e for e in w.events if e["type"] == "flight_diverted" and e["payload"]["flight_id"] == "WN2031")
+    assert (div["t"], div["station"]) == (hhmm("12:15"), "STL"), msg
+    land = next(e for e in w.events if e["type"] == "flight_arrived" and e["payload"]["flight_id"] == "WN2031")
+    assert (land["t"], land["station"]) == (hhmm("14:10"), "MCI"), msg
+    assert w.flights["WN1033"]["reserve_crew_ids"] == ["R04"], msg
+    maya = w.bookings["PAX0001"][-1]
+    nxt = w.flights[maya["flight_id"]]
+    assert w.passengers["PAX0001"]["overnight"] is True and maya["flight_id"] == "WN3005", msg
+    assert nxt["sched_dep"] == 1440 + hhmm("06:30"), msg                                      # 06:30 on 2026-10-07
+    from simulator.clock import at
+    assert at(nxt["sched_dep"]).date().isoformat() == "2026-10-07", msg
 
 
 def test_the_rules_named_in_the_flags_exist_in_the_rules_folder():
@@ -279,7 +311,8 @@ def test_pilots_a_little_short_with_no_reserve_get_a_captain_and_airline_extensi
         events = [e for e in w.events if e["type"] == "pilot_duty_extended"]
         crews = [e["payload"]["crew_id"] for e in events]
         assert len(crews) == len(set(crews))                              # once per crew
-        assert all(e["payload"]["decided_by"] == "captain and airline" for e in events)
+        assert all(e["payload"]["decision"] == "human" and e["payload"]["decided_by"] == "captain and crew scheduling"
+                   and e["payload"]["decision_id"] == "D02" for e in events)
         seen += len(events)
     assert seen > 0
 
@@ -287,7 +320,8 @@ def test_pilots_a_little_short_with_no_reserve_get_a_captain_and_airline_extensi
 def test_flight_reserve_crews_column_is_saved(saved):
     res, _, cur = saved
     assert one(cur, "SELECT reserve_crew_ids FROM flights WHERE id='WN1033'") == ["R04"]
-    assert one(cur, "SELECT count(*) FROM events WHERE type='crew_illegal_in_source_data' AND run_id=%s", res.run_id) > 0
+    assert one(cur, "SELECT count(*) FROM events WHERE type='crew_illegal_rest' AND run_id=%s", res.run_id) > 0
+    assert one(cur, "SELECT count(*) FROM events WHERE type='crew_short_for_plan' AND run_id=%s", res.run_id) > 0
 
 
 def test_a31_ramp_closes_inside_stop_then_reopens(data):

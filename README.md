@@ -16,6 +16,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 1 | Database + data from the class files | **done** |
 | 2 | Rules as tested code (`config/rules/`) | **done** |
 | 3b | Rules catalog + agent contracts (`config/rules/`, `config/agents/`) | **done** |
+| 3c | Agreed setup, rule check, decision catalog, shared AI guardrails | **done** |
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4 | Orchestrator + Situation agent | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
@@ -159,9 +160,14 @@ cancellations naturally instead of only delays:
   marked used and its own duty clock runs down, and the swap is written to `events` and `audit_log`. If no reserve is free and the
   pilots are only a few minutes short, the captain and airline extend their duty (once per crew, 14 CFR 117.19); otherwise the
   flight is cancelled ("crew out of legal duty").
-- **Crews already short in the class data** (35 with too little rest, others with too little duty) still fly in today's baseline, but
-  each gets one `crew_illegal_in_source_data` event at 05:00 with the rule it breaks and its `data_issues` reference, so the
-  co-pilot can flag them later.
+- **Crews already short in the class data** still fly in today's baseline, but are flagged at 05:00: `crew_illegal_rest` for the 35
+  crews whose rest is below the legal 10 h minimum (a real legal problem, with its `data_issues` reference), and `crew_short_for_plan`
+  for crews short only for our own planning estimate (flight + one more leg + buffer; not illegal).
+- **Pilot duty extension** (kept, approved by the project owner): every `pilot_duty_extended` event is labelled as a human decision
+  by the captain and crew scheduling (decision D02).
+- **Story lock:** a test freezes the seed 7 a31_storm numbers (17 delayed, 5 cancelled, 9 diverted, 559 stranded overnight, A31 to
+  St. Louis at 12:15 and back at 14:10, R04 on WN1033, Maya on WN3005 at 06:30 on 7 Oct). The simulator numbers are frozen; if that
+  test fails, check with the project owner before changing it.
 - **Aircraft out of position:** a diverted aircraft that can't get back in time delays its next flight, and cancels it past the cutoff.
 - **Stranded overnight:** if no seat is left today (rebooking never fills a plane past 93%), passengers go on a next-day flight on
   7 Oct, are marked `overnight` in `passengers`, and we record whether they live locally. No hotel or money decisions are made here.
@@ -170,28 +176,56 @@ cancellations naturally instead of only delays:
 
 The simulator never imports `backend/rules`: it only causes problems, it does not decide anything.
 
-## Agent contracts (before Phase 4)
+## How the co-pilot is put together (agreed setup, before Phase 4)
 
-`config/agents/` holds one contract per agent: orchestrator, situation, network_recovery, station_staff, passenger_care,
-communication, guardrail. Each says its purpose, exactly which tables and columns it may **read**, what it may **write**, which
-**actions** it may propose (from `autonomy.yaml`), what it must **never** do, what it stores (temporary until the incident closes,
-permanent), the exact fields of its **output** (a JSON schema), how old its data may be (`max_data_age_sec`), how long it may take,
-when it must hand over to a human, whether a language model may help, and how success is measured.
+**Five agents and an orchestrator.** There is no guardrail agent and no separate crew agent.
+
+| Part | What it does | AI? |
+|---|---|---|
+| orchestrator | Plain code. Routes work, sees all agents, runs the rule check on every proposal, catches conflicts between agents, escalates to humans. | no |
+| situation | What is happening, the likely cause, the expected end. | summaries only, with a template fallback |
+| network_recovery | Flights, aircraft, and pilots and flight attendants: crew legality, reserve crews, deadheads, crew hotels, tomorrow's crew legality, rebooking plans. | no |
+| station_staff | Ground staff (gate, ramp, wheelchair, customer service), gates, ramp, deplaning help. | no |
+| passenger_care | Rebooking, hotels, compensation, vulnerable passengers. | no |
+| communication | Messages, and every channel telling the same story. | message drafts only, with a template fallback |
+
+**The rule check** (`backend/rules/check.py`, plain code, no AI). The orchestrator runs `check(proposal, pending_proposals, world)` on
+every proposal before any human sees it. It runs the safety ladder and every enforced rule that applies (crew duty and rest and Table B,
+tarmac steps, curfews, customs, TSA and station hours, lightning and the ramp, inspections, the wheelchair 30 minutes, children-alone
+routing, fuel, the money rules), checks the action against `autonomy.yaml` (a human-only action never passes, nothing on rungs 1-4 is
+automatic), and looks for conflicts with other pending proposals (delay and cancel the same flight, rebooking onto a flight that is
+cancelled or full, an offer or promise no approved decision backs, a message that contradicts the truth, the same crew or plane used
+twice). Missing or stale data is a block, never a pass. The answer is `pass` or `block`, the reasons, the rule ids, and the human role
+it goes to. An agent's own checks never count as final.
+
+**Only humans override.** The orchestrator can block but can never override a block. `backend/rules/override.py` lets a named person
+lift a block only where a `law.yaml` rule allows that exception (its `override_by` list: today only the captain's safety and ATC calls
+on the tarmac and the food-and-water exception), and writes the person's role and reason to `audit_log`.
+
+**The rules of the world** live in `config/rules/` (law, Southwest policy, our assumptions, the safety ladder, who decides what).
+
+**The decision catalog** (`config/decisions.yaml`, built from the table in `scripts/build_decisions.py`) lists every decision the
+co-pilot may raise: 195 of them, in 20 families (A detect ... T security). Each says what triggers it, its deadline, which agent raises
+it, who decides (matching `autonomy.yaml`), which rules the rule check runs, the data it needs, whom it affects, and whether the
+a31_storm seed 7 day raises it. `python -m scripts.decisions` prints a summary and the gaps (decisions the simulator can't trigger yet,
+rules that had to be added as assumptions).
+
+**Contracts and shared AI guardrails.** `config/agents/` holds one contract per part (what it may read and write, its actions, what it
+must never do, its output schema, data age and time limits). `config/agents/_shared.yaml` lists the 11 rules every agent follows (a
+source and time for every fact, no stale data, no human-only decisions, no unapproved promises, names only for the passengers it is
+working on, schema-exact output, hand doubts to a named human, name the decision ids, rule check before any human sees it, language-model
+text checked against the facts, everything in the audit log), each enforced in `AgentContext` or in the rule check.
+
+**How they connect.** An agent reads through `AgentContext` (only what its contract allows) and saves a proposal naming its decision ids.
+The orchestrator runs the rule check and records pass or block (events and audit log). Humans see only proposals that passed, plus
+every block with its reasons. A named human approves, rejects, or (only where the law allows) overrides. Only an approved action
+changes the truth tables.
 
 ```bash
-python -m scripts.contracts         # one-page summary of all seven
+python -m scripts.contracts         # one-page summary of the orchestrator + five agents
+python -m scripts.decisions         # the decision catalog: counts and gaps
+python -m scripts.rules_catalog     # every rule
 ```
-
-- `backend/contracts/loader.py` refuses to load a contract with a missing field, an unknown column or action, a write to a truth table
-  (flights, bookings, crews...), incident writes by anyone but the orchestrator, or names/contact details for an agent that may not see them.
-- `backend/contracts/context.py` has `AgentContext`, the only way an agent talks to the database. A read, write, action or output
-  outside the contract raises a clear `ContractViolation` and writes a `contract_violation` event. Data older than `max_data_age_sec`
-  is refused (`StaleDataError`). Agents write only proposals (`recommendations`), their own events and the audit log; the guardrail
-  can only mark a proposal passed or blocked; no agent edits a truth table, a human-approved action does.
-- Only `passenger_care` and `communication` read passenger names and contacts. A language model is allowed only for situation summaries
-  and message drafts, always with a template fallback.
-- "Data age" is measured from the `as_of` time of the rows an agent read, so the adapter that refreshes the shared live view must keep
-  `as_of` current (Phase 4+).
 
 ## Rules for conflicting files
 
@@ -208,15 +242,17 @@ backend/seed/class_files.py reads the class files in data/raw
 backend/seed/build.py      turns them into rows (deterministic by SEED)
 backend/seed/load.py       writes the rows into PostgreSQL
 backend/rules/             safety ladder, crew, tarmac and airport checks, who decides, compensation
-backend/contracts/         agent contracts: loader and AgentContext
+backend/contracts/         agent contracts: loader, AgentContext, the orchestrator's review plumbing
+config/decisions.yaml      the decision catalog
 config/rules/              every rule (law, southwest, operations, safety ladder, autonomy)
-config/agents/             one contract per agent
+config/agents/             one contract per part (+ _shared.yaml: the AI guardrails)
 config/simulator.yaml      every simulator number
 config/seed.yaml           every number used to build the starting data
 simulator/                 scenario, world (truth), channels (screens), run, report (debug page)
 reports/                   generated debug pages (not committed)
 scripts/rules_catalog.py    every rule as a table
-scripts/contracts.py       summary of the seven agent contracts
+scripts/contracts.py       summary of the six contracts
+scripts/decisions.py       summary of the decision catalog
 scripts/reset_db.py        wipe and rebuild
 scripts/summary.py         human-readable check
 tests/                     pytest checks
