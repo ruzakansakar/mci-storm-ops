@@ -18,7 +18,6 @@ def _t(v):
 class Writer:
     def __init__(self, conn, run_id: str, seed: int):
         self.conn, self.run_id, self.seed = conn, run_id, seed
-        self.next_event_id = 1
         self.incident_event_ids = []
 
     # ------------------------------------------------------------ one batch
@@ -27,16 +26,20 @@ class Writer:
         with self.conn.cursor() as cur:
             self._new_flights(cur, world)
             rows = []
-            for e in ev:
-                eid = self.next_event_id
-                self.next_event_id += 1
+            # Event ids come from the database's own counter, reserved for this batch. So the counter is always right after
+            # every batch, even if a run crashes halfway, and anyone else inserting events (an agent) never collides.
+            ids = []
+            if ev:
+                cur.execute("SELECT nextval(pg_get_serial_sequence('events', 'id')) FROM generate_series(1, %s)", (len(ev),))
+                ids = [r[0] for r in cur.fetchall()]
+            for e, eid in zip(ev, ids):
                 if e["incident"]:
                     self.incident_event_ids.append(eid)
                 rows.append((eid, at(e["t"]), e["type"], e["actor"], e["actor_name"], e["station"],
-                             Jsonb(e["payload"]), self.seed, self.run_id))
+                             Jsonb(e["payload"]), self.seed, self.run_id, self.published_at(e)))
             if rows:
-                cur.executemany("INSERT INTO events (id, occurred_at, type, actor, actor_name, station, payload, seed, run_id) "
-                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+                cur.executemany("INSERT INTO events (id, occurred_at, type, actor, actor_name, station, payload, seed, run_id, "
+                                "published_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
             if au:
                 cur.executemany(
                     "INSERT INTO audit_log (at, actor, actor_name, what, entity_type, entity_id, before, after, run_id) "
@@ -46,6 +49,10 @@ class Writer:
             self._state(cur, world)
             self._views(cur, channels)
         self.conn.commit()
+
+    def published_at(self, e):
+        """When the source delivered this event, if late (None = as it happened). Chaos tests deliver some events late."""
+        return None
 
     def _new_flights(self, cur, world):
         """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""
@@ -145,6 +152,5 @@ class Writer:
                                 [(incident_id, e) for e in self.incident_event_ids])
             cur.execute("INSERT INTO metric_runs (run_id, seed, mode, scenario, metrics) VALUES (%s,%s,%s,%s,%s)",
                         (self.run_id, self.seed, mode, scenario.name, Jsonb(metrics)))
-            cur.execute("SELECT setval(pg_get_serial_sequence('events', 'id'), %s)", (max(1, self.next_event_id - 1),))
         self.conn.commit()
         return incident_id

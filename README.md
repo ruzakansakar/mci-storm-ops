@@ -267,6 +267,39 @@ agents will read.** Proposals needing a human go to `recommendations` as pending
 to events. Every replay has its own `agent_run_id`, so two replays never mix. If an assessment fails halfway, it is rolled back and one
 `agent_error` event is written.
 
+## Chaos testing the Situation agent (Phase 4a-test, part 1)
+
+Random worst-case days the agent has never seen, scored automatically against what really happened.
+
+```bash
+python -m chaos.run --surprise            # one brand-new random day: what the agent said, then what really happened, then the score
+python -m chaos.run --seed 17             # replay exactly chaos day 17 (to reproduce a failure)
+python -m chaos.run --days 20             # 20 new random days (about 4 min on Neon), then the summary page
+python -m chaos.run --days 20 --fresh     # the same, after resetting the database
+python -m chaos.calibrate                 # end-time ranges on training days 1-100 and test days 101-150
+```
+Open `reports/chaos/index.html` (double-click) for the summary, and click a day for its timeline.
+
+- **The generator** (`chaos/generator.py`, numbers in `config/chaos.yaml`) builds a day from 1-3 random ingredients: a quiet day,
+  normal scattered delays, a thunderstorm ground stop (extended up to 4 times, sometimes shortened or ended early), an FAA ground delay
+  program, a Southwest IT outage, an airport power outage, a runway closure, a security evacuation, a wave of crew cancellations, two
+  overlapping incidents, a feed going silent, conflicting signals, messy data (duplicates, late deliveries, broken payloads, event types
+  nobody has seen) and timing extremes. It plays the day through the simulator and adds the notices real sources would publish
+  (airport ops notices, police/TSA notices, system monitor changes). Chaos days write only their own events, never the shared tables,
+  so they never touch the a31_storm run.
+- **The sealed truth** of each day goes to `chaos/truth/<run_id>.json` (not committed). Only the judge reads it; the agent has no way to
+  reach it (it can't open files, and AgentContext only serves the tables in its contract).
+- **The judge** (`chaos/judge.py`, rules in `config/chaos_scoring.yaml`) reads the agent's rows back from the database and the truth,
+  never the agent's code, and gives 14 checks a PASS / WARN / FAIL with a reason: detection, cause, overconfidence, two incidents,
+  expected end, stale feeds, conflicts, security, controllable, messy data, recovery, human clutter, guardrails, speed.
+- **Calibration.** The end-time margins and end confidences in `config/agent_settings/situation.yaml` were chosen on chaos days 1-100
+  only, then frozen; days 101-150 are only measured. Real end inside the range: 75% -> 81% on training, 81% -> 83% on test. "High
+  confidence" is right 82% (training) and 83% (test) of the time, against the about 79-80% it claims.
+- **Agent fixes that came out of it:** a "recovery" status (operations back, aftermath remains), one open proposal per decision per
+  incident (a new value supersedes the old one, `recommendations.supersedes`), an FAA status check only after 30 min without an FAA update,
+  defensive reading of messy inputs (duplicates counted once, late events put back in order, broken events set aside), and naming a
+  second problem when two happen at once.
+
 ## Rules for conflicting files
 
 - The Daily Operating Schedule wins for times, destinations, aircraft type, passenger totals and priority.
@@ -285,6 +318,7 @@ backend/rules/             safety ladder, crew, tarmac and airport checks, who d
 backend/contracts/         agent contracts: loader, AgentContext, feed heartbeats, the orchestrator's review plumbing
 backend/agents/situation/  the Situation agent (state_at, assess, run)
 config/agent_settings/     settings for each agent (every number an assumption)
+chaos/                     chaos testing: generator, judge, pages, calibration (config/chaos.yaml, config/chaos_scoring.yaml)
 config/decisions.yaml      the decision catalog
 config/rules/              every rule (law, southwest, operations, safety ladder, autonomy)
 config/agents/             one contract per part (+ _shared.yaml: the AI guardrails)

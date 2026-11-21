@@ -1,0 +1,16 @@
+# How the judge scores a chaos day. Every number is an assumption.
+detection_within_min: 5          # assumption: abnormal within 5 sim minutes of an incident's first real signal
+cause_within_min: 15             # assumption: the right type within 15 sim minutes
+low_confidence: 0.5              # assumption: "low confidence" means below this
+overconfident: 0.7               # assumption: this confidence or more on a WRONG cause is a fail
+end_coverage_target: 0.8         # assumption: the real end inside the range at least this often
+end_coverage_warn: 0.5           # assumption: below this share it is a fail, between the two a warning
+stale_within_min: 3              # assumption: cannot_assess within 3 sim minutes of a feed going silent
+s01_after_min: 5                 # assumption: propose S01 once a feed has been down this long...
+s01_grace_min: 6                 # assumption: ...allowing this much time for the next assessment
+min_outage_min: 3                # assumption: shorter silences are not checked
+conflict_within_min: 35          # assumption: A09 within this long of a conflict (the false-end one needs 20 min to show)
+security_within_min: 1           # assumption: T01 handed to a human within 1 sim minute
+recovery_grace_min: 20           # assumption: after the incident ends, allow this long before checking for "recovery"
+recovery_sample_every_min: 15    # assumption
+clutter_factor: 1                # assumption: open proposals per decision may be at most (number of incidents) x this

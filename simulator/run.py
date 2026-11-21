@@ -48,7 +48,7 @@ def check_mode(mode: str):
 
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
-             data: dict | None = None, writer=None, on_flush=None) -> Result:
+             data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None) -> Result:
     """Play the day. With a writer, results are saved in batches; without one it all stays in memory."""
     check_mode(mode)
     cfg = load_config()
@@ -58,7 +58,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     flights = [{"id": f["id"], "direction": f["direction"], "sched_dep": minute_of(f["sched_dep"]),
                 "sched_arr": minute_of(f["sched_arr"]), "aircraft_id": f["aircraft_id"], "crew_id": f["crew_id"]}
                for f in data["flights"]]
-    sc = build_scenario(seed, scenario, flights)
+    sc = prebuilt(flights) if prebuilt else build_scenario(seed, scenario, flights)   # prebuilt: a ready-made day (chaos tests)
     world = World(data, sc, cfg, start)
     world.check_story()
     channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start)
@@ -80,7 +80,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
                 on_flush(writer.conn)
 
     metrics = recorder.finish(world, channels, until)
-    rid = run_id_for(seed, scenario, mode)
+    rid = run_id or run_id_for(seed, scenario, mode)
     if writer:
         writer.finish(sc, metrics, mode, until)
     return Result(rid, seed, sc, world, channels, metrics, until)

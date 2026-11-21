@@ -2,6 +2,9 @@
 
 It reads only through AgentContext (which cuts events at its current time, hides the simulator's answer key and anything a real
 source wouldn't publish) and writes only through it. Rules decide the cause, the times and the numbers; no AI.
+
+Status: normal -> abnormal (something is happening) -> recovery (operations are back, but cancelled-flight passengers, stranded
+passengers or aircraft out of position remain) -> normal. Deciding that the incident is over (A10) stays with the orchestrator.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -13,6 +16,9 @@ from backend.agents.situation.state_at import DAY0, State, build_state, hhmm
 from backend.settings import ROOT
 
 SETTINGS_FILE = ROOT / "config" / "agent_settings" / "situation.yaml"
+WORDS = {"weather": "thunderstorms / lightning at MCI", "faa_program": "an FAA traffic program at MCI",
+         "it_outage": "a Southwest systems outage", "airport": "an airport problem (runway or power)",
+         "security": "a security event", "crew": "crews running out of legal duty", "unknown": "an unknown cause"}
 
 
 @lru_cache
@@ -26,17 +32,18 @@ class Memory:
     version: int = 0
     last: dict | None = None              # the last version written (comparable form)
     last_id: int | None = None
-    events: list = field(default_factory=list)
-    last_read: datetime | None = None
     schedule: list | None = None
-    proposed: set = field(default_factory=set)
+    incident_no: int = 0
+    open: dict = field(default_factory=dict)        # decision -> {"id", "key"}: the one open proposal per decision this incident
     last_p02: datetime | None = None
-    history: list = field(default_factory=list)   # what it wrote and proposed (for the replay printout)
+    asked: set = field(default_factory=set)         # ask_human keys already sent
+    history: list = field(default_factory=list)     # what it wrote and proposed (for the replay printout)
 
 
 # ---------------------------------------------------------------- the pieces of an assessment
 
-def _detect(st: State, s: dict) -> tuple[bool, list[str]]:
+def _detect(st: State, health: dict, s: dict) -> list[str]:
+    """A01: the signals that make the day abnormal right now (empty list = not abnormal)."""
     d = s["detect"]
     why = []
     p = st.program
@@ -44,16 +51,50 @@ def _detect(st: State, s: dict) -> tuple[bool, list[str]]:
         why.append(f"FAA {p.kind.replace('_', ' ')} active")
     if not st.ramp_open:
         why.append("ramp closed")
+    for n in st.active_notices():
+        why.append(f"{n.source.replace('_', ' ')} notice: {n.kind.replace('_', ' ')}")
+    for system, h in health.items():
+        if h["status"] != "up":
+            why.append(f"{system} {h['status']}")
     recent = [f for when, f in st.newly_delayed if st.t - when <= timedelta(minutes=d["delayed_departures_window_min"])]
     if len(recent) >= d["delayed_departures_threshold"]:
         why.append(f"{len(recent)} departures delayed in the last {d['delayed_departures_window_min']} min")
-    out = [f for f in st.flights.values() if f.direction == "arrival" and f.status in ("holding", "diverted", "resumed")]
-    if len(out) >= d["holding_or_diverted_inbound"]:
-        why.append(f"{len(out)} inbound flights holding or diverted")
-    return bool(why), why
+    holding = [f for f in st.flights.values() if f.direction == "arrival" and f.status == "holding"]
+    # a fresh diversion is a signal, unless the FAA program behind it has already ended (then it is aftermath: recovery)
+    over = p is not None and p.ended is not None
+    fresh = [] if over else [f for f in st.flights.values() if f.direction == "arrival" and f.status in ("diverted", "resumed")
+                             and f.diverted_at and st.t - f.diverted_at <= timedelta(minutes=d["fresh_diversion_min"])]
+    if len(holding) + len(fresh) >= d["holding_or_diverted_inbound"]:
+        why.append(f"{len(holding)} inbound flights holding, {len(fresh)} just diverted")
+    cx = [f for f in st.flights.values() if f.cancelled_at and st.t - f.cancelled_at <= timedelta(minutes=d["cancellations_window_min"])]
+    if len(cx) >= d["cancellations_threshold"]:
+        why.append(f"{len(cx)} flights cancelled in the last {d['cancellations_window_min']} min")
+    return why
 
 
-def _classify(st: State, health: list[dict], s: dict) -> dict:
+def _wave_seen(st: State, s: dict) -> bool:
+    """Was there, earlier today, a burst of cancellations big enough to count as abnormal? (Then what follows is recovery.)"""
+    d = s["detect"]
+    times = sorted(f.cancelled_at for f in st.flights.values() if f.cancelled_at)
+    k, w = d["cancellations_threshold"], timedelta(minutes=d["cancellations_window_min"])
+    return any(times[i + k - 1] - times[i] <= w for i in range(len(times) - k + 1)) if len(times) >= k else False
+
+
+def _aftermath(st: State) -> list[str]:
+    """What still needs looking after once operations are back (for the recovery status)."""
+    out = []
+    cx = [f for f in st.flights.values() if f.status == "cancelled"]
+    if cx:
+        out.append(f"{len(cx)} cancelled flights' passengers")
+    if st.stranded_overnight:
+        out.append(f"{st.stranded_overnight} passengers stranded overnight")
+    away = [f.id for f in st.flights.values() if f.status in ("diverted", "resumed")]
+    if away:
+        out.append(f"{len(away)} aircraft out of position")
+    return out
+
+
+def _classify(st: State, health: dict, s: dict) -> dict:
     """A02: map the signals to a type, with a confidence from how many independent sources agree, and the evidence."""
     c = s["classify"]
     votes, evidence = {}, []
@@ -70,43 +111,53 @@ def _classify(st: State, health: list[dict], s: dict) -> dict:
         if hit:
             vote(hit[0], "faa_feed", p.notices[:1], f"FAA notice reason: '{p.reason}'")
         elif p.notices:
-            vote("faa_program", "faa_feed", p.notices[:1], "FAA program with no stated weather reason")
+            vote("unknown", "faa_feed", p.notices[:1], "FAA program with no stated reason")
     for start, end, eids, reason in st.ramp_closures:
         if reason and "lightning" in reason:
             vote("weather", "weather_feed", [(eids[0], start, "ramp_closed")], "lightning detected near the ramp")
+    for n in st.notices:
+        kind = c["notice_kinds"].get(n.kind)
+        if kind:
+            vote(kind, n.source, [n.event], f"{n.source.replace('_', ' ')} notice: {n.kind.replace('_', ' ')}"
+                                            + (f" ({n.area})" if n.area else ""))
+    for system, h in health.items():
+        if h["status"] != "up":
+            vote("it_outage", "system_monitor", [h["event"]] if h.get("event") else [], f"{system} reported {h['status']}")
     codes = st.delay_reasons
     if codes:
-        top = max(codes, key=codes.get)
+        top = max(sorted(codes), key=codes.get)
         delayed = [f for f in st.flights.values() if f.delay_reason == top]
-        mapped = "weather" if top == "weather" else top if top in c["controllable_by_type"] else None
+        mapped = top if top in c["controllable_by_type"] else None
         if mapped:
             vote(mapped, "flight_ops", [delayed[0].events[0]] if delayed and delayed[0].events else [],
                  f"{codes[top]} delay reports coded '{top}'")
-    down = [h for h in health if h["status"] != "up"]
-    if down:
-        votes.setdefault("it_outage", set()).add("system_health")
-        evidence.append({"event_id": None, "at": None, "type": "system_health", "source": "system_health", "points_to": "it_outage",
-                         "note": f"{', '.join(h['system'] for h in down)} not up"})
     crew = [f for f in st.flights.values() if f.cancel_reason == "crew out of legal duty"]
-    external = {k for k in votes if k != "crew"}
+    external = {k for k in votes if k not in ("crew", "unknown")}
     if len(crew) >= c["crew_cancellations_for_crew_cause"] and not external:
         vote("crew", "flight_ops", [crew[0].events[-1]], f"{len(crew)} cancellations for crew out of legal duty")
 
-    if not votes:
-        return {"type": "unknown", "likely_cause": "abnormal signals with no stated cause yet", "confidence": 0.3, "evidence": evidence}
-    best = max(sorted(votes), key=lambda k: len(votes[k]))
-    agree = len(votes[best])
+    if len(crew) >= c["crew_cancellations_for_crew_cause"] and external:
+        # crews timing out alongside an outside cause: reported as a possible second problem, never as the main cause
+        votes.setdefault("crew", set()).add("crew_cancellations")
+        evidence.append({"event_id": crew[0].events[-1][0], "at": crew[0].events[-1][1].isoformat(), "type": "flight_cancelled",
+                         "source": "flight_ops", "points_to": "crew", "note": f"{len(crew)} cancellations for crew out of legal duty"})
+    known = {k: v for k, v in votes.items() if k != "unknown"}
+    if not known:
+        return {"type": "unknown", "likely_cause": "suspected: abnormal signals with no clear cause yet", "confidence": c["unknown_confidence"],
+                "evidence": evidence, "others": []}
+    best = max(sorted(k for k in known if not (k == "crew" and external)) or sorted(known), key=lambda k: len(known[k]))
+    agree = len(known[best])
     ladder = c["confidence_by_agreeing_sources"]
     conf = ladder[min(agree, len(ladder)) - 1]
-    others = [k for k in votes if k != best]
+    others = sorted(k for k in known if k != best)
     if others:
         conf = min(conf, c["confidence_if_signals_disagree"])
-    words = {"weather": "thunderstorms / lightning at MCI", "faa_program": "an FAA traffic program at MCI",
-             "it_outage": "a Southwest systems outage", "airport": "an airport problem (runway or power)",
-             "security": "a security event", "crew": "crews running out of legal duty"}
-    sources = sorted(votes[best])
-    return {"type": best, "likely_cause": f"suspected: {words.get(best, best)} (signals from {', '.join(sources)})",
-            "confidence": round(conf, 2), "evidence": evidence, "disagreeing": others}
+    # a second incident: another cause that a notice-type source reports on its own (not just a delay code)
+    second = sorted(k for k in others if known[k] & set(c["second_cause_sources"]) or k == "crew")
+    text = f"suspected: {WORDS.get(best, best)} (signals from {', '.join(sorted(known[best]))})"
+    if second:
+        text += "; also suspected: " + "; ".join(f"{WORDS.get(k, k)} (signals from {', '.join(sorted(known[k]))})" for k in second)
+    return {"type": best, "likely_cause": text, "confidence": round(conf, 2), "evidence": evidence, "others": second}
 
 
 def _controllable(st: State, kind: str, s: dict) -> tuple[bool | None, list[dict]]:
@@ -135,31 +186,40 @@ def _controllable(st: State, kind: str, s: dict) -> tuple[bool | None, list[dict
 
 
 def _expected_end(st: State, kind: str, s: dict) -> dict:
-    """A05: earliest / likely / latest. Never a single time while it is still running."""
+    """A05: earliest / likely / latest, with a confidence. Never a single time while it is still running.
+    The margins and confidences come from the settings file (calibrated on training days, then frozen)."""
     x = s["expected_end"]
+    none = {"earliest": None, "likely": None, "latest": None, "confidence": None, "what": None, "extensions": 0, "ended": None}
     p = st.program
-    if p is None and st.ramp_open:
-        return {"earliest": None, "likely": None, "latest": None, "confidence": None, "what": None, "extensions": 0, "ended": None}
-    if p is not None and p.ended is not None:
-        if st.ramp_open:
-            return {"earliest": p.ended, "likely": p.ended, "latest": p.ended, "confidence": 1.0, "what": "ended",
-                    "extensions": p.extensions, "ended": p.ended}
-    if p is None or p.ended is not None:      # only the ramp is closed
+    if p is not None and p.ended is None:
+        running_h = max(0.0, (st.t - p.started).total_seconds() / 3600)
+        n = p.extensions + p.shortened
+        margin = (x["base_margin_min"].get(kind, x["base_margin_min"]["unknown"]) + x["margin_per_extension_min"] * n
+                  + x["margin_per_hour_running_min"] * running_h)
+        margin = min(margin, x["max_margin_min"])
+        ladder = x["confidence_by_changes"]
+        conf = ladder[min(n, len(ladder) - 1)]
+        likely = p.announced_end
+        return {"earliest": max(st.t, likely - timedelta(minutes=x["early_margin_min"])), "likely": likely,
+                "latest": likely + timedelta(minutes=round(margin)), "confidence": conf, "what": p.kind,
+                "extensions": p.extensions, "ended": None}
+    timed = [n for n in st.active_notices() if n.expected_end]
+    if timed:                                        # an airport notice with an expected end (power, runway)
+        likely = max(n.expected_end for n in timed)
+        return {"earliest": max(st.t, likely - timedelta(minutes=x["early_margin_min"])), "likely": likely,
+                "latest": likely + timedelta(minutes=x["notice_margin_min"]), "confidence": x["notice_confidence"], "what": "notice",
+                "extensions": 0, "ended": None}
+    if not st.ramp_open:
         likely = st.ramp_expected_open or st.t
-        return {"earliest": likely, "likely": likely, "latest": likely + timedelta(minutes=x["base_margin_min"]["weather"]),
-                "confidence": x["base_confidence"], "what": "ramp", "extensions": 0, "ended": p.ended if p else None}
-    running_h = max(0.0, (st.t - p.started).total_seconds() / 3600)
-    margin = (x["base_margin_min"].get(kind, x["base_margin_min"]["unknown"]) + x["margin_per_extension_min"] * p.extensions
-              + x["margin_per_hour_running_min"] * running_h)
-    margin = min(margin, x["max_margin_min"])
-    conf = max(x["min_confidence"], x["base_confidence"] - x["confidence_drop_per_extension"] * p.extensions)
-    likely = p.announced_end
-    return {"earliest": likely - timedelta(minutes=x["early_margin_min"]), "likely": likely,
-            "latest": likely + timedelta(minutes=round(margin)), "confidence": round(conf, 2), "what": p.kind,
-            "extensions": p.extensions, "ended": None}
+        return {"earliest": max(st.t, likely), "likely": likely, "latest": likely + timedelta(minutes=x["notice_margin_min"]),
+                "confidence": x["notice_confidence"], "what": "ramp", "extensions": 0, "ended": None}
+    if p is not None and p.ended is not None:
+        return {"earliest": p.ended, "likely": p.ended, "latest": p.ended, "confidence": 1.0, "what": "ended",
+                "extensions": p.extensions, "ended": p.ended}
+    return none
 
 
-def _impact(st: State, end: dict, s: dict) -> dict:
+def _impact(st: State, end: dict, others: list, s: dict) -> dict:
     """A07 (and Q05): counts as of T. Flight ids and counts only; no names."""
     i = s["impact"]
     p = st.program
@@ -171,40 +231,40 @@ def _impact(st: State, end: dict, s: dict) -> dict:
     deps = [f for f in st.flights.values() if f.direction == "departure" and lo <= f.sched_dep <= hi]
     arrs = [f for f in st.flights.values() if f.direction == "arrival" and lo <= f.sched_arr <= hi]
 
+    def ever_diverted(f):
+        return any(e[2] == "flight_diverted" for e in f.events)
+
     def counts(fl):
         out = {k: 0 for k in ("delayed", "holding", "diverted", "cancelled", "scheduled", "departed", "arrived", "resumed")}
         for f in fl:
             out[f.status] = out.get(f.status, 0) + 1
         out["ever_delayed_30_plus"] = sum(1 for f in fl if f.delay_min >= 30)
-        out["ever_diverted"] = sum(1 for f in fl if any(e[2] == "flight_diverted" for e in f.events))
+        out["ever_diverted"] = sum(1 for f in fl if ever_diverted(f))
         return out
 
     affected = [f for f in deps + arrs if f.status in ("delayed", "holding", "diverted", "resumed", "cancelled") or f.delay_min >= 30
-                or any(e[2] == "flight_diverted" for e in f.events)]
-    closed_min = 0
-    for start, stop, _, _ in st.ramp_closures:
-        closed_min += int(((stop or st.t) - start).total_seconds() // 60)
+                or ever_diverted(f)]
+    closed_min = sum(int(((stop or st.t) - start).total_seconds() // 60) for start, stop, _, _ in st.ramp_closures)
 
     def score(f):
         if f.status == "cancelled":
             return 10000
-        if any(e[2] == "flight_diverted" for e in f.events) and f.status != "arrived":
+        if ever_diverted(f) and f.status != "arrived":
             return 9000
         if f.status == "holding":
             return 8000
         return f.delay_min
 
-    worst = sorted(affected, key=lambda f: (-score(f), f.id))[: i["worst_affected"]]
-
     def why(f):
         if f.status == "cancelled":
             return f"cancelled: {f.cancel_reason}"
-        if any(e[2] == "flight_diverted" for e in f.events) and f.status != "arrived":
+        if ever_diverted(f) and f.status != "arrived":
             return f"diverted to {f.diverted_to}" + (" (on its way back)" if f.status == "resumed" else "")
         if f.status == "holding":
             return "holding over MCI"
         return f"delayed {f.delay_min} min"
 
+    worst = sorted(affected, key=lambda f: (-score(f), f.id))[: i["worst_affected"]]
     crowd = st.crowd or {}
     return {
         "window": {"from": lo.isoformat(), "to": hi.isoformat()},
@@ -219,13 +279,16 @@ def _impact(st: State, end: dict, s: dict) -> dict:
                  "closures": [{"from": a.isoformat(), "to": b.isoformat() if b else None} for a, b, _, _ in st.ramp_closures]},
         "terminal": {"people": crowd.get("people_in_terminal"), "capacity": crowd.get("terminal_capacity"),
                      "as_of": st.crowd_at.isoformat() if st.crowd_at else None},
+        "active_notices": [{"source": n.source, "kind": n.kind, "area": n.area, "since": n.since.isoformat()} for n in st.active_notices()],
+        "other_suspected_causes": others,
         "stranded_overnight": st.stranded_overnight, "stranded_overnight_local": st.stranded_local,
         "next_day_flights": st.next_day_flights,
+        "inputs_set_aside": {"unreadable": len(st.unreadable), "duplicates": st.duplicates},
         "worst_affected": [{"flight_id": f.id, "why": why(f)} for f in worst],
     }
 
 
-def _conflicts(st: State, health: list[dict], stale: list[dict], s: dict) -> list[dict]:
+def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict]:
     """A09: facts that disagree. Both sides are recorded; the agent never picks one."""
     d = s["data"]
     out = []
@@ -242,10 +305,9 @@ def _conflicts(st: State, health: list[dict], stale: list[dict], s: dict) -> lis
                                 f"are still holding {int((st.t - p.ended).total_seconds() // 60)} min later",
                         "values": [{"source": "faa_feed", "says": f"stop ended {hhmm(p.ended)}"},
                                    {"source": "flight_ops", "says": f"still holding: {', '.join(holding)}"}]})
-    by_system = {h["system"]: h for h in health}
     for st_ in stale:
         system = d["system_for_feed"].get(st_["source"])
-        if system and by_system.get(system, {}).get("status") == "up":
+        if system and health.get(system, {}).get("status") == "up":
             out.append({"key": f"health-up-feed-stopped:{st_['source']}:{st_['since']}",
                         "what": f"system health says {system} is up, but its feed has sent nothing since {st_['since']}",
                         "values": [{"source": "system_health", "says": f"{system}: up"},
@@ -263,23 +325,24 @@ def _summary(a: dict, st: State) -> str:
     imp = a["impact"]
     s = []
     p = st.program
+    if a["status"] == "recovery":
+        s.append(f"Operations at MCI are back, but the aftermath remains: {'; '.join(a['aftermath'])}.")
     if p and p.ended is None:
-        ext = {0: "", 1: " It was extended once.", 2: " It was extended twice."}.get(p.extensions, f" It was extended {p.extensions} times.")
+        n = p.extensions + p.shortened
+        ext = {0: "", 1: " The end time was changed once."}.get(n, f" The end time was changed {n} times.")
         s.append(f"{p.kind.replace('_', ' ').capitalize()} at MCI since {hhmm(p.started)} for {p.reason or 'an unstated reason'} (FAA). "
                  f"Expected to end {hhmm(a['end_likely'])} (range {hhmm(a['end_earliest'])}-{hhmm(a['end_latest'])}, "
                  f"{a['end_confidence_word']} confidence).{ext}")
     elif p and p.ended:
-        s.append(f"The {p.kind.replace('_', ' ')} at MCI ({hhmm(p.started)}-{hhmm(p.ended)}, {p.reason}) has ended; recovery is under way.")
+        s.append(f"The {p.kind.replace('_', ' ')} at MCI ({hhmm(p.started)}-{hhmm(p.ended)}, {p.reason or 'no stated reason'}) has ended.")
+    for n in st.active_notices():
+        s.append(f"{n.source.replace('_', ' ').capitalize()} reports {n.kind.replace('_', ' ')}"
+                 f"{' in ' + n.area if n.area else ''} since {hhmm(n.since)}.")
     s.append(f"Suspected cause: {a['likely_cause'].replace('suspected: ', '')} (confidence {a['confidence']:.2f}).")
     d, r = imp["departures"], imp["arrivals"]
     s.append(f"{d['ever_diverted'] + r['ever_diverted']} inbound flights diverted, {d['cancelled'] + r['cancelled']} cancelled, "
              f"{d['ever_delayed_30_plus'] + r['ever_delayed_30_plus']} delayed 30+ min, about {imp['passengers_on_affected_flights']:,} "
              f"passengers on affected flights.")
-    ramp = imp["ramp"]
-    if ramp["closures"]:
-        spans = ", ".join(f"{hhmm(datetime.fromisoformat(c['from']))}-{hhmm(datetime.fromisoformat(c['to'])) if c['to'] else 'now'}"
-                          for c in ramp["closures"])
-        s.append(f"Ramp {'closed' if not ramp['open'] else 'was closed'} for lightning {spans}.")
     review = [f for f in a["flight_controllability"] if f["proposed"] == "needs_human_review"]
     if review:
         s.append(f"{len(review)} cancellation(s) ({', '.join(f'{f['flight_id']}, {f['reason']}' for f in review)}) need a human to "
@@ -296,6 +359,14 @@ def _word(conf, s):
     return "high" if conf >= w["high"] else "medium" if conf >= w["medium"] else "low"
 
 
+def _health(rows: list[dict], st: State) -> dict:
+    """System status as of T: the system_health table, overridden by the status changes the monitor published up to T."""
+    out = {r["system"]: {"status": r["status"], "event": None} for r in rows}
+    for system, h in st.systems.items():
+        out[system] = {"status": h["status"], "event": h["event"], "since": h["since"]}
+    return out
+
+
 # ---------------------------------------------------------------- one assessment
 
 def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict | None = None) -> dict:
@@ -303,13 +374,11 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
     s = settings or load_settings()
     memory = memory or Memory()
     t = ctx.now
-    new = ctx.read_events(since=memory.last_read)
-    memory.events.extend(new)
-    memory.last_read = t
+    events = ctx.read_events()                       # everything delivered by now (late events included, in their true order)
     if memory.schedule is None:
         memory.schedule = ctx.read("flights")
-    health = ctx.read("system_health")
-    st = build_state(memory.schedule, memory.events, t)
+    st = build_state(memory.schedule, events, t)
+    health = _health(ctx.read("system_health"), st)
 
     max_age = ctx.contract.max_data_age_sec
     stale = []
@@ -320,11 +389,13 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
     sources = [{"fact": f"{feed} heartbeat", "source": feed, "as_of": ctx.feed_last(feed).isoformat()} for feed in s["data"]["depends_on"]]
     sources.append({"fact": "published schedule", "source": "flights schedule (published before the day)", "as_of": DAY0.isoformat()})
     data_as_of = min(ctx.feed_last(f) for f in s["data"]["depends_on"])
+    down = [{"system": k, "since": hhmm(v.get("since")), "minutes": int((t - v["since"]).total_seconds() // 60) if v.get("since") else 0}
+            for k, v in health.items() if v["status"] != "up"]
 
     a = {"assessed_at": t, "stale_sources": stale, "conflicts": [], "flight_controllability": [], "evidence": [], "impact": {},
          "type": None, "likely_cause": None, "confidence": None, "incident_controllable": None,
          "end_earliest": None, "end_likely": None, "end_latest": None, "end_confidence": None, "end_confidence_word": "no",
-         "data_as_of": data_as_of, "sources": sources, "abnormal_because": []}
+         "data_as_of": data_as_of, "sources": sources, "abnormal_because": [], "aftermath": [], "systems_down": down}
     if stale:
         first = stale[0]
         a["status"] = f"cannot_assess: {first['source']} stale since {first['since']}"
@@ -333,24 +404,28 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
         if a["conflicts"]:
             a["decision_ids"].append("A09")
     else:
-        abnormal, because = _detect(st, s)
+        because = _detect(st, health, s)
         a["abnormal_because"] = because
-        if not abnormal:
-            a["status"] = "normal"
-            a["decision_ids"] = ["A01"]
-        else:
-            a["status"] = "abnormal"
+        aftermath = _aftermath(st) if (st.incident_seen or _wave_seen(st, s)) else []
+        if because or aftermath:
+            a["status"] = "abnormal" if because else "recovery"
+            a["aftermath"] = aftermath
             cls = _classify(st, health, s)
             a.update(type=cls["type"], likely_cause=cls["likely_cause"], confidence=cls["confidence"], evidence=cls["evidence"])
             a["incident_controllable"], a["flight_controllability"] = _controllable(st, cls["type"], s)
             end = _expected_end(st, cls["type"], s)
             a.update(end_earliest=end["earliest"], end_likely=end["likely"], end_latest=end["latest"], end_confidence=end["confidence"],
                      end_confidence_word=_word(end["confidence"], s))
-            a["impact"] = _impact(st, end, s)
+            a["impact"] = _impact(st, end, cls["others"], s)
             a["conflicts"] = _conflicts(st, health, stale, s)
             a["decision_ids"] = ["A01", "A02", "A03", "A05", "A07"] + (["A09"] if a["conflicts"] else []) + \
                                 (["Q05"] if st.stranded_overnight else [])
-            a["_extensions"] = end["extensions"]
+            if st.unreadable:
+                a["evidence"].append({"event_id": None, "at": None, "type": "unreadable_inputs", "source": "several",
+                                      "points_to": "unknown", "note": f"{len(st.unreadable)} event(s) set aside as unreadable"})
+        else:
+            a["status"] = "normal"
+            a["decision_ids"] = ["A01"]
     a["summary"] = _summary(a, st)
     a["_state"] = st
 
@@ -361,9 +436,12 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
     if not write:
         return result
     if changed:
+        if a["status"] == "abnormal" and (memory.last is None or memory.last["status"] in ("normal",)):
+            memory.incident_no += 1               # a new incident: its proposals start afresh
+            memory.open = {}
         _write(ctx, memory, a, snap, result)
     if memory.last_id is not None:
-        _propose(ctx, memory, a, st, result, s)
+        _propose(ctx, memory, a, st, result, s, health)
     return result
 
 
@@ -374,6 +452,7 @@ def _snapshot(a):
             "ends": [a["end_earliest"], a["end_likely"], a["end_latest"]],
             "cancelled": d.get("cancelled", 0) + r.get("cancelled", 0),
             "diverted": d.get("ever_diverted", 0) + r.get("ever_diverted", 0),
+            "others": imp.get("other_suspected_causes", []),
             "conflicts": sorted(c["key"] for c in a["conflicts"]), "stale": sorted(x["source"] for x in a["stale_sources"])}
 
 
@@ -381,7 +460,7 @@ def _changed(last, snap, s) -> bool:
     w = s["write_when"]
     if last is None:
         return snap["status"] != "normal"            # normal operations and nothing before: write nothing
-    if snap["status"] != last["status"] or snap["type"] != last["type"]:
+    if snap["status"] != last["status"] or snap["type"] != last["type"] or snap["others"] != last["others"]:
         return True
     if (snap["confidence"] is None) != (last["confidence"] is None):
         return True
@@ -446,65 +525,85 @@ def _output(a, memory, title, why, decision, options=None):
             "summary": a["summary"], "assessment_version": memory.version}
 
 
-def _propose(ctx, memory, a, st, result, s):
-    """Proposals for a human (pending; the orchestrator's rule check reviews them later). Each one only once."""
-    def once(key, action, decision, title, why, options=None, rung=None):
-        if key in memory.proposed:
-            return
-        memory.proposed.add(key)
-        rec = ctx.propose(action, _output(a, memory, title, why, decision, options), safety_rung=rung)
-        result["proposals"].append({"decision": decision, "id": rec, "title": title})
-        memory.history.append({"kind": "proposal", "at": a["assessed_at"], "decision": decision, "title": title, "action": action})
+def _propose(ctx, memory, a, st, result, s, health):
+    """Proposals for a human (pending; the orchestrator's rule check reviews them later).
+    One open proposal per decision per incident: a new value supersedes the old one instead of adding another."""
+    def propose(decision, key, action, title, why, options=None):
+        cur = memory.open.get(decision)
+        if cur and cur["key"] == key:
+            return                                   # the same question is already open
+        rec = ctx.propose(action, _output(a, memory, title, why, decision, options), supersedes=cur["id"] if cur else None)
+        memory.open[decision] = {"id": rec, "key": key}
+        result["proposals"].append({"decision": decision, "id": rec, "title": title, "supersedes": cur["id"] if cur else None})
+        memory.history.append({"kind": "proposal", "at": a["assessed_at"], "decision": decision, "title": title, "action": action,
+                               "supersedes": bool(cur)})
 
-    if a["status"].startswith("cannot_assess"):
-        for x in a["stale_sources"]:
-            if x["minutes"] > s["data"]["propose_s01_after_down_min"]:
-                once(("S01", x["source"], x["since"]), "switch_to_manual_fallback", "S01",
-                     f"{x['source']} has been down since {x['since']}: switch to the manual fallback?",
-                     f"No heartbeat from {x['source']} for {x['minutes']} min; the assessment depends on it.")
-        for c in a["conflicts"]:
-            once(("A09", c["key"]), "resolve_source_conflict", "A09", "Two sources disagree: which one is right?", c["what"],
-                 options=c["values"])
+    t = a["assessed_at"]
+    down_after = timedelta(minutes=s["data"]["propose_s01_after_down_min"])
+    for x in a["stale_sources"]:
+        if x["minutes"] > s["data"]["propose_s01_after_down_min"]:
+            propose("S01", ("feed", x["source"], x["since"]), "switch_to_manual_fallback",
+                    f"{x['source']} has been down since {x['since']}: switch to the manual fallback?",
+                    f"No heartbeat from {x['source']} for {x['minutes']} min; the assessment depends on it.")
+    for d in a["systems_down"]:
+        if d["minutes"] > s["data"]["propose_s01_after_down_min"]:
+            propose("S01", ("system", d["system"], d["since"]), "switch_to_manual_fallback",
+                    f"{d['system']} reported down since {d['since']}: switch to the manual fallback?",
+                    f"The system monitor reports {d['system']} down for {d['minutes']} min.")
+    if a["conflicts"]:
+        keys = tuple(sorted(c["key"] for c in a["conflicts"]))
+        if not (memory.open.get("A09") and set(keys) <= set(memory.open["A09"]["key"])):
+            propose("A09", keys, "resolve_source_conflict", "Sources disagree: which one is right?",
+                    "; ".join(c["what"] for c in a["conflicts"]), options=[v for c in a["conflicts"] for v in c["values"]])
+    _ask_t01(ctx, memory, a, st, result)
+    if a["status"] not in ("abnormal", "recovery"):
         return
-    if a["status"] != "abnormal":
-        return
-    once(("A02", a["type"]), "classify_cause", "A02", f"Confirm the type of event: {a['type']}",
-         f"{a['likely_cause']}; confidence {a['confidence']:.2f}. Evidence: " +
-         "; ".join(e["note"] for e in a["evidence"][:4]))
+    propose("A02", (a["type"], tuple(a["impact"].get("other_suspected_causes", []))), "classify_cause", f"Confirm the type of event: {a['type']}",
+            f"{a['likely_cause']}; confidence {a['confidence']:.2f}. Evidence: " + "; ".join(e["note"] for e in a["evidence"][:4]))
     fc = a["flight_controllability"]
     if fc:
-        key = ("A03", a["incident_controllable"], tuple(sorted((f["flight_id"], f["proposed"]) for f in fc)))
         review = [f["flight_id"] for f in fc if f["proposed"] == "needs_human_review"]
-        once(key, "classify_cause", "A03",
-             f"Within Southwest's control? Event: {'no' if a['incident_controllable'] is False else 'yes' if a['incident_controllable'] else 'unknown'}; "
-             f"{len(fc)} flight(s), {len(review)} need review",
-             "Proposed per flight with evidence; a customer service supervisor decides (this decides what passengers are owed).",
-             options=[{k: f[k] for k in ("flight_id", "kind", "reason", "proposed", "why")} for f in fc])
+        word = {False: "no", True: "yes"}.get(a["incident_controllable"], "unknown")
+        propose("A03", (a["incident_controllable"], tuple(sorted((f["flight_id"], f["proposed"]) for f in fc))), "classify_cause",
+                f"Within Southwest's control? Event: {word}; {len(fc)} flight(s), {len(review)} need review",
+                "Proposed per flight with evidence; a customer service supervisor decides (this decides what passengers are owed).",
+                options=[{k: f[k] for k in ("flight_id", "kind", "reason", "proposed", "why")} for f in fc])
     p = st.program
-    if p and (p.extensions or p.shortened):
-        once(("A06", p.started.isoformat(), p.extensions, p.shortened), "replan_after_program_change", "A06",
-             f"The FAA {'extended' if p.extensions else 'shortened'} the stop to {hhmm(p.announced_end)}: re-plan now?",
-             f"New announced end {hhmm(p.announced_end)} (range {hhmm(a['end_earliest'])}-{hhmm(a['end_latest'])}, "
-             f"{a['end_confidence_word']} confidence).")
-    for c in a["conflicts"]:
-        once(("A09", c["key"]), "resolve_source_conflict", "A09", "Two sources disagree: which one is right?", c["what"],
-             options=c["values"])
-    if p and p.ended is None and (memory.last_p02 is None or a["assessed_at"] - memory.last_p02 >=
-                                  timedelta(minutes=s["proposals"]["faa_status_check_every_min"])):
-        memory.last_p02 = a["assessed_at"]
-        once(("P02", a["assessed_at"].isoformat()), "contact_partner", "P02", "Check the stop's status with the FAA",
-             f"Stop active since {hhmm(p.started)}, announced end {hhmm(p.announced_end)}; a fresh FAA status keeps the end time honest.")
-    reason = (p.reason if p else "") or ""
-    if "power" in reason.lower():
-        once(("T03", p.started.isoformat()), "switch_to_manual_fallback", "T03", "Power outage at the airport: switch to manual procedures?",
-             f"FAA notice reason: '{reason}'.")
-    if "runway" in reason.lower():
-        once(("T04", p.started.isoformat()), "replan_after_program_change", "T04", "Runway closure: re-plan arrivals and departures?",
-             f"FAA notice reason: '{reason}'.")
-    if a["type"] == "security" and ("T01",) not in memory.proposed:
-        memory.proposed.add(("T01",))
-        ctx.ask_human("T01", {"faa_reason": reason, "since": p.started.isoformat() if p else None,
-                              "evidence": _jsonable(a["evidence"][:5])}, "a security report: only a human decides what to do")
+    if p and p.ended is None and (p.extensions or p.shortened):
+        propose("A06", (p.started.isoformat(), p.extensions, p.shortened), "replan_after_program_change",
+                f"The FAA {'extended' if p.extensions else 'shortened'} the stop to {hhmm(p.announced_end)}: re-plan now?",
+                f"New announced end {hhmm(p.announced_end)} (range {hhmm(a['end_earliest'])}-{hhmm(a['end_latest'])}, "
+                f"{a['end_confidence_word']} confidence).")
+    quiet = timedelta(minutes=s["proposals"]["faa_quiet_min"])
+    if p and p.ended is None and t - p.last_notice_at >= quiet and (memory.last_p02 is None or t - memory.last_p02 >= quiet):
+        memory.last_p02 = t
+        propose("P02", ("check", t.isoformat()), "contact_partner", "Check the stop's status with the FAA",
+                f"Stop active since {hhmm(p.started)}, announced end {hhmm(p.announced_end)}, and no FAA update since "
+                f"{hhmm(p.last_notice_at)}.")
+    reasons = ((p.reason if p else "") or "").lower()
+    kinds = {n.kind for n in st.active_notices("airport_ops")}
+    if "power" in reasons or "power_outage" in kinds:
+        propose("T03", ("power", p.started.isoformat() if p else ""), "switch_to_manual_fallback",
+                "Power outage at the airport: switch to manual procedures?", "FAA notice or airport ops notice reports a power outage.")
+    if "runway" in reasons or "runway_closed" in kinds:
+        propose("T04", ("runway", p.started.isoformat() if p else ""), "replan_after_program_change",
+                "Runway closure: re-plan arrivals and departures?", "FAA notice or airport ops notice reports a runway closure.")
+
+
+def _ask_t01(ctx, memory, a, st, result):
+    """A security report goes straight to a human (T01); the agent decides nothing about it."""
+    reports = [n for n in st.active_notices("police_tsa") if n.kind == "security_threat"]
+    p = st.program
+    if not reports and p and p.ended is None and "security" in (p.reason or "").lower():
+        reports.append(None)
+    for n in reports:
+        key = ("T01", n.since.isoformat() if n else p.started.isoformat())
+        if key in memory.asked:
+            continue
+        memory.asked.add(key)
+        facts = {"report": {"kind": n.kind, "action": None, "area": n.area, "since": n.since.isoformat()} if n else
+                 {"faa_reason": p.reason, "since": p.started.isoformat()}}
+        ctx.ask_human("T01", facts, "a security report: only a human decides what to do")
         result["proposals"].append({"decision": "T01", "id": None, "title": "security report handed to a human"})
         memory.history.append({"kind": "proposal", "at": a["assessed_at"], "decision": "T01", "title": "security report: ask_human",
                                "action": "ask_human"})

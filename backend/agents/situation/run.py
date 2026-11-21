@@ -33,20 +33,24 @@ def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = Non
     cur.execute("SELECT DISTINCT occurred_at FROM events WHERE run_id = %s AND type = ANY(%s) AND occurred_at BETWEEN %s AND %s",
                 (run_id, r["trigger_events"], start, end))
     times |= {row[0] for row in cur.fetchall()}
-    for at in feeds.stopped.values():                   # a source going quiet is a status change too
-        times.add(at)
+    # A source going quiet is a status change too: wake when it goes quiet, when its heartbeat is first too old (a watchdog
+    # timer, like a real heartbeat monitor), and when it is back.
+    max_age = timedelta(seconds=int(r["watchdog_after_sec"]))
+    for at in feeds.change_times():
+        times |= {at, at + max_age}
+    times = {t for t in times if start <= t <= end}
     return sorted(times)
 
 
 def _save(memory: Memory) -> dict:
-    return {"version": memory.version, "last": memory.last, "last_id": memory.last_id, "n_events": len(memory.events),
-            "last_read": memory.last_read, "proposed": set(memory.proposed), "last_p02": memory.last_p02, "n_hist": len(memory.history)}
+    return {"version": memory.version, "last": memory.last, "last_id": memory.last_id, "incident_no": memory.incident_no,
+            "open": dict(memory.open), "asked": set(memory.asked), "last_p02": memory.last_p02, "n_hist": len(memory.history)}
 
 
 def _restore(memory: Memory, saved: dict) -> None:
     memory.version, memory.last, memory.last_id = saved["version"], saved["last"], saved["last_id"]
-    del memory.events[saved["n_events"]:]
-    memory.last_read, memory.proposed, memory.last_p02 = saved["last_read"], saved["proposed"], saved["last_p02"]
+    memory.incident_no, memory.open, memory.asked = saved["incident_no"], saved["open"], saved["asked"]
+    memory.last_p02 = saved["last_p02"]
     del memory.history[saved["n_hist"]:]
 
 

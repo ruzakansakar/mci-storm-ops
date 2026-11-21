@@ -260,6 +260,7 @@ CREATE TABLE events (
     payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
     seed         bigint,
     run_id       text,
+    published_at timestamptz,                            -- when the source delivered it, if late; NULL = as it happened
     recorded_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX events_time_idx ON events (occurred_at);
@@ -312,6 +313,7 @@ CREATE TABLE recommendations (
     rank             int,
     safety_rung      int,
     decision_ids     text[],                             -- which decisions in config/decisions.yaml it answers
+    supersedes       bigint REFERENCES recommendations(id),  -- the earlier proposal for the same decision that this one replaces
     rule_check_ok    boolean,                            -- the orchestrator's rule check (backend/rules/check.py); NULL = not checked yet
     rule_check_notes text[],
     rule_ids         text[],                             -- the rules that blocked it (ids in config/rules/)

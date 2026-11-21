@@ -135,7 +135,8 @@ def test_the_seed_7_replay_runs_end_to_end(conn, full):
     rows = conn.execute("SELECT version, status, type, flight_controllability, decision_ids, summary FROM situation_assessments "
                         "WHERE agent_run_id=%s ORDER BY version", (full["agent_run_id"],)).fetchall()
     assert any(s == "abnormal" and t == "weather" for _, s, t, _, _, _ in rows)
-    last_abnormal = [r for r in rows if r[1] == "abnormal"][-1]
+    last_abnormal = [r for r in rows if r[1] in ("abnormal", "recovery")][-1]
+    assert rows[-1][1] == "recovery"                                  # operations are back but the aftermath remains
     fc = {f["flight_id"]: f["proposed"] for f in last_abnormal[3]}
     assert fc["WN1033"] == "needs_human_review"
     assert [fc[f] for f in ("WN1032", "WN1035", "WN1038", "WN1040")] == ["uncontrollable"] * 4

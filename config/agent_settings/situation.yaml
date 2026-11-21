@@ -9,12 +9,17 @@ run:
   day_end: "23:59"                     # assumption
   # assess immediately when one of these happens
   trigger_events: [ground_stop_started, ground_stop_extended, ground_stop_ended, ground_delay_started, ground_delay_extended,
-                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled]
+                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled, airport_ops_notice,
+                   police_tsa_notice, system_status_changed]
+  watchdog_after_sec: 180              # assumption: wake this long after a source goes quiet (its heartbeat is then too old)
 
-detect:                                # A01: abnormal if any of these
+detect:                                # A01: abnormal if any of these (or an FAA program, a closed ramp, an open notice, a system down)
   delayed_departures_window_min: 30    # assumption: look back this far for new departure delays
   delayed_departures_threshold: 3      # assumption: this many newly delayed departures in the window is abnormal
-  holding_or_diverted_inbound: 2       # assumption: this many inbound flights holding or diverted (not back yet) is abnormal
+  holding_or_diverted_inbound: 2       # assumption: this many inbound flights holding, or diverted in the last hour, is abnormal
+  fresh_diversion_min: 60              # assumption: a diversion counts as a fresh signal for this long
+  cancellations_window_min: 60         # assumption
+  cancellations_threshold: 2           # assumption: this many cancellations within the window is abnormal
 
 classify:                              # A02: rules, not AI
   # words in the FAA notice's stated reason -> type
@@ -24,7 +29,13 @@ classify:                              # A02: rules, not AI
     it_outage: [airline request, company systems, it outage]
     airport: [runway, power, airport equipment]
     security: [security, police, evacuation]
-  crew_cancellations_for_crew_cause: 3 # assumption: this many crew-out-of-duty cancellations with no external cause = a crew event
+  notice_kinds:                        # airport ops and police/TSA notice kinds -> type
+    power_outage: airport
+    runway_closed: airport
+    security_threat: security
+  second_cause_sources: [faa_feed, airport_ops, police_tsa, system_monitor]   # a cause these report on their own is a second incident
+  crew_cancellations_for_crew_cause: 2 # assumption: this many crew-out-of-duty cancellations with no external cause = a crew event
+  unknown_confidence: 0.3              # assumption: confidence when nothing points to a cause
   # confidence from how many independent sources agree (1, 2, 3 or more)
   confidence_by_agreeing_sources: [0.5, 0.75, 0.9]   # assumption
   confidence_if_signals_disagree: 0.4  # assumption: when the sources point to different causes
@@ -39,22 +50,24 @@ classify:                              # A02: rules, not AI
   needs_review_reasons: [crew out of legal duty, maintenance, staffing]
   long_delay_min: 180                  # assumption: delays at least this long also get a per-flight controllability
 
-expected_end:                          # A05 / A06
+# A05 / A06. latest = announced end + base margin (by cause) + per change + per hour already running (capped).
+# CALIBRATED on chaos training days 1-100 only (python -m chaos.calibrate), then frozen. See README for before/after.
+expected_end:
   early_margin_min: 0                  # assumption: a stop rarely ends early, so earliest = the announced end
-  base_margin_min:                     # assumption: latest = announced end + this, by cause...
-    weather: 30
-    faa_program: 30
+  base_margin_min:                     # assumption (calibrated)
+    weather: 60
+    faa_program: 60
     it_outage: 60
-    airport: 45
-    security: 45
-    crew: 30
-    unknown: 45
-  margin_per_extension_min: 15         # assumption: ...plus this for each extension so far...
-  margin_per_hour_running_min: 10      # assumption: ...plus this for each hour the stop has already run
+    airport: 60
+    security: 60
+    crew: 60
+    unknown: 60
+  margin_per_extension_min: 0         # assumption (calibrated): per change of the announced end so far
+  margin_per_hour_running_min: 0      # assumption (calibrated)
   max_margin_min: 180                  # assumption
-  base_confidence: 0.7                 # assumption
-  confidence_drop_per_extension: 0.15  # assumption
-  min_confidence: 0.2                  # assumption
+  confidence_by_changes: [0.8, 0.75, 0.75, 0.75, 0.65]   # assumption (calibrated): end confidence after 0, 1, 2, 3, 4+ changes
+  notice_margin_min: 30                # assumption: airport notice or ramp: latest = its expected end + this
+  notice_confidence: 0.5               # assumption
   confidence_words: {high: 0.7, medium: 0.45}   # assumption: at least 0.7 = high, at least 0.45 = medium, else low
 
 impact:
@@ -71,8 +84,7 @@ data:
   holding_after_stop_end_min: 20       # assumption: holding this long after the FAA says the stop ended is a conflict
 
 proposals:
-  faa_status_check_every_min: 30       # P02: assumption
-  min_decisions_per_version: 1
+  faa_quiet_min: 30                    # P02: assumption: ask for an FAA status check only if no FAA update has come in this long
 
 write_when:                            # write a new version only when something meaningful changed
   confidence_change: 0.1               # assumption

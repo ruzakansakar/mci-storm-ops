@@ -10,3 +10,4 @@ dist/
 .vscode/*
 !.vscode/settings.json
 reports/
+chaos/truth/

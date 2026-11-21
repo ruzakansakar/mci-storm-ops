@@ -17,10 +17,37 @@ DEFAULT_PASSENGER = "Maya Torres"
 CHANNEL_TYPES = ("channel_view_updated", "channel_update_failed")
 
 
+RERUN = "python -m simulator.run --seed 7 --scenario a31_storm"
+
+
+def _unfinished(conn, run_id: str | None = None) -> str | None:
+    """A run that has events but no final numbers did not finish (it crashed or was stopped)."""
+    q = "SELECT run_id FROM events WHERE actor = 'simulator' AND run_id IS NOT NULL AND run_id NOT IN (SELECT run_id FROM metric_runs)"
+    args = ()
+    if run_id:
+        q += " AND run_id = %s"
+        args = (run_id,)
+    row = conn.execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
+    return row[0] if row else None
+
+
+def _not_finished_message(run_id: str) -> str:
+    if run_id.startswith("chaos-"):
+        how = f"python -m chaos.run --seed {run_id.split('-', 1)[1]}"
+    else:
+        parts = run_id.split("-")
+        how = f"python -m simulator.run --seed {parts[1][1:]} --scenario {parts[0]}" if len(parts) == 3 else RERUN
+    return f"Run {run_id} did not finish: rerun  {how}"
+
+
 def latest_run_id(conn) -> str:
     row = conn.execute("SELECT run_id FROM metric_runs ORDER BY finished_at DESC, id DESC LIMIT 1").fetchone()
+    broken = _unfinished(conn)
+    if broken and (not row or conn.execute("SELECT max(id) FROM events WHERE run_id=%s", (broken,)).fetchone()[0] >
+                   (conn.execute("SELECT max(id) FROM events WHERE run_id=%s", (row[0],)).fetchone()[0] or 0)):
+        raise SystemExit(_not_finished_message(broken))
     if not row:
-        raise SystemExit("No simulation run found in the database. Run:  python -m simulator.run --seed 7 --scenario a31_storm")
+        raise SystemExit(f"No simulation run found in the database. Run:  {RERUN}")
     return row[0]
 
 
@@ -37,6 +64,8 @@ def collect(conn, run_id: str) -> dict:
     row = conn.execute("SELECT seed, mode, scenario, metrics FROM metric_runs WHERE run_id=%s ORDER BY id DESC LIMIT 1",
                        (run_id,)).fetchone()
     if not row:
+        if _unfinished(conn, run_id):
+            raise SystemExit(_not_finished_message(run_id))
         raise SystemExit(f"No run called '{run_id}'. Use --latest, or check the name with:  SELECT run_id FROM metric_runs")
     seed, mode, scenario, metrics = row
     inc = conn.execute("SELECT kind, title, likely_cause, controllable, status, opened_at, resolved_at, expected_end_min, "

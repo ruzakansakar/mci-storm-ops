@@ -236,7 +236,7 @@ def test_an_agent_can_read_everything_its_contract_allows(db, agent):
         where = ({"id": "PAX0001"} if table == "passengers" else {"passenger_id": "PAX0001"}) if pii else None
         rows = ctx.read(table, where=where, limit=1)
         if rows:
-            assert set(rows[0]) == set(cols)                   # exactly the allowed columns, nothing extra
+            assert set(rows[0]) - {"feed"} == set(cols)        # exactly the allowed columns (+ which feed an event came from)
     assert violations(db, agent) == before
 
 

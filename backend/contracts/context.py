@@ -127,7 +127,7 @@ class AgentContext:
         params = []
         parts = []
         if is_events:                       # no future knowledge, only its run, only its feeds: enforced here, not in agent code
-            parts.append(sql.SQL("occurred_at <= %s"))
+            parts.append(sql.SQL("coalesce(published_at, occurred_at) <= %s"))   # delivered (late events count when they arrive)
             params.append(self.now)
             if since is not None:
                 parts.append(sql.SQL("occurred_at > %s"))
@@ -174,7 +174,10 @@ class AgentContext:
         if self.contract.event_feeds is None:
             return row
         feed, fields = self.contract.event_types.get(row["type"], (None, None))
-        if feed is None or not self.feeds.is_up(feed, row["occurred_at"]):
+        if feed is None:
+            return None
+        silent = self.feeds.window(feed, self.now)
+        if silent and row["occurred_at"] >= silent[0]:      # the feed is silent: nothing it sent since it went quiet arrives yet
             return None
         row = dict(row)
         row["payload"] = {k: v for k, v in (row.get("payload") or {}).items() if k in fields}
@@ -266,7 +269,7 @@ class AgentContext:
             if catalog[d]["proposed_by"] != self.agent:
                 self._violate("decision", f"decision {d} is raised by {catalog[d]['proposed_by']}, not {self.agent}")
 
-    def propose(self, action: str | None, output: dict, safety_rung: int | None = None) -> int:
+    def propose(self, action: str | None, output: dict, safety_rung: int | None = None, supersedes: int | None = None) -> int:
         """Save a proposal for the orchestrator's rule check. It is never shown to a human until that check passes it."""
         if action is not None and action not in self.contract.actions:
             if action in self.rules["autonomy"] and self.rules["autonomy"][action]["level"] == "human_only":
@@ -294,7 +297,8 @@ class AgentContext:
             "incident_id": self.incident_id, "agent": self.agent, "title": output["title"], "why": output["why"],
             "options": output["options"] if output["options"] else [{"action": action, "output": output}],
             "autonomy": a["level"], "approver_role": a.get("approver"), "safety_rung": rung, "decision_ids": output["decision_ids"],
-            "data_as_of": self.oldest_as_of, "status": "pending", "run_id": self.run_id, "created_at": self.now})
+            "data_as_of": self.oldest_as_of, "status": "pending", "run_id": self.run_id, "created_at": self.now,
+            **({"supersedes": supersedes} if supersedes is not None else {})})
 
     def ask_human(self, decision_id: str, facts: dict, reason: str) -> int:
         """For a human-only decision, or when unsure: hand the facts to the named human. Never a recommendation it can act on."""

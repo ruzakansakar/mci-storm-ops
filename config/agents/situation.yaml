@@ -42,6 +42,12 @@ event_feeds:
     passenger_stranded_overnight: [lives_locally, from_flight]   # counts only: no passenger id
   station_ops:                          # stand-in for the station's operations board
     station_status: [people_in_terminal, terminal_capacity, ramp_open]
+  airport_ops:                          # stand-in for the airport authority's operations notices
+    airport_ops_notice: [kind, area, expected_end]
+  police_tsa:                           # stand-in for police / TSA notices
+    police_tsa_notice: [kind, action, area]
+  system_monitor:                       # stand-in for the IT monitoring that writes system_health
+    system_status_changed: [system, status]
 
 writes:
   situation_assessments:
@@ -52,7 +58,7 @@ writes:
   recommendations:
     mode: insert
     columns: [incident_id, agent, title, why, options, autonomy, approver_role, safety_rung, data_as_of, status, run_id, created_at,
-              decision_ids]
+              decision_ids, supersedes]
   events:
     mode: insert
     types: [situation_assessed, cause_suspected, expected_end_updated, human_decision_needed, agent_error]
