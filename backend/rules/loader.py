@@ -108,6 +108,8 @@ def validate(rules: dict) -> None:
             raise RulesError(f"{action}: level must be one of {sorted(LEVELS)}")
         if a["level"] != "auto" and not a.get("approver"):
             raise RulesError(f"{action}: {a['level']} needs an approver role")
+        if a["level"] == "auto" and not a.get("owner"):
+            raise RulesError(f"{action}: an auto action needs an owner role (who approves it when it touches rungs 1-4)")
 
     for k, v in rules["limits"].items():
         if not isinstance(v, (int, float)) or v < 0:

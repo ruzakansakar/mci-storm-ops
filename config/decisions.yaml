@@ -44,7 +44,7 @@ decisions:
   action: classify_cause
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - uncontrollable_causes
@@ -69,7 +69,7 @@ decisions:
   action: classify_cause
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_8_cost
@@ -203,7 +203,7 @@ decisions:
   action: resolve_source_conflict
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - missing_or_stale_data_blocks
@@ -228,7 +228,7 @@ decisions:
   action: declare_recovery
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - rung_6_network
@@ -594,7 +594,7 @@ decisions:
   action: flag_curfew_risk
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - rung_3_infrastructure
@@ -670,7 +670,7 @@ decisions:
   action: flag_maintenance_deadline
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: maintenance_control
   checked_by:
   - orchestrator rule check
   - rung_2_aircraft
@@ -692,7 +692,7 @@ decisions:
   action: swap_aircraft
   decided_by:
     level: needs_approval
-    role: network_operations_control
+    role: maintenance_control
   checked_by:
   - orchestrator rule check
   - rung_2_aircraft
@@ -720,7 +720,7 @@ decisions:
   action: recover_diverted_aircraft
   decided_by:
     level: needs_approval
-    role: network_operations_control
+    role: maintenance_control
   checked_by:
   - orchestrator rule check
   - rung_6_network
@@ -744,7 +744,7 @@ decisions:
   action: refuel_at_diversion
   decided_by:
     level: needs_approval
-    role: dispatcher_and_captain
+    role: maintenance_control
   checked_by:
   - orchestrator rule check
   - rung_2_aircraft
@@ -770,7 +770,7 @@ decisions:
   action: reposition_aircraft
   decided_by:
     level: needs_approval
-    role: network_operations_control
+    role: maintenance_control
   checked_by:
   - orchestrator rule check
   - rung_6_network
@@ -838,7 +838,7 @@ decisions:
   action: flag_crew_legality
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -982,7 +982,7 @@ decisions:
   action: flag_crew_for_tomorrow
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -1094,7 +1094,7 @@ decisions:
   action: flag_crew_legality
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -1457,7 +1457,7 @@ decisions:
   action: set_bag_priority
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: ramp_supervisor
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -1479,7 +1479,7 @@ decisions:
   action: flag_ramp_service_impact
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: ramp_supervisor
   checked_by:
   - orchestrator rule check
   - rung_1_life
@@ -1999,7 +1999,7 @@ decisions:
   action: rebook_passenger
   decided_by:
     level: needs_approval
-    role: customer_service_supervisor
+    role: station_manager
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -2443,7 +2443,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2513,7 +2513,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2596,7 +2596,7 @@ decisions:
   action: arrange_terminal_care
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2620,7 +2620,7 @@ decisions:
   action: arrange_terminal_care
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2689,7 +2689,7 @@ decisions:
   action: arrange_terminal_care
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_1_life
@@ -2936,7 +2936,7 @@ decisions:
   action: add_extra_flight
   decided_by:
     level: needs_approval
-    role: network_operations_control
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_6_network
@@ -2986,7 +2986,7 @@ decisions:
   action: hold_bags
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: ramp_supervisor
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -3040,7 +3040,7 @@ decisions:
   action: hold_bags
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: ramp_supervisor
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -3820,7 +3820,7 @@ decisions:
   action: send_staff_briefing
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -3844,7 +3844,7 @@ decisions:
   action: send_crew_message
   decided_by:
     level: needs_approval
-    role: crew_scheduling
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_7_convenience
@@ -3963,7 +3963,7 @@ decisions:
   action: contact_partner
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - edct_compliance_window_min
@@ -4036,7 +4036,7 @@ decisions:
   action: contact_partner
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_8_cost
@@ -4060,7 +4060,7 @@ decisions:
   action: contact_partner
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_8_cost
@@ -4082,7 +4082,7 @@ decisions:
   action: contact_partner
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_8_cost
@@ -4106,7 +4106,7 @@ decisions:
   action: contact_partner
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - rung_3_infrastructure
@@ -4194,7 +4194,7 @@ decisions:
   action: flag_curfew_risk
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - rung_3_infrastructure
@@ -4262,7 +4262,7 @@ decisions:
   action: flag_crew_for_tomorrow
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -4506,7 +4506,7 @@ decisions:
   action: resolve_source_conflict
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: network_operations_control
   checked_by:
   - orchestrator rule check
   - missing_or_stale_data_blocks
@@ -4759,7 +4759,7 @@ decisions:
   action: flag_crew_legality
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -4785,7 +4785,7 @@ decisions:
   action: flag_crew_legality
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: crew_scheduling
   checked_by:
   - orchestrator rule check
   - rung_4_legal
@@ -4837,7 +4837,7 @@ decisions:
   action: flag_ramp_service_impact
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: ramp_supervisor
   checked_by:
   - orchestrator rule check
   - rung_1_life
@@ -4865,7 +4865,7 @@ decisions:
   action: arrange_ground_transport
   decided_by:
     level: needs_approval
-    role: customer_service_supervisor
+    role: station_manager
   checked_by:
   - orchestrator rule check
   - rung_8_cost
@@ -4925,7 +4925,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -4991,7 +4991,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: station_manager
+    role: customer_service_supervisor
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable

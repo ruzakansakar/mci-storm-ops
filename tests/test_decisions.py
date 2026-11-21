@@ -52,10 +52,77 @@ def test_every_rule_agent_and_action_named_exists():
 
 def test_decided_by_matches_the_autonomy_rules():
     for d in D.values():
-        a = autonomy_for(d["action"], R, safety_rung=None if d["safety_rung"] == "none" else d["safety_rung"])
+        from scripts.build_decisions import owner_for
+        a = autonomy_for(d["action"], R, safety_rung=None if d["safety_rung"] == "none" else d["safety_rung"], owner=owner_for(d["id"]))
         assert d["decided_by"]["level"] == a["level"], d["id"]
         if a["level"] != "auto":
             assert d["decided_by"]["role"] == a["approver"], d["id"]
+
+
+HUMAN_ONLY_ROLES = {v["approver"] for v in R["autonomy"].values() if v["level"] == "human_only"}
+FAMILY_ROLES = {
+    "B": {"network_operations_control"}, "C": {"maintenance_control"}, "D": {"crew_scheduling"},
+    "E": {"station_manager", "ramp_supervisor"}, "G": {"station_manager", "ramp_supervisor"},
+    "K": {"customer_service_supervisor"}, "M": {"customer_service_supervisor"}, "N": {"customer_service_supervisor"},
+    "J": {"customer_service_supervisor"}, "O": {"customer_service_supervisor"},
+}
+EXCEPTIONS = {"F09": {"station_manager", "ramp_supervisor"}, "J04": {"station_manager", "ramp_supervisor"},
+              "J08": {"station_manager", "ramp_supervisor"}, "Q02": {"network_operations_control"}, "Q04": {"network_operations_control"},
+              "O10": {"corporate_communications"}}
+
+
+def test_no_crew_decision_is_approved_by_the_station_manager():
+    assert not [d["id"] for d in D.values() if d["id"].startswith("D") and d["decided_by"].get("role") == "station_manager"]
+    for did in ("D01", "D05", "D09", "D14", "D15"):
+        assert D[did]["decided_by"] == {"level": "needs_approval", "role": "crew_scheduling"}, did
+    assert D["D02"]["decided_by"] == {"level": "human_only", "role": "captain_and_crew_scheduling"}
+
+
+def test_aircraft_decisions_are_approved_by_maintenance_control_only():
+    for d in D.values():
+        if d["id"].startswith("C") and d["decided_by"]["level"] != "auto":
+            role = d["decided_by"]["role"]
+            assert role == "maintenance_control" or (d["decided_by"]["level"] == "human_only" and role in HUMAN_ONLY_ROLES), d["id"]
+    assert D["C02"]["decided_by"]["role"] == "maintenance_control"
+
+
+def test_every_non_auto_decision_has_an_approver_that_matches_its_family():
+    for d in D.values():
+        if d["decided_by"]["level"] != "needs_approval":
+            continue                                    # human-only ones keep their role from autonomy.yaml (diversion, extension...)
+        allowed = EXCEPTIONS.get(d["id"]) or FAMILY_ROLES.get(d["id"][0])
+        if allowed:
+            assert d["decided_by"]["role"] in allowed, (d["id"], d["decided_by"])
+    for d in D.values():
+        if d["decided_by"]["level"] == "human_only":
+            assert d["decided_by"]["role"] in HUMAN_ONLY_ROLES, d["id"]
+    assert D["B08"]["decided_by"] == {"level": "human_only", "role": "dispatcher_and_captain"}
+    assert D["C08"]["decided_by"] == {"level": "human_only", "role": "maintenance_control"}
+    assert D["D07"]["decided_by"] == {"level": "human_only", "role": "crew_scheduling"}
+
+
+def test_no_role_approves_more_than_40_percent_of_decisions():
+    counts = collections.Counter(d["decided_by"]["role"] for d in D.values() if d["decided_by"]["level"] != "auto")
+    assert max(counts.values()) <= 0.4 * len(D), counts
+
+
+def test_an_auto_action_with_no_owner_fails_loudly_instead_of_guessing():
+    import copy
+    import pytest as _pytest
+    from backend.rules.autonomy import NoOwnerRole
+    from backend.rules.loader import RulesError, validate
+    rules = copy.deepcopy(R)
+    rules["autonomy"]["flag_crew_legality"] = {"level": "auto"}
+    with _pytest.raises(NoOwnerRole):
+        autonomy_for("flag_crew_legality", rules, safety_rung=4)
+    with _pytest.raises(RulesError, match="owner"):
+        validate(rules)
+    assert autonomy_for("flag_crew_legality", R, safety_rung=4)["approver"] == "crew_scheduling"      # the action's own owner
+    assert autonomy_for("flag_crew_legality", R, safety_rung=4, owner="maintenance_control")["approver"] == "maintenance_control"
+    assert all(v.get("owner") for v in R["autonomy"].values() if v["level"] == "auto")
+    import inspect
+    from backend.rules import autonomy
+    assert '"approver": "station_manager"}' not in inspect.getsource(autonomy.autonomy_for)
 
 
 def test_each_of_the_five_agents_and_the_orchestrator_proposes_at_least_one():

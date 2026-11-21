@@ -275,6 +275,50 @@ EXTRA_RULES = {
 }
 
 
+# Who owns (and so approves) each decision that needs approval. Human-only decisions keep the role in autonomy.yaml.
+OWNER_BY_FAMILY = {"B": "network_operations_control", "C": "maintenance_control", "D": "crew_scheduling", "E": "station_manager",
+                   "F": "station_manager", "G": "station_manager", "K": "customer_service_supervisor", "M": "customer_service_supervisor",
+                   "N": "customer_service_supervisor", "J": "customer_service_supervisor", "O": "customer_service_supervisor"}
+OWNER = {
+    # ramp work at MCI belongs to the ramp supervisor
+    "E08": "ramp_supervisor", "E09": "ramp_supervisor", "F12": "ramp_supervisor",
+    # deplaning help in the terminal / at the gate
+    "F09": "station_manager", "J04": "station_manager", "J08": "station_manager",
+    # restart order and last flights
+    "Q02": "network_operations_control", "Q04": "network_operations_control", "Q06": "crew_scheduling",
+    # the DOT tarmac report
+    "F10": "regulatory_compliance",
+    # partners: the role that owns each relationship
+    "P01": "station_manager", "P02": "network_operations_control", "P03": "station_manager", "P04": "station_manager",
+    "P05": "customer_service_supervisor", "P06": "customer_service_supervisor", "P07": "customer_service_supervisor",
+    "P08": "network_operations_control",
+    # the rest of A, H, I, L, Q, R, S, T: by subject
+    "A01": "network_operations_control", "A02": "network_operations_control", "A03": "customer_service_supervisor",
+    "A04": "network_operations_control", "A05": "network_operations_control", "A06": "network_operations_control",
+    "A07": "network_operations_control", "A08": "network_operations_control", "A09": "network_operations_control",
+    "A10": "network_operations_control", "A11": "customer_service_supervisor",
+    "H01": "customer_service_supervisor", "H02": "customer_service_supervisor", "H03": "station_manager",
+    "H04": "customer_service_supervisor", "H05": "customer_service_supervisor", "H06": "customer_service_supervisor",
+    "I01": "customer_service_supervisor", "I02": "network_operations_control", "I03": "customer_service_supervisor",
+    "I04": "network_operations_control", "I05": "ramp_supervisor", "I06": "customer_service_supervisor", "I07": "customer_service_supervisor",
+    "L01": "ramp_supervisor", "L02": "ramp_supervisor", "L03": "ramp_supervisor", "L04": "customer_service_supervisor",
+    "L05": "customer_service_supervisor", "L06": "customer_service_supervisor", "L07": "customer_service_supervisor",
+    "L08": "ramp_supervisor",
+    "Q01": "station_manager", "Q03": "network_operations_control", "Q05": "customer_service_supervisor", "Q07": "station_manager",
+    "Q08": "station_manager", "Q09": "network_operations_control",
+    "R01": "regulatory_compliance", "R02": "crew_scheduling", "R03": "customer_service_supervisor", "R04": "customer_service_supervisor",
+    "R05": "regulatory_compliance",
+    "S01": "station_manager", "S02": "network_operations_control", "S03": "network_operations_control",
+    "S04": "customer_service_supervisor", "S05": "network_operations_control", "S06": "network_operations_control",
+    "S07": "network_operations_control", "S08": "network_operations_control",
+    "T02": "station_manager", "T03": "station_manager", "T04": "network_operations_control", "T05": "station_manager",
+}
+
+
+def owner_for(did: str) -> str | None:
+    return OWNER.get(did) or OWNER_BY_FAMILY.get(did[0])
+
+
 def build():
     rules = load_rules()
     known = {e["id"] for e in rules["entries"]}
@@ -290,7 +334,7 @@ def build():
         family, data, affects = FAMILIES[fam]
         ids = list(dict.fromkeys(rule_ids + [r for r in EXTRA_RULES.get(did, []) if r in known] + [f"action_{action}"]))
         ids = [r for r in ids if r in known]
-        level = autonomy_for(action, rules, safety_rung=rung)
+        level = autonomy_for(action, rules, safety_rung=rung, owner=owner_for(did))
         decided = {"level": level["level"]}
         if level["level"] != "auto":
             decided["role"] = level["approver"]
