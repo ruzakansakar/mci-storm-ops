@@ -1,0 +1,82 @@
+# Settings for the Situation agent (backend/agents/situation/). Every number is a class-project assumption.
+# The agent reads only this file and the database (through AgentContext). Never the simulator's code or config.
+
+station: MCI
+
+run:
+  every_min: 5                         # assumption: assess every 5 simulated minutes
+  day_start: "05:00"                   # assumption: replay window
+  day_end: "23:59"                     # assumption
+  # assess immediately when one of these happens
+  trigger_events: [ground_stop_started, ground_stop_extended, ground_stop_ended, ground_delay_started, ground_delay_extended,
+                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled]
+
+detect:                                # A01: abnormal if any of these
+  delayed_departures_window_min: 30    # assumption: look back this far for new departure delays
+  delayed_departures_threshold: 3      # assumption: this many newly delayed departures in the window is abnormal
+  holding_or_diverted_inbound: 2       # assumption: this many inbound flights holding or diverted (not back yet) is abnormal
+
+classify:                              # A02: rules, not AI
+  # words in the FAA notice's stated reason -> type
+  faa_reason_words:
+    weather: [thunderstorm, lightning, weather, wind, snow, ice, fog, low ceilings]
+    faa_program: [volume, staffing, equipment outage atc]
+    it_outage: [airline request, company systems, it outage]
+    airport: [runway, power, airport equipment]
+    security: [security, police, evacuation]
+  crew_cancellations_for_crew_cause: 3 # assumption: this many crew-out-of-duty cancellations with no external cause = a crew event
+  # confidence from how many independent sources agree (1, 2, 3 or more)
+  confidence_by_agreeing_sources: [0.5, 0.75, 0.9]   # assumption
+  confidence_if_signals_disagree: 0.4  # assumption: when the sources point to different causes
+  controllable_by_type:                # incident level: is the cause itself within Southwest's control?
+    weather: false
+    faa_program: false
+    airport: false
+    security: false
+    it_outage: true
+    crew: true
+  # flight level: cancellations for these reasons, during an uncontrollable event, need a human to decide (A03)
+  needs_review_reasons: [crew out of legal duty, maintenance, staffing]
+  long_delay_min: 180                  # assumption: delays at least this long also get a per-flight controllability
+
+expected_end:                          # A05 / A06
+  early_margin_min: 0                  # assumption: a stop rarely ends early, so earliest = the announced end
+  base_margin_min:                     # assumption: latest = announced end + this, by cause...
+    weather: 30
+    faa_program: 30
+    it_outage: 60
+    airport: 45
+    security: 45
+    crew: 30
+    unknown: 45
+  margin_per_extension_min: 15         # assumption: ...plus this for each extension so far...
+  margin_per_hour_running_min: 10      # assumption: ...plus this for each hour the stop has already run
+  max_margin_min: 180                  # assumption
+  base_confidence: 0.7                 # assumption
+  confidence_drop_per_extension: 0.15  # assumption
+  min_confidence: 0.2                  # assumption
+  confidence_words: {high: 0.7, medium: 0.45}   # assumption: at least 0.7 = high, at least 0.45 = medium, else low
+
+impact:
+  window_after_latest_end_min: 120     # assumption: flights up to 2 h after the latest expected end count as affected
+  worst_affected: 5                    # assumption: list this many flights
+
+data:
+  depends_on: [faa_feed, weather_feed, flight_ops, station_ops]
+  propose_s01_after_down_min: 5        # from the contract's escalate_when: a source down more than 5 minutes
+  # which system_health row stands for each feed (to spot "system says up but its feed has stopped")
+  system_for_feed:
+    flight_ops: "Amadeus Altea (simulated)"
+    station_ops: "Airport operations (simulated)"
+  holding_after_stop_end_min: 20       # assumption: holding this long after the FAA says the stop ended is a conflict
+
+proposals:
+  faa_status_check_every_min: 30       # P02: assumption
+  min_decisions_per_version: 1
+
+write_when:                            # write a new version only when something meaningful changed
+  confidence_change: 0.1               # assumption
+  expected_end_change_min: 10          # assumption
+
+ai:
+  enabled: false                       # AI comes in a later phase; the template is always used for now

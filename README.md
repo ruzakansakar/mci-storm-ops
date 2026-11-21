@@ -18,7 +18,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 3b | Rules catalog + agent contracts (`config/rules/`, `config/agents/`) | **done** |
 | 3c | Agreed setup, rule check, decision catalog, shared AI guardrails | **done** |
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
-| 4 | Orchestrator + Situation agent | |
+| 4a | Situation agent | **done** |
+| 4b | Orchestrator | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
 | 6 | Communication, consistency check, Passenger Care, Station & Staff (milestone 2) | |
 | 7 | API + live updates | |
@@ -227,6 +228,45 @@ python -m scripts.decisions         # the decision catalog: counts and gaps
 python -m scripts.rules_catalog     # every rule
 ```
 
+## The Situation agent (Phase 4a)
+
+The first agent. For MCI it answers, again and again through the day: is something abnormal happening, what is it and why,
+how long will it last, and who and what is affected. It **reads and reports**; it changes nothing. Code: `backend/agents/situation/`,
+settings (every number an assumption): `config/agent_settings/situation.yaml`, contract: `config/agents/situation.yaml`.
+
+```bash
+python -m simulator.run --seed 7 --scenario a31_storm                                     # put a day in the database
+python -m backend.agents.situation.run --run-id a31_storm-s7-today --at 12:20             # the assessment at 12:20 (nothing saved)
+python -m backend.agents.situation.run --run-id a31_storm-s7-today --replay               # the whole day, saving each new version
+python -m backend.agents.situation.run --run-id a31_storm-s7-today --replay --stop faa_feed=12:00   # with an FAA feed outage
+python -m simulator.report --latest                                                       # the debug page now has a "Situation" section
+```
+
+**Three protections, enforced in `AgentContext`, not in the agent's code:**
+- **No answer key.** The situation contract can't read incidents (the simulator writes its own, with the true cause), metric_runs,
+  passengers or crews. It sees events only from the run it was given, without the run id, seed or actor, and only the payload fields
+  a real source publishes (listed per event type in the contract; anything else, such as a planted `true_cause`, is stripped).
+  The agent's code never imports the simulator or reads `simulator.yaml`.
+- **No future knowledge.** Every events read is cut at the agent's current time. The truth tables hold end-of-day values, so the agent
+  reads only the published schedule from `flights` and rebuilds the state at time T from the events (`state_at.py`).
+- **Freshness that means something.** Each simulated source (faa_feed, weather_feed, flight_ops, station_ops) sends a heartbeat every
+  simulated minute (`backend/contracts/feeds.py`); a quiet hour is not stale. A source can be stopped to simulate an outage: its
+  events vanish after the stop, and once it is older than 120 s the agent writes "cannot_assess: <source> stale since HH:MM" (A08)
+  and, after 5 minutes, proposes S01.
+
+**What it does, every 5 simulated minutes and at once on trigger events** (FAA notices, ramp closed/reopened, a diversion, a
+cancellation, a feed going quiet): detects (A01), classifies by rules with a confidence from how many sources agree (A02), proposes
+controllability for the event and for each cancelled or long-delayed flight (A03; crew, maintenance and staffing cancellations during
+an uncontrollable event are "needs human review"), gives earliest / likely / latest end times (A05) and proposes a re-plan when the FAA
+changes the stop (A06), counts the impact (A07, Q05), spots conflicts between sources (A09), and proposes an FAA status check every
+30 min (P02). Security reports go straight to a human (T01). It writes only when something meaningful changed; the summary comes from
+a fixed template (the AI hook exists but is switched off).
+
+**Shared state.** Each version is one row in `situation_assessments` (append-only, like events). **This is the table the next
+agents will read.** Proposals needing a human go to `recommendations` as pending (the orchestrator's rule check comes later); notes go
+to events. Every replay has its own `agent_run_id`, so two replays never mix. If an assessment fails halfway, it is rolled back and one
+`agent_error` event is written.
+
 ## Rules for conflicting files
 
 - The Daily Operating Schedule wins for times, destinations, aircraft type, passenger totals and priority.
@@ -242,7 +282,9 @@ backend/seed/class_files.py reads the class files in data/raw
 backend/seed/build.py      turns them into rows (deterministic by SEED)
 backend/seed/load.py       writes the rows into PostgreSQL
 backend/rules/             safety ladder, crew, tarmac and airport checks, who decides, compensation
-backend/contracts/         agent contracts: loader, AgentContext, the orchestrator's review plumbing
+backend/contracts/         agent contracts: loader, AgentContext, feed heartbeats, the orchestrator's review plumbing
+backend/agents/situation/  the Situation agent (state_at, assess, run)
+config/agent_settings/     settings for each agent (every number an assumption)
 config/decisions.yaml      the decision catalog
 config/rules/              every rule (law, southwest, operations, safety ladder, autonomy)
 config/agents/             one contract per part (+ _shared.yaml: the AI guardrails)

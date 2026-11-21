@@ -9,7 +9,7 @@ import argparse
 import json
 
 from backend.database import connect
-from backend.settings import ROOT
+from backend.settings import ROOT, TZ
 from simulator.clock import minute_of
 
 REPORTS = ROOT / "reports"
@@ -88,8 +88,44 @@ def collect(conn, run_id: str) -> dict:
     default = next((p["id"] for p in pax_list if p["name"] == DEFAULT_PASSENGER),
                    next((p["id"] for p in pax_list if p["changed"]), pax_list[0]["id"]))
     series = metrics.pop("timeseries")
-    return {"run": {"id": run_id, "seed": seed, "mode": mode, "scenario": scenario}, "incident": incident,
+    situation = collect_situation(conn, run_id)
+    return {"situation": situation, "run": {"id": run_id, "seed": seed, "mode": mode, "scenario": scenario}, "incident": incident,
             "metrics": metrics, "series": series, "events": events, "passengers": pax_list, "default_passenger": default}
+
+
+KEY_TYPES = ("ground_stop_started", "ground_stop_extended", "ground_stop_ended", "ground_delay_started", "ground_delay_extended",
+             "ground_delay_ended", "ramp_closed", "ramp_reopened", "flight_cancelled", "flight_diverted")
+
+
+def _hm(dt) -> str:
+    return dt.astimezone(TZ).strftime("%H:%M") if dt else "-"
+
+
+def collect_situation(conn, run_id: str) -> dict | None:
+    """The Situation agent's latest replay of this run: its versions and proposals, next to what really happened."""
+    row = conn.execute("SELECT agent_run_id FROM situation_assessments WHERE run_id=%s ORDER BY created_at DESC, id DESC LIMIT 1",
+                       (run_id,)).fetchone()
+    if not row:
+        return None
+    arid = row[0]
+    by_t = {}
+
+    def slot(t):
+        return by_t.setdefault(minute_of(t), {"said": [], "proposed": [], "happened": []})
+    for v, at, status, typ, conf, e0, e1, e2, summary in conn.execute(
+            "SELECT version, assessed_at, status, type, confidence, expected_end_earliest, expected_end_likely, expected_end_latest, "
+            "summary FROM situation_assessments WHERE agent_run_id=%s ORDER BY version", (arid,)):
+        rng = f"likely {_hm(e1)} (range {_hm(e0)}-{_hm(e2)})" if e1 else "no end time"
+        slot(at)["said"].append(f"v{v} {status} | {typ or '-'} | confidence {conf if conf is not None else '-'} | {rng}")
+    for created, title, decisions, role in conn.execute(
+            "SELECT created_at, title, decision_ids, approver_role FROM recommendations WHERE run_id=%s AND agent='situation' ORDER BY id",
+            (arid,)):
+        slot(created)["proposed"].append(f"{', '.join(decisions or [])}: {title} (to {role})")
+    for at, typ, payload in conn.execute("SELECT occurred_at, type, payload FROM events WHERE run_id=%s AND type = ANY(%s) ORDER BY id",
+                                         (run_id, list(KEY_TYPES))):
+        slot(at)["happened"].append(f"{typ}: {_text(typ, payload)}")
+    rows = [{"t": t, **v} for t, v in sorted(by_t.items())]
+    return {"agent_run_id": arid, "rows": rows}
 
 
 def build_html(data: dict) -> str:
@@ -151,6 +187,9 @@ PAGE = r"""<!doctype html>
  <div>Passenger <select id="pax"></select> <span class="sub" id="paxinfo"></span></div>
  <div class="sub">Each row is a moment something changed. Red = that screen is showing something different from the truth. Yellow = the update was lost.</div>
  <div class="scroll" style="margin-top:8px"><table id="ptable"></table></div></section>
+<section><h2 style="margin-top:0">Situation agent: what it said vs what really happened</h2>
+ <div class="sub" id="sitinfo"></div>
+ <div class="scroll" style="margin-top:8px"><table id="situation"></table></div></section>
 <section><h2 style="margin-top:0">What happened (events)</h2>
  <div class="chips" id="chips"></div>
  <div class="scroll" style="margin-top:8px"><table id="events"></table></div></section>
@@ -162,6 +201,16 @@ const $ = id => document.getElementById(id);
 const hm = m => { const d=Math.floor(m/1440), r=m%1440; return String(Math.floor(r/60)).padStart(2,'0')+':'+String(r%60).padStart(2,'0')+(d?'+'+d:''); };
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const CH = [['app','App'],['sms','Text (SMS)'],['gate_screen','Gate screen'],['call_center','Call center']];
+
+// ---------- situation agent
+(function(){
+  const S = D.situation;
+  if (!S) { $('sitinfo').textContent = 'The Situation agent has not been run on this day. Run: python -m backend.agents.situation.run --run-id ' + D.run.id + ' --replay'; return; }
+  $('sitinfo').textContent = 'Latest replay ' + S.agent_run_id + '. The agent saw only events up to each time; the right column is the simulator\'s record.';
+  const cell = a => a.map(esc).join('<br>');
+  $('situation').innerHTML = '<tr><th>Time</th><th>What the agent said (new versions)</th><th>What it proposed to a human</th><th>What really happened</th></tr>' +
+    S.rows.map(r => `<tr><td>${hm(r.t)}</td><td>${cell(r.said)}</td><td>${cell(r.proposed)}</td><td>${cell(r.happened)}</td></tr>`).join('');
+})();
 
 // ---------- header + incident
 $('runline').textContent = `Run ${D.run.id} | scenario ${D.run.scenario} | seed ${D.run.seed} | mode ${D.run.mode}`;

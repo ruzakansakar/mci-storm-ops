@@ -61,11 +61,12 @@ def _flight_params(rng, flights, cfg) -> dict:
     return out
 
 
-def _restriction_events(events, program, start, announced_end, end):
-    _event(events, start, f"{program}_started", {"program": program, "expected_end": announced_end})
+def _restriction_events(events, program, start, announced_end, end, reason):
+    """The FAA notices: what a real ATCSCC advisory publishes (program, announced end, stated reason). Nothing else."""
+    _event(events, start, f"{program}_started", {"program": program, "expected_end": announced_end, "reason": reason})
     if end != announced_end:
-        _event(events, announced_end, f"{program}_extended", {"program": program, "expected_end": end})
-    _event(events, end, f"{program}_ended", {"program": program})
+        _event(events, announced_end, f"{program}_extended", {"program": program, "expected_end": end, "reason": reason})
+    _event(events, end, f"{program}_ended", {"program": program, "reason": reason})
 
 
 def build_scenario(seed: int, name: str, flights: list[dict]) -> Scenario:
@@ -89,7 +90,7 @@ def _a31_storm(seed, flights, cfg) -> Scenario:
     start, announced, end = hhmm(s["stop_start"]), hhmm(s["announced_end"]), hhmm(s["extended_end"])
     cause = cfg["causes"][s["cause"]]
     events: list[dict] = []
-    _restriction_events(events, s["program"], start, announced, end)
+    _restriction_events(events, s["program"], start, announced, end, cfg["causes"][s["cause"]]["faa_notice_reason"])
     r0, r1 = hhmm(s["lightning_closure"]["start"]), hhmm(s["lightning_closure"]["end"])
     _event(events, r0, "ramp_closed", {"reason": "lightning", "expected_end": r1})
     _event(events, r1, "ramp_reopened", {"reason": "lightning cleared"})
@@ -123,7 +124,7 @@ def _random(seed, flights, cfg) -> Scenario:
             announced = end - extra
 
     events: list[dict] = []
-    _restriction_events(events, program, start, announced, end)
+    _restriction_events(events, program, start, announced, end, cause["faa_notice_reason"])
     se = cfg["side_events"]
 
     # lightning closes the ramp (thunderstorms only)

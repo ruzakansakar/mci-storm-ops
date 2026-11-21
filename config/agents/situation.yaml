@@ -1,216 +1,134 @@
-# CONTRACT: situation. Works out what is going on, the likely cause and how long it will last.
+# CONTRACT: situation. Works out what is going on, the likely cause, how long it will last, and who and what is affected.
+# It READS and REPORTS. It never changes flights, crews, aircraft, bookings, stations or incidents.
 agent: situation
-purpose: Reads the signals, names the likely cause and the expected end, and writes a plain-English summary of the situation.
+purpose: "Answers four questions for MCI, continuously: is something abnormal happening, what is it and why, how long will it last, and who and what is affected. It reads and reports; every other agent builds on its answer."
+
 reads:
-  events:
-  - id
-  - occurred_at
-  - type
-  - actor
-  - station
-  - payload
-  - run_id
-  incidents:
-  - id
-  - kind
-  - station
-  - title
-  - likely_cause
-  - confidence
-  - controllable
-  - status
-  - expected_end_min
-  - expected_end_max
-  - opened_at
-  - run_id
-  flights:
-  - id
-  - direction
-  - origin
-  - destination
-  - sched_dep
-  - sched_arr
-  - est_dep
-  - est_arr
-  - edct
-  - status
-  - priority
-  - pax_total
-  - cancel_reason
-  - controllable
-  - diverted_to
-  - tarmac_since
-  - as_of
-  aircraft:
-  - id
-  - current_station
-  - airborne
-  - fuel_minutes_extra
-  - needs_inspection
-  - as_of
-  stations:
-  - code
-  - name
-  - ramp_open
-  - people_in_terminal
-  - terminal_capacity
-  - as_of
-  system_health:
-  - system
-  - status
-  - last_heartbeat
-  - data_age_sec
-  - note
+  # events: AgentContext only ever returns events of the feeds below, from the run it was given, that happened at or before
+  # its current time, with only the payload fields a real source publishes. The run id, seed and actor are never shown.
+  events: [id, occurred_at, type, station, payload]
+  # the published schedule only (it doesn't change during the day). No status or estimates: the state at time T is rebuilt
+  # from the events (backend/agents/situation/state_at.py), never taken from these end-of-day tables.
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, crew_id]
+  system_health: [system, status, last_heartbeat, note]
+
+static_reads: [flights]                 # published in advance: not checked for freshness and no "as of" time is read
+
+# The simulated feeds it listens to. Each event type belongs to one feed; only the payload fields listed here reach the agent.
+event_feeds:
+  faa_feed:                             # stand-in for the FAA ATCSCC advisories
+    ground_stop_started: [program, expected_end, reason]
+    ground_stop_extended: [program, expected_end, reason]
+    ground_stop_ended: [program, reason]
+    ground_delay_started: [program, expected_end, reason]
+    ground_delay_extended: [program, expected_end, reason]
+    ground_delay_ended: [program, reason]
+  weather_feed:                         # stand-in for lightning detection
+    ramp_closed: [reason, expected_end]
+    ramp_reopened: [reason]
+  flight_ops:                           # stand-in for Southwest's operations systems
+    flight_delayed: [flight_id, delay_min, new_departure, reason, pax]
+    flight_delay_updated: [flight_id, delay_min, new_departure, reason, pax]
+    flight_holding: [flight_id, expected_landing, pax]
+    flight_diverted: [flight_id, diverted_to, pax, reason]
+    flight_resumed: [flight_id, to]
+    flight_cancelled: [flight_id, reason, pax]
+    tarmac_started: [flight_id]
+    tarmac_ended: [flight_id, minutes, how]
+    flight_departed: [flight_id, to, delay_min]
+    flight_arrived: [flight_id, delay_min, after_diversion]
+    missed_connection: [flight_id]                    # counts only: no passenger id
+    next_day_flight_created: [flight_id, route, departs]
+    passenger_stranded_overnight: [lives_locally, from_flight]   # counts only: no passenger id
+  station_ops:                          # stand-in for the station's operations board
+    station_status: [people_in_terminal, terminal_capacity, ramp_open]
+
 writes:
+  situation_assessments:
+    mode: insert
+    columns: [agent_run_id, run_id, version, assessed_at, status, type, likely_cause, confidence, incident_controllable,
+              flight_controllability, expected_end_earliest, expected_end_likely, expected_end_latest, end_confidence, impact,
+              conflicts, stale_sources, evidence, summary, data_as_of, decision_ids]
   recommendations:
     mode: insert
-    columns:
-    - incident_id
-    - agent
-    - title
-    - why
-    - options
-    - autonomy
-    - approver_role
-    - safety_rung
-    - data_as_of
-    - status
-    - run_id
-    - created_at
-    - decision_ids
+    columns: [incident_id, agent, title, why, options, autonomy, approver_role, safety_rung, data_as_of, status, run_id, created_at,
+              decision_ids]
   events:
     mode: insert
-    types:
-    - situation_assessed
-    - cause_suspected
-    - expected_end_updated
-    - human_decision_needed
+    types: [situation_assessed, cause_suspected, expected_end_updated, human_decision_needed, agent_error]
   audit_log:
     mode: insert
-actions:
-- assess_situation
-- classify_cause
-- contact_partner
-- flag_stale_data
-- replan_after_program_change
-- resolve_source_conflict
-- send_status_update
-- switch_to_manual_fallback
-- update_expected_end
+
+actions: [assess_situation, classify_cause, contact_partner, flag_stale_data, replan_after_program_change, resolve_source_conflict,
+          switch_to_manual_fallback, update_expected_end]
+
 never:
-- Never state a cause as fact when it is only suspected; always give a confidence.
-- Never promise an end time to passengers. It gives the earliest and latest, and says how sure it is.
-- Never decide a diversion, a ramp closure, or a keep-on-board exception.
-- Never change any flight, crew, aircraft or station record.
-- Never see passenger names or contact details.
+  - Never read passenger names, contacts, booking refs, or the passengers table.
+  - Never read the simulator's answer key (the simulator's incident row, the scenario, the seed, simulator.yaml, metric_runs).
+  - Never read events after its current time.
+  - Never write to any truth table or to incidents (only the orchestrator will open incidents).
+  - Never state a suspected cause as fact; every cause has a confidence and its evidence.
+  - Never give a single end time; always earliest, likely and latest, with a confidence.
+  - Never promise anything to passengers. It writes for staff and for other agents; communication decides what passengers are told.
+  - Never decide controllability for compensation. It proposes a value per flight with evidence; a customer service supervisor approves (A03).
+  - Never decide T01 (security) or any diversion, ramp closure or keep-on-board exception.
+  - Never use AI to choose a cause, a time, a number or an action.
+  - Never read crew records; it only counts the crews on affected flights (crew legality belongs to network_recovery).
+
 stores:
   temporary:
-    what: Signals it has collected and its working guesses about the cause.
-    kept_until: the incident is closed, then deleted
+    what: "Its working memory during a replay: the events seen so far, the last version, what it already proposed."
+    kept_until: "the incident is closed, then deleted"
   permanent:
-  - table: recommendations
-    kept: for the life of the project
-  - table: events
-    kept: for the life of the project, append only
-  - table: audit_log
-    kept: for the life of the project, never edited or deleted
+    - {table: situation_assessments, kept: "for the life of the project, append only (one row per version)"}
+    - {table: recommendations, kept: "for the life of the project"}
+    - {table: events, kept: "for the life of the project, append only"}
+    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
+
 output:
   type: object
   additionalProperties: false
-  required:
-  - title
-  - why
-  - data_as_of
-  - options
-  - sources
-  - decision_ids
-  - likely_cause
-  - confidence
-  - controllable
-  - expected_end_earliest
-  - expected_end_latest
-  - summary
+  required: [title, why, data_as_of, options, sources, decision_ids, likely_cause, confidence, controllable, expected_end_earliest,
+             expected_end_latest, summary, assessment_version]
   properties:
-    title:
-      type: string
-      minLength: 1
-    why:
-      type: string
-      minLength: 1
-    data_as_of:
-      type: string
-    options:
-      type: array
-      items:
-        type: object
-    likely_cause:
-      type: string
-      enum:
-      - weather
-      - faa_program
-      - it_outage
-      - airport
-      - security
-      - crew
-      - other
-      - unknown
-    confidence:
-      type: number
-      minimum: 0
-      maximum: 1
-    controllable:
-      type:
-      - boolean
-      - 'null'
-    expected_end_earliest:
-      type: string
-    expected_end_latest:
-      type: string
-    summary:
-      type: string
-      minLength: 1
-      maxLength: 1200
-    decision_ids:
-      type: array
-      minItems: 1
-      items:
-        type: string
-        minLength: 3
+    title: {type: string, minLength: 1}
+    why: {type: string, minLength: 1}
+    data_as_of: {type: string}
+    options: {type: array, items: {type: object}}
+    likely_cause: {type: string, enum: [weather, faa_program, it_outage, airport, security, crew, other, unknown]}
+    confidence: {type: number, minimum: 0, maximum: 1}
+    controllable: {type: [boolean, "null"]}
+    expected_end_earliest: {type: string}
+    expected_end_latest: {type: string}
+    summary: {type: string, minLength: 1, maxLength: 1200}
+    assessment_version: {type: integer, minimum: 0}
+    decision_ids: {type: array, minItems: 1, items: {type: string, minLength: 3}}
     sources:
       type: array
       minItems: 1
       items:
         type: object
         additionalProperties: false
-        required:
-        - source
-        - as_of
+        required: [source, as_of]
         properties:
-          fact:
-            type: string
-          source:
-            type: string
-            minLength: 1
-          as_of:
-            type: string
-            minLength: 10
+          fact: {type: string}
+          source: {type: string, minLength: 1}
+          as_of: {type: string, minLength: 10}
+
 max_data_age_sec: 120
 time_budget_sec: 20
 escalate_when:
-- Confidence in the cause is below 0.5 after two updates.
-- Signals disagree with each other (for example the airport says open and the ramp is closed).
-- A system the summary depends on has been down for more than 5 minutes.
+  - Confidence in the cause is below 0.5 after two updates.
+  - Signals disagree with each other (for example the FAA says the stop ended but flights are still holding).
+  - A system the assessment depends on has been down for more than 5 minutes.
+
 ai_allowed:
   allowed: true
-  for:
-  - situation summaries in plain English
-  fallback: a fixed template filled with the numbers; the template is used whenever the language model is slow, down, or its output is rejected
-  never_for:
-  - choosing a cause
-  - an end time
-  - or any action
+  for: [situation summaries in plain English]
+  fallback: "a fixed template filled with the numbers; the template is used whenever the language model is off (the default), slow, down, or its output is rejected"
+  never_for: [choosing a cause, an end time, a number, or any action]
+
 success:
-- metric: cause named correctly at first summary
-  target: 80% or better
-- metric: expected end falls inside the earliest-latest range
-  target: 90% or better
+  - {metric: "cause named correctly at first summary", target: "80% or better"}
+  - {metric: "expected end falls inside the earliest-latest range", target: "90% or better"}
+  - {metric: "assessments that use an event after their own time", target: "0"}

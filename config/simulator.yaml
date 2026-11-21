@@ -29,6 +29,7 @@ causes:
   weather:
     weight: 40                   # assumption
     incident_kind: weather
+    faa_notice_reason: "thunderstorms"   # assumption: the reason the FAA notice states
     title: "Thunderstorms over Kansas City"
     likely_cause: "Thunderstorm cells over the MCI airfield, lightning near the ramp"
     controllable: false
@@ -40,6 +41,7 @@ causes:
   faa_program:
     weight: 20                   # assumption
     incident_kind: faa_program
+    faa_notice_reason: "volume / staffing"   # assumption: the reason the FAA notice states
     title: "FAA traffic program at MCI"
     likely_cause: "FAA traffic management program (staffing or volume) limiting flights into MCI"
     controllable: false
@@ -51,6 +53,7 @@ causes:
   it_outage:
     weight: 15                   # assumption
     incident_kind: it_outage
+    faa_notice_reason: "airline request (company systems)"   # assumption: the reason the FAA notice states
     title: "Southwest systems outage"
     likely_cause: "Airline IT outage: check-in, dispatch or crew systems down"
     controllable: true
@@ -62,6 +65,7 @@ causes:
   airport:
     weight: 15                   # assumption
     incident_kind: airport
+    faa_notice_reason: "runway closure / airport equipment"   # assumption: the reason the FAA notice states
     title: "Airport runway or power problem at MCI"
     likely_cause: "Runway closure or power failure at the airport"
     controllable: false
@@ -73,6 +77,7 @@ causes:
   security:
     weight: 10                   # assumption
     incident_kind: security
+    faa_notice_reason: "security"   # assumption: the reason the FAA notice states
     title: "Security event at MCI"
     likely_cause: "Security screening halted or terminal evacuated"
     controllable: false
@@ -131,6 +136,7 @@ physics:
   delay_update_min: 30           # assumption: log a new "delay updated" event when the delay moves this much
   reproject_every_min: 5         # assumption: how often flight times are re-worked out
   clock_update_every_min: 5      # assumption: fuel, crew duty and crowd numbers change in steps of this many minutes
+  station_status_every_min: 15   # assumption: the station ops board publishes the terminal count this often
   fuel_extra_min: [40, 90]       # assumption: spare HOLDING fuel above the legal reserve (the reserve is already on board).
                                  # The lowest value must stay above the fuel floor plus the longest extra flying below.
   inbound_alternates:            # assumption: where flights divert to, and the extra minutes of flying to get there

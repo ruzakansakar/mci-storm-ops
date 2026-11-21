@@ -368,6 +368,39 @@ CREATE TRIGGER events_append_only BEFORE UPDATE OR DELETE ON events
 CREATE TRIGGER audit_log_append_only BEFORE UPDATE OR DELETE ON audit_log
     FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
+-- ============================================================ SHARED STATE BETWEEN AGENTS
+
+-- What the Situation agent concluded, one row per version. Append-only: a new version is a new row.
+-- The next agents (network_recovery, station_staff, passenger_care, communication) read this table.
+CREATE TABLE situation_assessments (
+    id                     bigserial PRIMARY KEY,
+    agent_run_id           text NOT NULL,                -- one replay of the agent (never mixes with another)
+    run_id                 text,                         -- the simulator run it read from
+    version                int NOT NULL,
+    assessed_at            timestamptz NOT NULL,         -- simulated time T the assessment is "as of"
+    status                 text NOT NULL,                -- normal | abnormal | cannot_assess: <source> stale since HH:MM
+    type                   text,                         -- weather | faa_program | it_outage | airport | security | crew | other | unknown
+    likely_cause           text,
+    confidence             numeric(3,2),
+    incident_controllable  boolean,
+    flight_controllability jsonb NOT NULL DEFAULT '[]'::jsonb,
+    expected_end_earliest  timestamptz,
+    expected_end_likely    timestamptz,
+    expected_end_latest    timestamptz,
+    end_confidence         numeric(3,2),
+    impact                 jsonb NOT NULL DEFAULT '{}'::jsonb,
+    conflicts              jsonb NOT NULL DEFAULT '[]'::jsonb,
+    stale_sources          jsonb NOT NULL DEFAULT '[]'::jsonb,
+    evidence               jsonb NOT NULL DEFAULT '[]'::jsonb,
+    summary                text NOT NULL,
+    data_as_of             timestamptz,
+    decision_ids           text[] NOT NULL,
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (agent_run_id, version)
+);
+CREATE TRIGGER situation_assessments_append_only BEFORE UPDATE OR DELETE ON situation_assessments
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
 -- ============================================================ CHECKING & MEASURING
 
 CREATE TABLE mismatches (

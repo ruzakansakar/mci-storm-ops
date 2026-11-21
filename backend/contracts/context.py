@@ -42,7 +42,8 @@ class StaleDataError(ContractViolation):
 
 class AgentContext:
     def __init__(self, agent: str, cur, now: datetime, run_id: str | None = None, incident_id: int | None = None,
-                 contracts: dict[str, Contract] | None = None, rules: dict | None = None):
+                 contracts: dict[str, Contract] | None = None, rules: dict | None = None, source_run_id: str | None = None,
+                 feeds=None):
         self.contracts = contracts or load_contracts()
         if agent not in self.contracts:
             raise ContractViolation(agent, "unknown agent", "there is no contract for this agent")
@@ -55,6 +56,12 @@ class AgentContext:
         self.scope: set[str] = set()                       # passenger ids it is working on (for names and contacts)
         self.checks_run: set[str] = set()                  # rule checks it ran itself (required before some actions; never final)
         self._temp: dict = {}                              # temporary notes: deleted when the incident closes
+        # The run it reads events from. The agent never sees it (it would reveal the scenario name and seed).
+        self.source_run_id = source_run_id
+        if feeds is None:
+            from backend.contracts.feeds import Feeds
+            feeds = Feeds()
+        self.feeds = feeds
 
     # ------------------------------------------------------------------ the record of a breach
     def _violate(self, kind: str, detail: str, error=ContractViolation):
@@ -78,8 +85,19 @@ class AgentContext:
         """Say which passengers this agent is working on. Names and contacts can only be read for these."""
         self.scope = set(passenger_ids)
 
+    def feed_last(self, feed: str) -> datetime:
+        """When this simulated source last sent a heartbeat (every simulated minute unless it was stopped)."""
+        return self.feeds.last_heartbeat(feed, self.now)
+
+    def feed_age_sec(self, feed: str) -> float:
+        return (self.now - self.feed_last(feed)).total_seconds()
+
+    def read_events(self, since: datetime | None = None) -> list[dict]:
+        """Events of its feeds that happened after `since` (if given) and at or before now. Same enforcement as read()."""
+        return self.read("events", since=since, order_by="occurred_at")
+
     def read(self, table: str, columns: list[str] | None = None, where: dict | None = None, limit: int | None = None,
-             order_by: str | None = None) -> list[dict]:
+             order_by: str | None = None, since: datetime | None = None) -> list[dict]:
         allowed = self.contract.reads.get(table)
         if allowed is None:
             self._violate("read", f"table '{table}' is not in this agent's reads")
@@ -97,12 +115,30 @@ class AgentContext:
             if not wanted or not wanted <= self.scope:
                 self._violate("read", f"names and contacts ({', '.join(pii)}) can only be read for the passengers it is working on; "
                                       f"call working_on() and filter by {key}")
-        has_as_of = "as_of" in self.tables[table]
-        select = columns + (["as_of"] if has_as_of and "as_of" not in columns else [])
+        has_as_of = "as_of" in self.tables[table] and table not in self.contract.static_reads
+        is_events = table == "events"
+        extra = []
+        if has_as_of and "as_of" not in columns:
+            extra.append("as_of")
+        if is_events:
+            extra += [c for c in ("occurred_at", "type", "payload") if c not in columns]
+        select = columns + extra
         query = sql.SQL("SELECT {} FROM {}").format(sql.SQL(", ").join(map(sql.Identifier, select)), sql.Identifier(table))
         params = []
+        parts = []
+        if is_events:                       # no future knowledge, only its run, only its feeds: enforced here, not in agent code
+            parts.append(sql.SQL("occurred_at <= %s"))
+            params.append(self.now)
+            if since is not None:
+                parts.append(sql.SQL("occurred_at > %s"))
+                params.append(since)
+            if self.source_run_id is not None:
+                parts.append(sql.SQL("run_id = %s"))
+                params.append(self.source_run_id)
+            if self.contract.event_feeds is not None:
+                parts.append(sql.SQL("type = ANY(%s)"))
+                params.append(sorted(self.contract.event_types))
         if where:
-            parts = []
             for k, v in where.items():
                 if isinstance(v, (list, tuple, set)):
                     parts.append(sql.SQL("{} = ANY(%s)").format(sql.Identifier(k)))
@@ -110,6 +146,7 @@ class AgentContext:
                 else:
                     parts.append(sql.SQL("{} = %s").format(sql.Identifier(k)))
                     params.append(v)
+        if parts:
             query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(parts)
         if order_by:
             query += sql.SQL(" ORDER BY {}").format(sql.Identifier(order_by))
@@ -118,6 +155,12 @@ class AgentContext:
         self.cur.execute(query, params)
         names = [d.name for d in self.cur.description]
         rows = [dict(zip(names, r)) for r in self.cur.fetchall()]
+        if is_events:
+            rows = [r for r in (self._published(r) for r in rows) if r is not None]
+            for r in rows:
+                for c in extra:
+                    if c not in columns:
+                        r.pop(c, None)
         for r in rows:
             as_of = r.get("as_of")
             if isinstance(as_of, datetime) and (self.oldest_as_of is None or as_of < self.oldest_as_of):
@@ -125,6 +168,22 @@ class AgentContext:
             if has_as_of and "as_of" not in columns:
                 r.pop("as_of", None)
         return rows
+
+    def _published(self, row: dict) -> dict | None:
+        """Keep only what a real source publishes, and nothing from a feed after it stopped."""
+        if self.contract.event_feeds is None:
+            return row
+        feed, fields = self.contract.event_types.get(row["type"], (None, None))
+        if feed is None or not self.feeds.is_up(feed, row["occurred_at"]):
+            return None
+        row = dict(row)
+        row["payload"] = {k: v for k, v in (row.get("payload") or {}).items() if k in fields}
+        row["feed"] = feed
+        return row
+
+    def write_assessment(self, values: dict) -> int:
+        """Save one version of the shared situation assessment (append-only). The run ids are filled in here, not by the agent."""
+        return self.write("situation_assessments", {**values, "agent_run_id": self.run_id, "run_id": self.source_run_id})
 
     def data_age_sec(self) -> float | None:
         return None if self.oldest_as_of is None else (self.now - self.oldest_as_of).total_seconds()
@@ -225,7 +284,12 @@ class AgentContext:
             self._violate("required checks", f"'{action}' needs these checks first: {missing}")
         self.check_fresh()
         rung = safety_rung or output.get("safety_rung")
-        a = autonomy_for(action, self.rules, safety_rung=rung) if action else {"level": "needs_approval", "approver": "station_manager"}
+        owner = None
+        catalog = load_decisions()
+        for d in output["decision_ids"]:
+            owner = owner or catalog[d]["decided_by"].get("role")
+        a = autonomy_for(action, self.rules, safety_rung=rung, owner=owner) if action else \
+            {"level": "needs_approval", "approver": owner}
         return self.write("recommendations", {
             "incident_id": self.incident_id, "agent": self.agent, "title": output["title"], "why": output["why"],
             "options": output["options"] if output["options"] else [{"action": action, "output": output}],

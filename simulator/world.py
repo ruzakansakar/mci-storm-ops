@@ -419,7 +419,8 @@ class World:
             f["_logged_delay"] = delay
             reason = self.sc.cause if self.restr else "knock-on delay"
             self._emit("flight_delayed" if logged is None else "flight_delay_updated", f["origin"],
-                       {"flight_id": f["id"], "delay_min": delay, "new_departure": fmt(f["est_dep"]), "reason": reason})
+                       {"flight_id": f["id"], "delay_min": delay, "new_departure": fmt(f["est_dep"]), "reason": reason,
+                        "pax": f["pax_total"]})
 
     def _mark_disrupted(self, f):
         if f["controllable"] is None:
@@ -444,7 +445,8 @@ class World:
             if f["status"] == "airborne" and not f["_holding"] and self.t >= self._over_mci(f) and f["est_arr"] > self.t:
                 f["_holding"] = True
                 self._emit("flight_holding", "MCI", {"flight_id": f["id"], "expected_landing": fmt(f["est_arr"]),
-                                                    "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"]})
+                                                    "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"],
+                                                    "pax": f["pax_total"]})
 
     def _landings(self):
         t = self.t
@@ -717,6 +719,9 @@ class World:
                 grown = min(grown, max(0.0, 1 - (t - self.sc.end) / max(1, s["decay"])))
             people += round(s["extra"] * grown)
         self._set("stations", self.mci, "MCI", "station", "people in the terminal changed", people_in_terminal=people)
+        if t % self.ph["station_status_every_min"] == 0:      # what the station ops board publishes (a report, not a change)
+            self._emit("station_status", "MCI", {"people_in_terminal": people, "terminal_capacity": self.mci.get("terminal_capacity"),
+                                                 "ramp_open": self.mci["ramp_open"]})
 
     # ================================================================ diversion and cancellation
 

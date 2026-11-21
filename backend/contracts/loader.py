@@ -22,7 +22,8 @@ TRUTH_TABLES = {
     "decisions", "actions", "metric_runs", "data_issues",
 }
 # The only tables an agent can write to: proposals, its own events, the audit log, and (orchestrator only) incidents.
-WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events"}
+WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments"}
+OWN_TABLES = {"situation_assessments": {"situation"}}     # shared state: only its owner writes it
 INCIDENT_TABLES = {"incidents", "incident_events"}
 INCIDENT_WRITERS = {"orchestrator"}
 WRITE_MODES = {"insert", "update", "insert_or_update"}
@@ -70,6 +71,10 @@ class Contract:
         self.time_budget_sec: int = data["time_budget_sec"]
         self.ai_allowed: bool = data["ai_allowed"]["allowed"]
         self.required_checks: dict = data.get("required_checks") or {}
+        self.static_reads: set = set(data.get("static_reads") or [])
+        self.event_feeds: dict | None = data.get("event_feeds")
+        # event type -> (feed, payload fields it may see)
+        self.event_types: dict = {t: (feed, fields) for feed, types in (self.event_feeds or {}).items() for t, fields in types.items()}
 
     def __getitem__(self, key):
         return self.data[key]
@@ -114,6 +119,8 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
             raise ContractError(f"{name}: writes unknown table '{table}'")
         if table in INCIDENT_TABLES and name not in INCIDENT_WRITERS:
             raise ContractError(f"{name}: only the orchestrator writes incidents")
+        if table in OWN_TABLES and name not in OWN_TABLES[table]:
+            raise ContractError(f"{name}: only {sorted(OWN_TABLES[table])} writes {table}")
         if w.get("mode") not in WRITE_MODES:
             raise ContractError(f"{name}: writes.{table}.mode must be one of {sorted(WRITE_MODES)}")
         for c in w.get("columns", []):
@@ -128,6 +135,21 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
     if "events" not in writes or "audit_log" not in writes:
         raise ContractError(f"{name}: every agent must be able to write its own events and the audit log")
 
+    for t in data.get("static_reads") or []:
+        if t not in data["reads"]:
+            raise ContractError(f"{name}: static_reads names '{t}', which it doesn't read")
+    feeds = data.get("event_feeds")
+    if feeds is not None:
+        if "events" not in data["reads"]:
+            raise ContractError(f"{name}: event_feeds needs events in reads")
+        seen = set()
+        for feed, types in feeds.items():
+            for t, fields in types.items():
+                if t in seen:
+                    raise ContractError(f"{name}: event type '{t}' is listed under two feeds")
+                if not isinstance(fields, list):
+                    raise ContractError(f"{name}: event_feeds.{feed}.{t} must list the payload fields it may see")
+                seen.add(t)
     unknown = [a for a in data["actions"] if a not in rules["autonomy"]]
     if unknown:
         raise ContractError(f"{name}: actions not in the autonomy rules: {unknown}")
