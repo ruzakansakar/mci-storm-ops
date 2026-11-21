@@ -1,0 +1,65 @@
+# CONTRACT: orchestrator. The only agent that opens, updates and closes an incident.
+agent: orchestrator
+purpose: "Opens and runs the incident, hands work to the other six agents, and merges what they propose into one picture for the humans."
+
+reads:                                   # table: the columns it may read. Nothing else.
+  incidents: [id, kind, station, title, likely_cause, confidence, controllable, status, expected_end_min, expected_end_max, opened_at, resolved_at, opened_by, run_id, updated_at]
+  incident_events: [incident_id, event_id]
+  events: [id, occurred_at, type, actor, actor_name, station, payload, run_id]
+  recommendations: [id, incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, guardrail_ok, guardrail_notes, data_as_of, status, run_id, created_at, updated_at]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, status, priority, pax_total, cancel_reason, controllable, as_of]
+  stations: [code, name, ramp_open, people_in_terminal, as_of]
+  system_health: [system, status, last_heartbeat, data_age_sec, note]
+
+writes:                                  # agents only write proposals, drafts and their own events; never truth tables
+  incidents: {mode: insert_or_update, columns: [kind, station, title, likely_cause, confidence, controllable, status, expected_end_min, expected_end_max, opened_at, resolved_at, opened_by, run_id]}
+  incident_events: {mode: insert, columns: [incident_id, event_id]}
+  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id, created_at]}
+  events: {mode: insert, types: [incident_opened, incident_updated, incident_closed, work_assigned, agent_timed_out, escalated_to_human]}
+  audit_log: {mode: insert}
+
+actions: []                              # it proposes no operational action itself; it only coordinates
+
+never:
+  - Never change a flight, booking, crew, aircraft, bag, hotel or any other truth table.
+  - Never decide a diversion, a ramp closure, or a keep-people-on-board exception. Those are human only.
+  - Never hide or drop a proposal from another agent, or a guardrail block. Show all of them.
+  - Never close an incident while a recommendation is still pending and unreviewed by the guardrail.
+  - Never see passenger names or contact details. It works with passenger ids only.
+
+stores:
+  temporary:
+    what: "Working notes about which agent has been asked what, and the merged picture it is building."
+    kept_until: "the incident is closed, then deleted"
+  permanent:
+    - {table: incidents, kept: "for the life of the project"}
+    - {table: incident_events, kept: "for the life of the project"}
+    - {table: recommendations, kept: "for the life of the project"}
+    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
+
+output:
+  type: object
+  additionalProperties: false
+  required: [title, why, data_as_of, options, incident_status, assigned_agents, open_questions]
+  properties:
+    title: {type: string, minLength: 1}
+    why: {type: string, minLength: 1}
+    data_as_of: {type: string}
+    options: {type: array, items: {type: object}}
+    incident_status: {type: string, enum: [suspected, open, monitoring, resolved]}
+    assigned_agents: {type: array, items: {type: string, enum: [situation, network_recovery, station_staff, passenger_care, communication, guardrail]}}
+    open_questions: {type: array, items: {type: string}}
+
+max_data_age_sec: 120
+time_budget_sec: 15
+escalate_when:
+  - An agent misses its time budget twice in a row.
+  - Two agents propose things that cannot both happen and the guardrail cannot rank them.
+  - The incident cause is unknown after the situation agent reports.
+  - Any decision that is human only (diversion, ramp closure, keep-on-board exception, crew duty extension).
+
+ai_allowed: {allowed: false, for: [], fallback: "not needed, it uses no language model"}
+
+success:
+  - {metric: "minutes from the first sign of trouble to an open incident", target: "5 or fewer"}
+  - {metric: "proposals shown to a human that the guardrail never saw", target: "0"}

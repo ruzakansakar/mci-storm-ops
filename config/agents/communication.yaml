@@ -1,0 +1,70 @@
+# CONTRACT: communication. Writes what passengers are told and keeps the four screens telling the same story.
+agent: communication
+purpose: "Drafts the messages passengers see and spots screens that show something different from the truth. One of two agents allowed to see names."
+
+reads:
+  passengers: [id, full_name, final_destination, lives_locally, overnight, contact_channels, as_of]
+  channel_views: [passenger_id, channel, shown_itinerary, shown_status, shown_destination, shown_bag_routing, message, updated_at]
+  bookings: [passenger_id, seq, flight_id, status, as_of]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, status, cancel_reason, diverted_to, as_of]
+  bags: [tag, passenger_id, routing, current_location, status, as_of]
+  recommendations: [id, agent, title, autonomy, approver_role, status, created_at]
+  incidents: [id, kind, status, likely_cause, controllable, expected_end_min, expected_end_max, run_id]
+
+writes:
+  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id, created_at]}
+  events: {mode: insert, types: [message_drafted, mismatch_spotted, message_held_for_approval]}
+  audit_log: {mode: insert}
+
+actions: [send_status_update, fix_channel_mismatch]
+
+never:
+  - Never promise compensation, a hotel, a voucher or a rebooking that has not been approved.
+  - Never state a cause or an end time as certain when it is only suspected.
+  - Never send a message that mentions a diversion decision, a crew problem or a safety matter that a human has not approved.
+  - Never send one passenger's details to another passenger.
+  - Never edit what a screen shows directly; a fix is an action that goes through the approval rules.
+  - Never use a language model without the template fallback ready.
+
+stores:
+  temporary:
+    what: "Message drafts and the list of screens it is comparing."
+    kept_until: "the incident is closed, then deleted"
+  permanent:
+    - {table: recommendations, kept: "for the life of the project"}
+    - {table: events, kept: "for the life of the project, append only"}
+    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
+
+output:
+  type: object
+  additionalProperties: false
+  required: [title, why, data_as_of, options, audience_passenger_ids, channels, draft_text, used_template, promises_compensation]
+  properties:
+    title: {type: string, minLength: 1}
+    why: {type: string, minLength: 1}
+    data_as_of: {type: string}
+    options: {type: array, items: {type: object}}
+    audience_passenger_ids: {type: array, items: {type: string}}
+    channels: {type: array, items: {type: string, enum: [app, sms, gate_screen, call_center, email]}}
+    draft_text: {type: string, minLength: 1, maxLength: 600}
+    used_template: {type: boolean}
+    promises_compensation: {type: boolean}
+    safety_rung: {type: integer, minimum: 1, maximum: 8}
+
+max_data_age_sec: 60
+time_budget_sec: 15
+escalate_when:
+  - A draft would need to mention money, a safety matter or a cause that is not confirmed.
+  - More than 10% of the people it is writing to show a screen that disagrees with the truth.
+  - A message failed to reach a child flying alone, or a passenger who needs wheelchair help.
+
+ai_allowed:
+  allowed: true
+  for: [message drafts for passengers]
+  fallback: "a fixed message template filled with the confirmed facts; used whenever the language model is slow, down, or its draft is rejected"
+  never_for: [deciding whether to send, what is owed, or any operational action]
+
+success:
+  - {metric: "minutes until all four screens agree after a change", target: "5 or fewer"}
+  - {metric: "messages that promise something not approved", target: "0"}
+  - {metric: "passengers who see wrong information at the same time", target: "50% fewer than today"}

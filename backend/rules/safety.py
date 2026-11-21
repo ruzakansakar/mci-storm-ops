@@ -43,6 +43,11 @@ def tarmac_food_water(o, lim):
 
 
 def ramp_closed_for_lightning(o, lim):
+    """No fueling, loading, pushback, towing or marshalling while the ramp is closed, or lightning is within the set distance."""
+    rule = lim["lightning"]
+    miles, activity = o.get("lightning_distance_mi"), o.get("ramp_activity")
+    if activity in rule["blocked_activities"] and miles is not None and miles <= rule["ramp_closed_within_miles"]:
+        return f"lightning {miles:g} miles away (closed within {rule['ramp_closed_within_miles']:g}): no {activity} on the ramp"
     if not o.get("needs_ramp"):
         return None
     applies, open_ = _need(o, "ramp_open")
@@ -153,16 +158,32 @@ def child_alone_has_plan(o, lim):
         return "children flying alone have no named adult or supervised plan"
 
 
+def child_alone_not_to_hotel_alone(o, lim):
+    """A stranded child flying alone stays with Southwest staff. Never sent to a hotel alone."""
+    if o.get("pax", {}).get("child_alone", 0) and o.get("destination_kind") == "hotel" and not o.get("staff_supervised"):
+        return "children flying alone can't be sent to a hotel without Southwest staff supervising"
+
+
+from backend.rules import airport, crew  # noqa: E402  (these modules hold the newer checks)
+
 CHECKS = {f.__name__: f for f in [
     tarmac_limit, tarmac_food_water, ramp_closed_for_lightning, maintenance_due, needs_inspection, fuel_reserve,
     station_has_gate, customs_for_international, crew_duty_left, crew_rest, child_alone_international,
     child_alone_no_connection, child_alone_age, wheelchair_help_available, child_alone_has_plan,
+    child_alone_not_to_hotel_alone,
+    crew.pilot_fdp_limit, crew.pilot_cumulative_limits, crew.pilot_not_fatigued, crew.fa_duty_limit, crew.fa_rest,
+    crew.ground_staff_limits,
+    airport.airport_curfew, airport.tsa_rescreening, airport.station_staffed, airport.wheelchair_unattended,
+    airport.tarmac_exception_needs_human, airport.lightning_strike_inspection,
 ]}
+
+# The parts of the rules that the checks read, next to the plain numbers in `limits`.
+SECTIONS = ("child_alone", "pilot", "fa", "ground_staff", "tarmac", "lightning", "airports", "wheelchair")
 
 
 def limits_for(rules: dict) -> dict:
-    """Everything the checks read: the numbers in `limits` plus the `child_alone` section."""
-    return {**rules["limits"], "child_alone": rules["child_alone"]}
+    """Everything the checks read: the numbers in `limits` plus the other sections (child_alone, pilot, fa, ...)."""
+    return {**rules["limits"], **{k: rules[k] for k in SECTIONS if k in rules}}
 
 
 def screen(options: list[dict], rules: dict) -> tuple[list[dict], list[dict]]:

@@ -1,0 +1,33 @@
+# WHO DECIDES WHAT.
+#   auto            the co-pilot does it and writes it to the audit log
+#   needs_approval  the co-pilot proposes; the named role taps approve or reject
+#   human_only      the co-pilot may show facts, never a recommendation it can act on
+# Anything not listed here is treated as human_only.
+# The "path" of each entry is autonomy.<action>. Agents may only propose actions listed here.
+rules:
+  - {id: action_send_status_update, path: autonomy.send_status_update, description: Send a status message to passengers., value: {level: auto}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_fix_channel_mismatch, path: autonomy.fix_channel_mismatch, description: Correct a wrong itinerary or status shown on an app or text or screen or call centre., value: {level: auto}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_hold_hotel_rooms, path: autonomy.hold_hotel_rooms, description: Hold hotel rooms (up to 40 on its own)., value: {level: auto, max_rooms: 40}, source: assumption, citation: Class-project choice, enforced: true, checked_by: autonomy_for}
+  - {id: action_request_wheelchair_help, path: autonomy.request_wheelchair_help, description: Ask for wheelchair staff at a gate., value: {level: auto}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_rebook_passenger, path: autonomy.rebook_passenger, description: Move a passenger to another flight., value: {level: needs_approval, approver: customer_service_supervisor}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_issue_compensation, path: autonomy.issue_compensation, description: Give vouchers or credits., value: {level: needs_approval, approver: customer_service_supervisor}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_call_in_reserve_crew, path: autonomy.call_in_reserve_crew, description: Call in a reserve crew., value: {level: needs_approval, approver: crew_scheduling}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_call_in_ground_staff, path: autonomy.call_in_ground_staff, description: Call in or extend ground staff within their shift and break limits., value: {level: needs_approval, approver: station_manager}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_swap_aircraft, path: autonomy.swap_aircraft, description: Swap the aircraft on a flight., value: {level: needs_approval, approver: network_operations_control}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_delay_flight, path: autonomy.delay_flight, description: Delay a flight., value: {level: needs_approval, approver: network_operations_control}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_cancel_flight, path: autonomy.cancel_flight, description: Cancel a flight., value: {level: needs_approval, approver: network_operations_control}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_start_deplaning, path: autonomy.start_deplaning, description: Start getting passengers off a plane that is waiting (never the opposite decision)., value: {level: needs_approval, approver: station_manager}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_divert_flight, path: autonomy.divert_flight, description: Divert a flight to another airport., value: {level: human_only, approver: dispatcher_and_captain}, source: law, citation: "14 CFR 121.533 (dispatcher and captain share responsibility)", enforced: false}
+  - {id: action_keep_on_board_exception, path: autonomy.keep_on_board_exception, description: Keep passengers on board past the tarmac limit because of a safety or security or air-traffic reason., value: {level: human_only, approver: captain}, source: law, citation: "14 CFR 259.4(c)(3)(ii) and (iii)", enforced: true, checked_by: tarmac_exception_needs_human}
+  - {id: action_ramp_closure, path: autonomy.ramp_closure, description: Close or reopen the ramp., value: {level: human_only, approver: ramp_supervisor}, source: assumption, citation: Class-project choice, enforced: false}
+  - {id: action_release_aircraft_after_inspection, path: autonomy.release_aircraft_after_inspection, description: Release a plane after an inspection (for example after a lightning strike)., value: {level: human_only, approver: maintenance_control}, source: assumption, citation: "Maintenance sign-off, 14 CFR part 121", enforced: false}
+  - {id: action_extend_crew_duty, path: autonomy.extend_crew_duty, description: Extend a crew's duty period (the captain and the airline decide)., value: {level: human_only, approver: captain}, source: law, citation: "14 CFR 117.19", enforced: true, checked_by: pilot_fdp_limit}
+
+  - id: never_auto_rungs
+    path: never_auto_rungs
+    description: Anything that would change a safety fact in rungs 1 to 4 is never automatic, whatever is written above.
+    value: [1, 2, 3, 4]
+    source: assumption
+    citation: Class-project choice
+    enforced: true
+    checked_by: autonomy_for

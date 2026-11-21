@@ -10,7 +10,7 @@ def autonomy_for(action: str, rules: dict, safety_rung: int | None = None, rooms
     never_auto_rungs can never be automatic, even if the action is listed as auto.
     """
     a = dict(rules["autonomy"].get(action, SAFE_DEFAULT))
-    reason = "listed in rules.yaml" if action in rules["autonomy"] else "not listed, so a human decides"
+    reason = "listed in the autonomy rules" if action in rules["autonomy"] else "not listed, so a human decides"
     if a["level"] == "auto" and safety_rung in rules["never_auto_rungs"]:
         a = {"level": "needs_approval", "approver": "station_manager"}
         reason = f"touches safety rung {safety_rung}, so it can't be automatic"

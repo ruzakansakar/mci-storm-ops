@@ -14,7 +14,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | Phase | What | Status |
 |---|---|---|
 | 1 | Database + data from the class files | **done** |
-| 2 | Rules as tested code (`config/rules.yaml`) | **done** |
+| 2 | Rules as tested code (`config/rules/`) | **done** |
+| 3b | Rules catalog + agent contracts (`config/rules/`, `config/agents/`) | **done** |
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4 | Orchestrator + Situation agent | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
@@ -62,27 +63,55 @@ pytest                        # automated checks (the simulator ones take ~40 s)
 
 ## The rules (Phase 2)
 
-Every number the agents use lives in `config/rules.yaml`: the safety ladder, legal limits,
-who approves what, and compensation. Change a number there and rerun `pytest`.
+Every number the agents use lives in the folder `config/rules/`, one file per kind of rule. Change a number there and rerun `pytest`.
+
+| File | What is in it |
+|---|---|
+| `law.yaml` | Federal law: pilot duty and rest (14 CFR 117, including the full Table B), flight attendant duty and rest (121.467), dispatchers (121.465), tarmac delays (259.4), fuel (121.639), airport curfews, customs, wheelchair rules (part 382) |
+| `southwest.yaml` | Southwest policy and commitments: children flying alone, vouchers, bag fee, refunds, no rebooking on other airlines |
+| `operations.yaml` | Our assumptions and airport/station facts: buffers, lightning and the ramp, ground staff hour limits, TSA and Southwest station hours |
+| `safety_ladder.yaml` | The eight rungs |
+| `autonomy.yaml` | Who decides what |
+
+**Every rule has the same fields:** `id`, a plain description, `value`, `source` (`law` / `southwest` / `assumption` / `class_files`),
+`citation` (for example `14 CFR 117.19` or a URL), `enforced` (true or false) and `checked_by` (the function that checks it).
+A test fails if a rule is missing a field, or says `enforced: true` with no real function behind it.
+
+```bash
+python -m scripts.rules_catalog     # every rule as a table: id, value, source, enforced
+```
 
 - **Safety ladder:** life, aircraft, infrastructure, legal, vulnerable passengers (these remove unsafe options),
   then network, convenience, cost (these only rank what's left). Unknown data counts as unsafe.
 - **Who decides:** `auto`, `needs_approval` (with the approver's role) or `human_only`. Anything not listed is human-only,
   and nothing that touches rungs 1-4 can be automatic.
 - **Children flying alone** (Southwest unaccompanied minor policy): ages 5-11, nonstop or same plane only, never international.
-  A rebooking that puts a child on a connection is removed; the international check reads this section of `rules.yaml`.
+  A rebooking that puts a child on a connection is removed; the international check reads the children-alone rules.
+  A stranded child stays with Southwest staff and is never sent to a hotel alone.
 - **Tarmac food and water** (law, 14 CFR 259.4): an option with 2+ hours on the tarmac is removed unless it has a food-and-water plan.
 - **Delayed bags** (law, DOT refund rule, 14 CFR 260.5): the checked-bag fee is refunded if a bag is late by more than 12 h (domestic),
   or 15 / 30 h (international, by flight length). Southwest charges for checked bags ($45 first, $55 second since 9 Apr 2026;
-  sources are in `rules.yaml`); `bag_fee_usd` is an assumption.
-- **Every rule has a source note** in `rules.yaml`: `law` (with the regulation), `southwest` (with its basis) or `assumption`.
-  A test fails if a rule has none. Legal and safety numbers live only in `rules.yaml`; the simulator reads them from that file
-  (as plain YAML), and a test fails if `simulator.yaml` defines a key that `rules.yaml` already owns.
+  sources are in `southwest.yaml`).
+- **Crew hours** (checks in `backend/rules/crew.py`): pilots use the full Table B (start time x number of flights), the
+  up-to-2-hour extension before takeoff (the captain and airline decide; more than 30 min only once before rest), extension after
+  takeoff only as needed to land safely, 10 h rest, 30 h off in 168 h, and the 60/190 duty-hour and 100/1,000 flight-hour limits.
+  Flight attendants: 14/16/18/20 h duty, 10 or 12 h rest, 24 h off in 7 days, and the beyond-our-control exception.
+  Ground staff have no federal limit, so the shift length, break, gap and days-in-a-row limits are assumptions.
+- **Tarmac** (`backend/rules/tarmac.py`): `tarmac_timeline()` takes a plane on the ground and returns the deadlines (30 min
+  announcement, 2 h food and water, latest time to start returning, the limit) and what blocks getting people off (no gate or stairs,
+  no staff, lightning, no customs, TSA closed, wheelchair or children without help). It **never** decides to keep people on board:
+  when something blocks deplaning and time is up it answers `captain_decides`, because the safety and air-traffic exceptions are
+  human only and have to be logged.
+- **Airports** (`backend/rules/airport.py`): curfews (San Diego bans departures 23:30-06:30; Washington National limits night flying to
+  quiet aircraft; MCI has none), TSA re-screening and Southwest staff hours at diversion stations, lightning within 5 miles closes the
+  ramp, a plane struck by lightning is inspected before it flies, and nobody waits more than 30 minutes alone in a wheelchair.
+- **Legal and safety numbers live only in `config/rules/`**; the simulator reads them as plain YAML (it never imports the rules code),
+  and a test fails if `simulator.yaml` repeats a name that a rule owns.
 - **Fuel:** `aircraft.fuel_minutes_extra` is spare *holding* fuel above the legal reserve (fuel to reach the alternate plus
   45 min, 14 CFR 121.639), which is already on board and not counted. A plan is unsafe if
   `fuel_minutes_extra - hold_minutes - minutes_to_alternate` is below `limits.fuel_buffer_min` (10 min). Unknown fuel counts as unsafe.
   A31 example (55 min): hold 45 min is kept (10 left), hold 30 then divert to St. Louis with 15 min extra flying is kept (10 left),
-  hold 50 min is removed (5 left), Tulsa is removed (no gate). The simulator reads the same `fuel_buffer_min` from `rules.yaml` as the point where a holding plane
+  hold 50 min is removed (5 left), Tulsa is removed (no gate). The simulator reads the same `fuel_buffer_min` from `config/rules/` as the point where a holding plane
   diverts (it is not repeated in `simulator.yaml`).
 - **Compensation:** legal floor for everyone (refund if cancelled or 3+ h late, 6+ h international, and rebooking declined),
   Southwest commitments only for controllable causes (meal + $75 voucher at 3+ h, hotel if overnight and not local),
@@ -125,15 +154,44 @@ cancellations naturally instead of only delays:
 - **Schedule thinning:** when a ground stop of 60+ minutes is announced, the lowest-priority departures (P4 first, then P3) scheduled
   during the stop and up to 2 hours after it are cancelled, up to a cap.
 - **Crew hours:** waiting burns crew duty (starting from the hours in the class dataset). A crew with too little duty left for its flight
-  plus the rest of its day (plus the buffer in `rules.yaml`) is swapped for a reserve crew from the Reserve Crews data if one is free,
-  available in time and long enough on duty; otherwise the flight is cancelled ("crew out of legal duty").
+  plus the rest of its day (plus the buffer in the rules) is swapped for a reserve crew from the Reserve Crews data if one is free,
+  available in time and long enough on duty. The flight then records which reserve flew (`flights.reserve_crew_ids`), the reserve is
+  marked used and its own duty clock runs down, and the swap is written to `events` and `audit_log`. If no reserve is free and the
+  pilots are only a few minutes short, the captain and airline extend their duty (once per crew, 14 CFR 117.19); otherwise the
+  flight is cancelled ("crew out of legal duty").
+- **Crews already short in the class data** (35 with too little rest, others with too little duty) still fly in today's baseline, but
+  each gets one `crew_illegal_in_source_data` event at 05:00 with the rule it breaks and its `data_issues` reference, so the
+  co-pilot can flag them later.
 - **Aircraft out of position:** a diverted aircraft that can't get back in time delays its next flight, and cancels it past the cutoff.
 - **Stranded overnight:** if no seat is left today (rebooking never fills a plane past 93%), passengers go on a next-day flight on
   7 Oct, are marked `overnight` in `passengers`, and we record whether they live locally. No hotel or money decisions are made here.
-- A test checks that across seeds 1-20, every storm or ground stop of 2+ hours cancels between 5% and 25% of the flights at MCI
-  (arrivals and departures) in the window from the start of the stop to 2 hours after it ends.
+- A test checks that across seeds 1-20, every storm or ground stop of 2+ hours cancels between 10% and 35% of the departures
+  scheduled from the start of the stop to 2 hours after it ends (the band is in `simulator.yaml`).
 
 The simulator never imports `backend/rules`: it only causes problems, it does not decide anything.
+
+## Agent contracts (before Phase 4)
+
+`config/agents/` holds one contract per agent: orchestrator, situation, network_recovery, station_staff, passenger_care,
+communication, guardrail. Each says its purpose, exactly which tables and columns it may **read**, what it may **write**, which
+**actions** it may propose (from `autonomy.yaml`), what it must **never** do, what it stores (temporary until the incident closes,
+permanent), the exact fields of its **output** (a JSON schema), how old its data may be (`max_data_age_sec`), how long it may take,
+when it must hand over to a human, whether a language model may help, and how success is measured.
+
+```bash
+python -m scripts.contracts         # one-page summary of all seven
+```
+
+- `backend/contracts/loader.py` refuses to load a contract with a missing field, an unknown column or action, a write to a truth table
+  (flights, bookings, crews...), incident writes by anyone but the orchestrator, or names/contact details for an agent that may not see them.
+- `backend/contracts/context.py` has `AgentContext`, the only way an agent talks to the database. A read, write, action or output
+  outside the contract raises a clear `ContractViolation` and writes a `contract_violation` event. Data older than `max_data_age_sec`
+  is refused (`StaleDataError`). Agents write only proposals (`recommendations`), their own events and the audit log; the guardrail
+  can only mark a proposal passed or blocked; no agent edits a truth table, a human-approved action does.
+- Only `passenger_care` and `communication` read passenger names and contacts. A language model is allowed only for situation summaries
+  and message drafts, always with a template fallback.
+- "Data age" is measured from the `as_of` time of the rows an agent read, so the adapter that refreshes the shared live view must keep
+  `as_of` current (Phase 4+).
 
 ## Rules for conflicting files
 
@@ -149,12 +207,16 @@ backend/db/schema.sql      every table
 backend/seed/class_files.py reads the class files in data/raw
 backend/seed/build.py      turns them into rows (deterministic by SEED)
 backend/seed/load.py       writes the rows into PostgreSQL
-backend/rules/             safety ladder, who decides, compensation
-config/rules.yaml          every rule number
+backend/rules/             safety ladder, crew, tarmac and airport checks, who decides, compensation
+backend/contracts/         agent contracts: loader and AgentContext
+config/rules/              every rule (law, southwest, operations, safety ladder, autonomy)
+config/agents/             one contract per agent
 config/simulator.yaml      every simulator number
 config/seed.yaml           every number used to build the starting data
 simulator/                 scenario, world (truth), channels (screens), run, report (debug page)
 reports/                   generated debug pages (not committed)
+scripts/rules_catalog.py    every rule as a table
+scripts/contracts.py       summary of the seven agent contracts
 scripts/reset_db.py        wipe and rebuild
 scripts/summary.py         human-readable check
 tests/                     pytest checks

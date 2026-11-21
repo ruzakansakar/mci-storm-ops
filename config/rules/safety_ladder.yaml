@@ -1,0 +1,77 @@
+# THE SAFETY LADDER. Checked top to bottom. An option that fails a "filter" rung is removed, never traded off.
+# Rungs 6-8 don't remove anything; they only decide the order of the options that survive.
+# Same entry layout as law.yaml (the value is the rung itself).
+rules:
+  - id: rung_1_life
+    path: safety_ladder[]
+    description: Life safety. Tarmac time limit, food and water, the tarmac exceptions (human only), lightning on the ramp.
+    value: {rung: 1, name: life, kind: filter, checks: [tarmac_limit, tarmac_food_water, tarmac_exception_needs_human, ramp_closed_for_lightning]}
+    source: law
+    citation: "14 CFR 259.4; lightning ramp closure is airline practice (assumption)"
+    enforced: true
+    checked_by: tarmac_limit
+
+  - id: rung_2_aircraft
+    path: safety_ladder[]
+    description: The aircraft. Maintenance due, inspections (including after a lightning strike), fuel.
+    value: {rung: 2, name: aircraft, kind: filter, checks: [maintenance_due, needs_inspection, lightning_strike_inspection, fuel_reserve]}
+    source: law
+    citation: "14 CFR 121.639 (fuel); maintenance and inspection checks are assumptions"
+    enforced: true
+    checked_by: fuel_reserve
+
+  - id: rung_3_infrastructure
+    path: safety_ladder[]
+    description: The ground. A free gate, customs, airport curfews, TSA re-screening, Southwest staff on hand.
+    value: {rung: 3, name: infrastructure, kind: filter, checks: [station_has_gate, customs_for_international, airport_curfew, tsa_rescreening, station_staffed]}
+    source: law
+    citation: "19 CFR 122.31 and 122.35 (customs); airport curfews; the rest are assumptions"
+    enforced: true
+    checked_by: airport_curfew
+
+  - id: rung_4_legal
+    path: safety_ladder[]
+    description: Crew hours and rest (pilots, flight attendants, ground staff) and the Southwest rules for children flying alone.
+    value:
+      rung: 4
+      name: legal
+      kind: filter
+      checks: [crew_duty_left, crew_rest, pilot_fdp_limit, pilot_cumulative_limits, pilot_not_fatigued, fa_duty_limit, fa_rest,
+               ground_staff_limits, child_alone_international, child_alone_no_connection, child_alone_age]
+    source: law
+    citation: "14 CFR part 117 and 121.467 (crew); Southwest unaccompanied minor policy (children)"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: rung_5_vulnerable
+    path: safety_ladder[]
+    description: Passengers who need extra care. Wheelchair help, never leaving someone alone in a chair over 30 minutes, the plan for children.
+    value: {rung: 5, name: vulnerable, kind: filter, checks: [wheelchair_help_available, wheelchair_unattended, child_alone_has_plan, child_alone_not_to_hotel_alone]}
+    source: law
+    citation: "14 CFR 382.91, 382.95, 382.103 (wheelchair); the child plan is an assumption"
+    enforced: true
+    checked_by: wheelchair_unattended
+
+  - id: rung_6_network
+    path: safety_ladder[]
+    description: Rank what is left by how well it helps the network. Higher is better.
+    value: {rung: 6, name: network, kind: rank, score: network_score}
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: rung_7_convenience
+    path: safety_ladder[]
+    description: Then by how few passengers are disrupted. Lower is better.
+    value: {rung: 7, name: convenience, kind: rank, score: pax_disrupted}
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false
+
+  - id: rung_8_cost
+    path: safety_ladder[]
+    description: Then by cost. Lower is better.
+    value: {rung: 8, name: cost, kind: rank, score: cost_usd}
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false

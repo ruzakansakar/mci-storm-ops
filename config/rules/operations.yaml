@@ -1,0 +1,181 @@
+# OUR OWN ASSUMPTIONS AND AIRPORT / STATION FACTS. Change freely, then rerun `pytest`.
+# Same entry layout as law.yaml. Everything here is source: assumption unless it says otherwise.
+rules:
+
+  # ------------------------------------------------------------------ BUFFERS
+  - id: crew_duty_buffer_min
+    path: limits.crew_duty_buffer_min
+    description: Never plan a crew right to the last minute of its duty.
+    value: 30
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: crew_duty_left
+
+  - id: fuel_buffer_min
+    path: limits.fuel_buffer_min
+    description: >-
+      Spare holding fuel (above the legal reserve) that must still be left after a plan. A plan is unsafe if
+      fuel_minutes_extra - hold_minutes - minutes_to_alternate is below this.
+    value: 10
+    source: assumption
+    citation: "Class-project choice; the legal reserve itself is 14 CFR 121.639"
+    enforced: true
+    checked_by: fuel_reserve
+
+  - id: min_connection_min
+    path: limits.min_connection_min
+    description: Shortest connection we plan for at MCI.
+    value: 45
+    source: assumption
+    citation: "Class-project choice. Used by the simulator and the seed data, not by a safety check."
+    enforced: false
+
+  - id: tarmac_start_return_before_limit_min
+    path: tarmac.start_return_before_limit_min
+    description: >-
+      Start returning to a gate or stairs this many minutes before the legal tarmac limit, so the plane is not still moving
+      when the limit hits.
+    value: 30
+    source: assumption
+    citation: "Class-project choice; the law only says the return must have begun before the limit (14 CFR 259.4(c)(3)(i))"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  # ------------------------------------------------------------------ LIGHTNING AND THE RAMP
+  - id: lightning_ramp_radius_miles
+    path: lightning.ramp_closed_within_miles
+    description: >-
+      When lightning is within this distance, the ramp is closed: no fueling, loading, pushback, towing or marshalling
+      (ramp workers stay inside).
+    value: 5
+    source: assumption
+    citation: "Airports and airlines pick their own distance (commonly 5 to 10 miles); no federal rule. Class-project choice."
+    enforced: true
+    checked_by: ramp_closed_for_lightning
+
+  - id: lightning_ramp_blocked_activities
+    path: lightning.blocked_activities
+    description: The ramp jobs that stop while the ramp is closed.
+    value: [fueling, loading, pushback, towing, marshalling]
+    source: assumption
+    citation: "Common airline ramp practice; class-project choice"
+    enforced: true
+    checked_by: ramp_closed_for_lightning
+
+  - id: lightning_strike_inspection
+    path: lightning.strike_needs_inspection
+    description: A plane struck by lightning is inspected, and maintenance signs it off, before its next flight.
+    value: true
+    source: assumption
+    citation: "Maintenance-manual practice (FAA AC 20-136 covers lightning protection). Not read in full, so kept as an assumption."
+    enforced: true
+    checked_by: lightning_strike_inspection
+
+  # ------------------------------------------------------------------ GROUND STAFF (no federal hour limit; these are our assumptions)
+  - id: ground_staff_max_shift_min
+    path: ground_staff.max_shift_min
+    description: Longest shift for gate, ramp, wheelchair and customer service staff, including any overtime.
+    value: 720
+    source: assumption
+    citation: "No federal hour limit for ground staff. Class-project choice (12 h)."
+    enforced: true
+    checked_by: ground_staff_limits
+
+  - id: ground_staff_break_interval_min
+    path: ground_staff.break_interval_min
+    description: Longest time a person works without a break.
+    value: 300
+    source: assumption
+    citation: "No federal rule; class-project choice (5 h)"
+    enforced: true
+    checked_by: ground_staff_limits
+
+  - id: ground_staff_break_length_min
+    path: ground_staff.break_length_min
+    description: How long a break lasts.
+    value: 30
+    source: assumption
+    citation: "No federal rule; class-project choice"
+    enforced: true
+    checked_by: ground_staff_limits
+
+  - id: ground_staff_min_gap_min
+    path: ground_staff.min_gap_between_shifts_min
+    description: Shortest time off between the end of one shift and the start of the next.
+    value: 600
+    source: assumption
+    citation: "No federal rule; class-project choice (10 h)"
+    enforced: true
+    checked_by: ground_staff_limits
+
+  - id: ground_staff_max_consecutive_days
+    path: ground_staff.max_consecutive_days
+    description: Most days in a row a person may work.
+    value: 6
+    source: assumption
+    citation: "No federal rule; class-project choice"
+    enforced: true
+    checked_by: ground_staff_limits
+
+  # ------------------------------------------------------------------ AIRPORT STATIONS
+  - id: tsa_rescreen_outside_secure_area
+    path: airports.tsa_rescreen_if_deplaned_outside_secure
+    description: >-
+      Passengers who get off outside the secure area (stairs onto the ramp, a station with no secure connection) must go through
+      TSA screening again before they can get back on a plane. If the checkpoint is closed they cannot continue until it opens.
+    value: true
+    source: assumption
+    citation: "TSA practice; no single rule read. Class-project choice."
+    enforced: true
+    checked_by: tsa_rescreening
+
+  - id: tsa_checkpoint_hours
+    path: airports.tsa_checkpoint_hours
+    description: When the TSA checkpoint is open at the stations a flight can divert to (local time).
+    value:
+      STL: {open: "04:00", close: "22:30"}
+      OMA: {open: "04:00", close: "21:30"}
+      DSM: {open: "04:00", close: "21:00"}
+      ICT: {open: "04:00", close: "20:30"}
+      TUL: {open: "04:00", close: "21:30"}
+      DEN: {open: "00:00", close: "24:00"}
+      DAL: {open: "04:00", close: "23:00"}
+      MDW: {open: "04:00", close: "23:00"}
+      BWI: {open: "04:00", close: "23:00"}
+      MCI: {open: "04:00", close: "23:00"}
+    source: assumption
+    citation: "Invented for the class project. Real hours differ and change by day."
+    enforced: true
+    checked_by: tsa_rescreening
+
+  - id: southwest_station_hours
+    path: airports.southwest_staffed_hours
+    description: When Southwest has its own people (gate agents, ramp, wheelchair help) at a station, local time. Outside these hours a diverted plane can land but nobody is there to help.
+    value:
+      STL: {open: "04:30", close: "23:30"}
+      OMA: {open: "04:30", close: "22:30"}
+      DSM: {open: "04:30", close: "22:00"}
+      ICT: {open: "04:30", close: "21:30"}
+      TUL: {open: "04:30", close: "22:30"}
+      DEN: {open: "00:00", close: "24:00"}
+      DAL: {open: "00:00", close: "24:00"}
+      MDW: {open: "00:00", close: "24:00"}
+      BWI: {open: "00:00", close: "24:00"}
+      MCI: {open: "00:00", close: "24:00"}
+    source: assumption
+    citation: "Invented for the class project"
+    enforced: true
+    checked_by: station_staffed
+
+  # ------------------------------------------------------------------ CHILDREN ALONE: when stranded
+  - id: child_alone_stranded_supervised
+    path: child_alone.stranded_supervised
+    description: >-
+      A child flying alone who is stranded stays with Southwest staff until handed to the named adult. Never sent to a hotel alone,
+      and no rebooking plan without a named adult or staff supervision.
+    value: true
+    source: assumption
+    citation: "Southwest has not been confirmed to publish this; common unaccompanied-minor practice. Class-project choice."
+    enforced: true
+    checked_by: child_alone_has_plan

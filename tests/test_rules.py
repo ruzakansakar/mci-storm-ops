@@ -1,4 +1,4 @@
-"""Phase 2 checks: do the rules in config/rules.yaml behave the way an ops person expects?
+"""Phase 2 checks: do the rules in config/rules/ behave the way an ops person expects?
 
 None of these touch the database; they test the rules on their own.
 """
@@ -73,26 +73,26 @@ def test_safe_options_ranked_network_then_people_then_cost():
 # ------------------------------------------------------------------ individual checks
 
 def test_unknown_counts_as_unsafe():
-    assert CHECKS["crew_duty_left"](a31(crew={"duty_left_min": None}), R["limits"])
-    assert CHECKS["needs_inspection"](a31(aircraft={"needs_inspection": None}), R["limits"])
-    assert CHECKS["tarmac_limit"]({"tarmac_min": None}, R["limits"])
+    assert CHECKS["crew_duty_left"](a31(crew={"duty_left_min": None}), L)
+    assert CHECKS["needs_inspection"](a31(aircraft={"needs_inspection": None}), L)
+    assert CHECKS["tarmac_limit"]({"tarmac_min": None}, L)
 
 
 def test_tarmac_limit_is_3h_domestic_4h_international():
-    lim = R["limits"]
+    lim = L
     assert CHECKS["tarmac_limit"]({"tarmac_min": 180}, lim)
     assert not CHECKS["tarmac_limit"]({"tarmac_min": 200, "international": True}, lim)
     assert CHECKS["tarmac_limit"]({"tarmac_min": 240, "international": True}, lim)
 
 
 def test_lightning_stops_ramp_work():
-    assert CHECKS["ramp_closed_for_lightning"]({"needs_ramp": True, "ramp_open": False}, R["limits"])
-    assert not CHECKS["ramp_closed_for_lightning"]({"needs_ramp": False, "ramp_open": False}, R["limits"])
+    assert CHECKS["ramp_closed_for_lightning"]({"needs_ramp": True, "ramp_open": False}, L)
+    assert not CHECKS["ramp_closed_for_lightning"]({"needs_ramp": False, "ramp_open": False}, L)
 
 
 def test_maintenance_due_before_the_plan_ends():
     o = a31(aircraft={"maint_due_at": NOON + timedelta(minutes=30)})
-    assert CHECKS["maintenance_due"](o, R["limits"])
+    assert CHECKS["maintenance_due"](o, L)
 
 
 def test_child_alone_blocked_on_international_and_needs_a_plan():
@@ -157,35 +157,19 @@ def test_delayed_bag_refunds_the_fee_by_the_dot_hours():
     assert "refund of the checked-bag fee" not in items(bag_delivery_hours=20, bag_report_filed=False)  # law needs a report
 
 
-def test_every_rule_in_the_file_says_where_it_comes_from():
-    """Each line of rules.yaml that holds a rule must carry a 'source:' note (law, southwest or assumption)."""
-    import re
-    from backend.rules.loader import RULES_FILE
-    lines = RULES_FILE.read_text(encoding="utf-8").splitlines()
-    in_block = None
-    missing = []
-    for n, line in enumerate(lines, 1):
-        top = re.match(r"^([a-z_]+):", line)
-        if top:
-            in_block = top.group(1)
-            if in_block in ("never_auto_rungs",) and "source:" not in line:
-                missing.append(n)
-            continue
-        is_rule = re.match(r"^  (- )?\{?[a-z_0-9]+:", line) and not line.lstrip().startswith("#")
-        if in_block in ("limits", "child_alone", "autonomy", "compensation") and is_rule and "source:" not in line:
-            missing.append(n)
-        if in_block == "safety_ladder" and line.lstrip().startswith("- {rung: 6") is False and line.lstrip().startswith("- {rung:"):
-            prev = lines[n - 2]
-            if "source" not in prev and "source:" not in line:
-                missing.append(n)
-    assert not missing, f"rules without a source note on lines {missing}"
-    assert not CHECKS["child_alone_has_plan"]({"pax": {"child_alone": 1}, "child_alone_plan": True}, R["limits"])
+def test_every_rule_says_where_it_comes_from():
+    """Every rule has an id, a plain description, a value, a source, a citation and an enforced flag."""
+    for e in R["entries"]:
+        assert e["source"] in ("law", "southwest", "assumption", "class_files"), e["id"]
+        assert str(e["citation"]).strip() and str(e["description"]).strip(), e["id"]
+        assert isinstance(e["enforced"], bool) and "value" in e, e["id"]
+
 
 
 def test_class_dataset_crews_with_short_rest_are_caught():
     from backend.seed import class_files as cf
     short = [c for c in cf.read_dataset()["crew"]
-             if CHECKS["crew_rest"]({"crew": {"rest_hours": c["Minimum Rest Hrs"]}}, R["limits"])]
+             if CHECKS["crew_rest"]({"crew": {"rest_hours": c["Minimum Rest Hrs"]}}, L)]
     assert len(short) == 35  # same number the Phase 1 loader flagged in data_issues
 
 

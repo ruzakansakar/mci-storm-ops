@@ -91,6 +91,7 @@ CREATE TABLE flights (
     edct              timestamptz,                       -- FAA-assigned takeoff time
     aircraft_id       text REFERENCES aircraft(id),
     crew_id           text REFERENCES crews(id),
+    reserve_crew_ids  text[],                            -- reserve crews that took over from crew_id (pilots and/or flight attendants)
     next_destination  char(3),                           -- where the plane goes after this leg
     priority          text CHECK (priority IN ('P1','P2','P3','P4')),
     status            text NOT NULL DEFAULT 'scheduled', -- scheduled | boarding | held | delayed | ground_stop | departed | airborne | diverted | arrived | cancelled

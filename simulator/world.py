@@ -32,7 +32,7 @@ class World:
         self.start = start
         self.ph = cfg["physics"]
         self.base = cfg["baseline"]
-        self.lim = cfg["limits"]                  # legal and safety numbers, read from config/rules.yaml
+        self.lim = cfg["limits"]                  # legal and safety numbers, read from config/rules/
         self.incident = scenario.incident
 
         # ---- load the truth from the seed rows (copies; the input is never changed)
@@ -80,11 +80,26 @@ class World:
         for d in self.departures:
             d["_crew_need"] = d["_block"] + crew_cfg["onward_leg_min"] + self.lim["crew_duty_buffer_min"]
         self.crew_checked = set()          # (crew id, role) that we check for running out of duty
+        self.illegal_crews = {}            # crews that already break a rule in the class data (they still fly today)
+        rest_rule = crew_cfg["source_data_rules"]
+        issues = {i["item"]: i for i in data.get("data_issues", []) if i["category"] == "crew_rest"}
         for d in self.departures:
+            d["_role_crew"] = {}           # role -> id of the reserve crew that took over that role
+            d["reserve_crew_ids"] = None
             crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
             for role, field, _ in CREW_ROLES:
                 if crew and crew[field] is not None and crew[field] >= d["_crew_need"]:
                     self.crew_checked.add((crew["id"], role))      # a crew already short in the class data is left as it is
+                elif crew and crew[field] is not None:
+                    self.illegal_crews.setdefault(crew["id"], {"flight_id": d["id"], "breaks": []})["breaks"].append(
+                        {"rule": rest_rule["short_duty"], "role": role, "duty_left_min": crew[field], "needed_min": d["_crew_need"]})
+            if crew and crew["min_rest_hours"] is not None and crew["min_rest_hours"] < self.lim["pilot_min_rest_hours"]:
+                self.illegal_crews.setdefault(crew["id"], {"flight_id": d["id"], "breaks": []})["breaks"].append(
+                    {"rule": rest_rule["short_rest"], "min_rest_hours": float(crew["min_rest_hours"]),
+                     "required_hours": self.lim["pilot_min_rest_hours"]})
+        for cid, info in self.illegal_crews.items():
+            issue = issues.get(cid)
+            info["data_issue"] = {"category": issue["category"], "item": issue["item"]} if issue else None
         self.reserves = sorted((c for c in self.crews.values() if c.get("is_reserve")),
                                key=lambda c: (minute_of(c["available_from"]), c["id"]))
         for c in self.reserves:
@@ -103,6 +118,8 @@ class World:
         self.restr = None                  # {'program','start','end'} while a stop / ground delay is in effect
         self.ramp_until = None             # minute the ramp is expected to reopen, while it is closed
         self.surge = None                  # terminal crowd growth
+        self.flagged_start = False
+        self.extended = set()              # crews whose pilots already had a duty extension
         self.next_dep_slot = self.next_land_slot = start
         self.max_tarmac = 0
         self.events, self.audit_rows = [], []
@@ -182,6 +199,8 @@ class World:
 
     def step(self, t: int):
         self.t = t
+        if not self.flagged_start:
+            self._flag_illegal_crews()
         for ev in self.sc.events_at(t):
             self._apply_event(ev)
         if t == self.start or t % self.ph["reproject_every_min"] == 0:
@@ -570,22 +589,36 @@ class World:
         """A crew that no longer has enough duty left for its flight (plus buffer) is replaced by a reserve crew, or the
         flight is cancelled. This is today's process: it only reacts, it does not plan ahead."""
         for d in sorted(self.departures, key=lambda d: (d["sched_dep"], d["id"])):
-            crew = self.crews.get(d["crew_id"]) if d["crew_id"] else None
-            if d["status"] not in WAITING_DEP or not crew:
+            if d["status"] not in WAITING_DEP or not d["crew_id"]:
                 continue
             for role, field, _ in CREW_ROLES:
-                left = crew[field]
+                crew = self._crew_for(d, role)
+                left = crew[field] if crew else None
                 if (crew["id"], role) not in self.crew_checked or left is None or left >= d["_crew_need"]:
                     continue
                 reserve = self._find_reserve(role, d)
                 if reserve:
                     self._assign_reserve(d, crew, role, field, reserve)
+                elif self._extend_pilot_duty(d, crew, role, field, left):
+                    continue
                 else:
                     self._emit("crew_out_of_duty", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "role": role,
                                                           "duty_left_min": left, "needed_min": d["_crew_need"],
                                                           "reserve_found": False}, incident=True)
                     self._cancel_flight(d, "crew out of legal duty")
                     break
+
+    def _extend_pilot_duty(self, d, crew, role, field, left):
+        """No reserve is free and the pilots are only a little short: the captain and the airline extend the duty period
+        (14 CFR 117.19 allows up to 2 h; we use a small one, and once per crew). A person decides this; the world just applies it."""
+        ext = self.base["crew"]["pilot_extension_min"]
+        if role != "pilot" or crew["id"] in self.extended or d["_crew_need"] - left > ext:
+            return False
+        self.extended.add(crew["id"])
+        self._set("crews", crew, crew["id"], "crew", f"captain and airline extended the pilots' duty for {d['id']}", **{field: left + ext})
+        self._emit("pilot_duty_extended", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "extension_min": ext,
+                                                  "duty_left_before_min": left, "decided_by": "captain and airline"})
+        return True
 
     def _find_reserve(self, role, d):
         """First reserve crew of the right kind that is free, available in time, long enough on duty and allowed to fly it."""
@@ -598,7 +631,7 @@ class World:
             if c["kind"] != kind or c.get("_used") or c["reserve_status"] not in crew_cfg["reserve_usable_status"]:
                 continue
             restr = c["restrictions"] or []
-            wait = max(0, d["est_dep"] - self.t)                  # the reserve's duty also has to cover the wait
+            wait = max(0, d["est_dep"] - self.t) if crew_cfg["reserve_must_cover_wait"] else 0   # the reserve's duty also has to cover the wait
             if c["_avail"] > max(self.t, d["est_dep"]) or c[field] is None or c[field] < d["_crew_need"] + wait:
                 continue
             if (late and "Late-night restriction" in restr) or (international and "International capable" not in restr):
@@ -608,10 +641,15 @@ class World:
 
     def _assign_reserve(self, d, crew, role, field, reserve):
         reserve["_used"] = True
+        """The reserve takes over this role on the flight: the flight records it, the reserve is marked used, and from now on
+        it is the reserve's own duty clock that runs down."""
         self._set("crews", reserve, reserve["id"], "crew", f"reserve crew assigned to {d['id']}", reserve_status="Assigned")
-        self._set("crews", crew, crew["id"], "crew", f"reserve {role} crew took over {d['id']}", **{field: reserve[field]})
+        d["_role_crew"][role] = reserve["id"]
+        self.crew_checked.add((reserve["id"], role))
+        self._set("flights", d, d["id"], "flight", f"reserve {role} crew {reserve['id']} replaced {crew['id']}",
+                  reserve_crew_ids=sorted(set(d["_role_crew"].values())))
         self._emit("reserve_crew_assigned", "MCI", {"flight_id": d["id"], "crew_id": crew["id"], "role": role,
-                                                    "reserve_id": reserve["id"]})
+                                                    "reserve_id": reserve["id"], "reserve_duty_left_min": reserve[field]})
 
     def _thin_schedule(self):
         """Today's process when a long ground stop is announced: cancel some of the lowest-priority departures."""
@@ -620,7 +658,8 @@ class World:
             return
         lo, hi = r["start"], r["end"] + th["window_after_min"]
         in_window = [d for d in self.departures if lo <= d["sched_dep"] <= hi]
-        room = int(th["max_fraction_of_window"] * len(in_window)) - len(self.thinned)
+        room = min(int(th["max_fraction_of_window"] * len(in_window)) - len(self.thinned), th["max_per_announcement"],
+                   th["max_flights"] - len(self.thinned))
         pool = [d for d in in_window if d["status"] in WAITING_DEP and d["priority"] in th["priorities"]
                 and d["tarmac_since"] is None]
         pool.sort(key=lambda d: (th["priorities"].index(d["priority"]), d["sched_dep"], d["id"]))
@@ -628,12 +667,35 @@ class World:
             self.thinned.add(d["id"])
             self._cancel_flight(d, f"schedule thinning: {r['end'] - r['start']} min ground stop announced")
 
+    def _crew_for(self, f, role):
+        """The crew doing this role on this flight: the reserve that took over, or the flight's own crew."""
+        cid = f.get("_role_crew", {}).get(role) or f["crew_id"]
+        return self.crews.get(cid) if cid else None
+
     def _burn_duty(self, f, minutes):
-        crew = self.crews.get(f["crew_id"]) if f["crew_id"] else None
-        if crew and minutes > 0:
-            kv = {field: max(0, crew[field] - minutes) for _, field, _ in CREW_ROLES if crew[field] is not None}
-            if kv:
-                self._set("crews", crew, crew["id"], "crew", "waiting uses up duty time", **kv)
+        if minutes <= 0:
+            return
+        by_crew = {}
+        for role, field, _ in CREW_ROLES:
+            crew = self._crew_for(f, role)
+            if crew and crew[field] is not None:
+                by_crew.setdefault(crew["id"], {})[field] = max(0, crew[field] - minutes)
+        for cid, kv in by_crew.items():
+            self._set("crews", self.crews[cid], cid, "crew", "waiting uses up duty time", **kv)
+
+    def _flag_illegal_crews(self):
+        """At the start of the day: one event for each crew that already breaks a rule in the class data.
+        Today's process lets them fly anyway; the event lets the co-pilot flag them later."""
+        self.flagged_start = True
+        for cid in sorted(self.illegal_crews):
+            info = self.illegal_crews[cid]
+            rules = []
+            for b in info["breaks"]:
+                if b["rule"] not in rules:
+                    rules.append(b["rule"])
+            self._emit("crew_illegal_in_source_data", "MCI",
+                       {"crew_id": cid, "flight_id": info["flight_id"], "rule": rules[0], "rules": rules,
+                        "breaks": info["breaks"], "data_issue": info["data_issue"]})
 
     def _update_crowd(self):
         t, term = self.t, self.ph["terminal"]

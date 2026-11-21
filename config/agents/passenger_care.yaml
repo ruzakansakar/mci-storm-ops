@@ -1,0 +1,79 @@
+# CONTRACT: passenger_care. Rebooking, hotels and money for individual passengers. One of two agents allowed to see names.
+agent: passenger_care
+purpose: "Proposes how to look after each affected passenger: a new flight, a hotel or a trip home, meals, and what they are owed."
+
+reads:
+  passengers: [id, full_name, booking_ref, segment, final_destination, lives_locally, overnight, loyalty_tier, contact_channels, as_of]
+  bookings: [passenger_id, seq, flight_id, status, as_of]
+  bags: [tag, passenger_id, routing, current_location, status, as_of]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, est_dep, est_arr, status, cancel_reason, controllable, pax_total, as_of]
+  passenger_groups: [flight_id, segment, count, rebooked, refunded, need_hotel, as_of]
+  later_capacity: [destination, scheduled_flights, later_flights, open_seats_later, next_later_departure, connection_alternative, as_of]
+  hotels: [id, name, station, rooms_total, rooms_available, rooms_held, rate_usd, distance_miles, shuttle, bus_capacity, last_checkin, as_of]
+  transport_options: [name, capacity, hourly_rate_usd, per_trip_rate_usd]
+  hotel_rate_tiers: [tier, radius_miles, hotel_count, rate_usd]
+  incidents: [id, kind, status, controllable, expected_end_min, expected_end_max, run_id]
+
+writes:
+  recommendations: {mode: insert, columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id, created_at]}
+  events: {mode: insert, types: [care_plan_drafted, passenger_owed_calculated, hotel_hold_proposed]}
+  audit_log: {mode: insert}
+
+actions: [rebook_passenger, issue_compensation, hold_hotel_rooms, request_wheelchair_help]
+
+never:
+  - Never promise or pay money that is not approved. Compensation is calculated and proposed; a supervisor approves it.
+  - Never rebook a child flying alone onto a connection or an international flight, and never send one to a hotel alone.
+  - Never rebook a passenger onto another airline. Southwest rebooks on its own flights.
+  - Never leave a wheelchair passenger without a plan for help at every step.
+  - Never edit a booking, bag, hotel or passenger record; it only proposes.
+  - Never share names or contact details with any agent other than communication.
+
+stores:
+  temporary:
+    what: "Per-passenger working notes while it builds a plan."
+    kept_until: "the incident is closed, then deleted"
+  permanent:
+    - {table: recommendations, kept: "for the life of the project"}
+    - {table: events, kept: "for the life of the project, append only"}
+    - {table: audit_log, kept: "for the life of the project, never edited or deleted"}
+
+output:
+  type: object
+  additionalProperties: false
+  required: [title, why, data_as_of, options, passenger_ids, owed_total_usd, hotel_rooms_needed]
+  properties:
+    title: {type: string, minLength: 1}
+    why: {type: string, minLength: 1}
+    data_as_of: {type: string}
+    options:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required: [id, summary, cost_usd]
+        properties:
+          id: {type: string}
+          summary: {type: string}
+          cost_usd: {type: number, minimum: 0}
+          flight_id: {type: string}
+    passenger_ids: {type: array, items: {type: string}}
+    owed_total_usd: {type: number, minimum: 0}
+    hotel_rooms_needed: {type: integer, minimum: 0}
+    safety_rung: {type: integer, minimum: 1, maximum: 8}
+
+max_data_age_sec: 120
+time_budget_sec: 30
+escalate_when:
+  - Fewer hotel rooms than passengers who need one.
+  - The cause of the delay is unknown, so what is owed cannot be decided.
+  - A child flying alone has no named adult or no staff supervision plan.
+  - A passenger would sleep at the airport with no plan.
+
+ai_allowed: {allowed: false, for: [], fallback: "not needed, it uses no language model"}
+
+success:
+  - {metric: "passengers with a confirmed plan within 30 minutes of the disruption", target: "90% or better"}
+  - {metric: "money promised that was not approved", target: "0"}
+  - {metric: "children flying alone with an unsafe plan", target: "0"}

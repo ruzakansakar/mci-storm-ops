@@ -74,9 +74,9 @@ class Writer:
         if k:
             cur.executemany(
                 "UPDATE flights SET status=%s, est_dep=%s, est_arr=%s, edct=%s, tarmac_since=%s, cancel_reason=%s, "
-                "controllable=%s, diverted_to=%s, pax_total=%s, as_of=%s WHERE id=%s",
+                "controllable=%s, diverted_to=%s, pax_total=%s, reserve_crew_ids=%s, as_of=%s WHERE id=%s",
                 [(f["status"], _t(f["est_dep"]), _t(f["est_arr"]), _t(f["edct"]), _t(f["tarmac_since"]), f["cancel_reason"],
-                  f["controllable"], f["diverted_to"], f["pax_total"], _t(f["as_of"]), f["id"])
+                  f["controllable"], f["diverted_to"], f["pax_total"], f.get("reserve_crew_ids"), _t(f["as_of"]), f["id"])
                  for f in (world.flights[i] for i in k)])
         k = self._take(world, "aircraft")
         if k:

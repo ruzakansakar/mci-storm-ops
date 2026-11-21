@@ -192,9 +192,11 @@ def test_rebooking_never_fills_a_plane_beyond_the_load_factor(data):
             assert f["pax_total"] <= int(cap * seats)
 
 
-def test_realism_cancellations_are_5_to_25_percent_in_long_stops(data):
-    """Across seeds 1-20, every storm / ground stop of 2+ hours cancels a believable share of the flights at MCI."""
+def test_realism_cancellations_are_10_to_35_percent_of_departures_in_long_stops(data):
+    """Across seeds 1-20, every storm / ground stop of 2+ hours cancels a believable share of the departures
+    scheduled from the start of the stop to 2 hours after it ends."""
     rl = load_config()["realism"]
+    assert (rl["min_cancelled_pct"], rl["max_cancelled_pct"]) == (10, 35)
     checked = []
     for seed in range(1, 21):
         for scenario in ("random", "a31_storm"):
@@ -203,12 +205,89 @@ def test_realism_cancellations_are_5_to_25_percent_in_long_stops(data):
             if sc.program != "ground_stop" or sc.end - sc.start < rl["min_stop_min"]:
                 continue
             lo, hi = sc.start, sc.end + rl["window_after_min"]
-            flights = [f for f in r.world.departures if lo <= f["sched_dep"] <= hi] + \
-                      [f for f in r.world.arrivals if lo <= f["sched_arr"] <= hi]
+            flights = [f for f in r.world.departures if lo <= f["sched_dep"] <= hi]
             pct = 100 * sum(f["status"] == "cancelled" for f in flights) / len(flights)
             checked.append((scenario, seed, round(pct, 1)))
             assert rl["min_cancelled_pct"] <= pct <= rl["max_cancelled_pct"], (scenario, seed, pct)
     assert len(checked) >= 25
+
+
+def test_seed_7_story_is_still_five_cancellations(data):
+    r = sim(data, 7, "a31_storm")
+    assert r.metrics["flights_cancelled"] == 5
+    assert r.world.flights["WN1033"]["cancel_reason"] == "crew out of legal duty"
+
+
+def test_crews_that_are_already_illegal_in_the_class_data_are_flagged_once_at_5am_and_still_fly(data):
+    w = sim(data, 7, "a31_storm").world
+    flagged = [e for e in w.events if e["type"] == "crew_illegal_in_source_data"]
+    assert flagged and all(e["t"] == hhmm("05:00") for e in flagged)
+    ids = [e["payload"]["crew_id"] for e in flagged]
+    assert len(ids) == len(set(ids))                                    # one event per crew
+    rest = {c["id"] for c in data["crews"] if not c["is_reserve"] and c["min_rest_hours"] is not None and c["min_rest_hours"] < 10}
+    flown = {c for c in rest if any(f["crew_id"] == c for f in w.departures)}
+    assert flown and flown <= set(ids)
+    issues = {i["item"] for i in data["data_issues"] if i["category"] == "crew_rest"}
+    for e in flagged:
+        p = e["payload"]
+        assert p["rule"] in ("pilot_min_rest_hours", "crew_duty_buffer_min") and p["breaks"]
+        if "pilot_min_rest_hours" in p["rules"]:
+            assert p["data_issue"] == {"category": "crew_rest", "item": p["crew_id"]} and p["crew_id"] in issues
+    # today's baseline still lets them fly: nothing was cancelled just because the class data lists them as short
+    assert any(w.flights[f["id"]]["status"] in ("departed", "airborne", "arrived") for f in w.departures if f["crew_id"] in flown)
+
+
+def test_the_rules_named_in_the_flags_exist_in_the_rules_folder():
+    import yaml
+    ids = {r["id"] for path in (ROOT / "config" / "rules").glob("*.yaml") for r in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]}
+    assert set(load_config()["baseline"]["crew"]["source_data_rules"].values()) <= ids
+
+
+def test_a_reserve_crew_that_takes_over_is_recorded_on_the_flight_and_burns_its_own_duty(data):
+    w = sim(data, 7, "a31_storm").world
+    f = w.flights["WN1033"]                                              # Maya's flight keeps reserve pilots R04
+    assert f["reserve_crew_ids"] == ["R04"] and f["crew_id"] == "C33"
+    swap = next(e for e in w.events if e["type"] == "reserve_crew_assigned" and e["payload"]["flight_id"] == "WN1033")
+    assert swap["payload"]["reserve_id"] == "R04" and swap["payload"]["role"] == "pilot" and swap["payload"]["crew_id"] == "C33"
+    assert w.crews["R04"]["reserve_status"] == "Assigned"
+    start_duty = next(c for c in data["crews"] if c["id"] == "R04")["pilot_duty_left_min"]
+    assert w.crews["R04"]["pilot_duty_left_min"] < start_duty            # the reserve's own clock ran down while the flight waited
+    audit = [a for a in w.audit_rows if a["entity_type"] == "flight" and a["entity_id"] == "WN1033" and "reserve_crew_ids" in a["after"]]
+    assert audit and audit[0]["after"]["reserve_crew_ids"] == ["R04"]
+    assert w.flights["WN1033"]["status"] == "cancelled" and w.flights["WN1033"]["cancel_reason"] == "crew out of legal duty"
+
+
+def test_every_reserve_is_used_for_one_flight_only(data):
+    for seed in (1, 4, 7):
+        w = sim(data, seed, "a31_storm").world
+        used = [rid for f in w.flights.values() for rid in (f.get("reserve_crew_ids") or [])]
+        assert len(used) == len(set(used))
+        assert all(w.crews[r]["reserve_status"] == "Assigned" for r in used)
+
+
+def test_pilots_a_little_short_with_no_reserve_get_a_captain_and_airline_extension_once(data):
+    seen = 0
+    cap_h = None
+    import yaml
+    for path in (ROOT / "config" / "rules").glob("law.yaml"):
+        cap_h = next(r["value"] for r in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]
+                     if r["id"] == "pilot_fdp_extension_before_takeoff_max_h")
+    ext = load_config()["baseline"]["crew"]["pilot_extension_min"]
+    assert 0 < ext <= 30 and ext <= cap_h * 60                            # inside the legal limit (14 CFR 117.19)
+    for seed in range(1, 21):
+        w = sim(data, seed, "random").world
+        events = [e for e in w.events if e["type"] == "pilot_duty_extended"]
+        crews = [e["payload"]["crew_id"] for e in events]
+        assert len(crews) == len(set(crews))                              # once per crew
+        assert all(e["payload"]["decided_by"] == "captain and airline" for e in events)
+        seen += len(events)
+    assert seen > 0
+
+
+def test_flight_reserve_crews_column_is_saved(saved):
+    res, _, cur = saved
+    assert one(cur, "SELECT reserve_crew_ids FROM flights WHERE id='WN1033'") == ["R04"]
+    assert one(cur, "SELECT count(*) FROM events WHERE type='crew_illegal_in_source_data' AND run_id=%s", res.run_id) > 0
 
 
 def test_a31_ramp_closes_inside_stop_then_reopens(data):
@@ -271,18 +350,31 @@ def _keys(node, out=None):
     return out
 
 
-def test_simulator_yaml_does_not_redefine_numbers_that_rules_yaml_owns():
+def _rule_ids_and_names():
     import yaml
-    rules = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))
+    names = set()
+    for path in (ROOT / "config" / "rules").glob("*.yaml"):
+        for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]:
+            names.add(rule["id"])
+            names.add(rule["path"].replace("[]", "").split(".")[-1])
+    return names
+
+
+def test_simulator_yaml_does_not_redefine_numbers_that_the_rules_own():
+    import yaml
     simulator = yaml.safe_load((ROOT / "config" / "simulator.yaml").read_text(encoding="utf-8"))
-    shared = (_keys(rules) & _keys(simulator)) - {"version"}
-    assert not shared, f"simulator.yaml defines keys that rules.yaml already owns: {sorted(shared)}"
+    shared = _rule_ids_and_names() & _keys(simulator)
+    assert not shared, f"simulator.yaml defines keys that config/rules/ already owns: {sorted(shared)}"
 
 
-def test_simulator_reads_its_legal_numbers_from_rules_yaml():
+def test_simulator_reads_its_legal_numbers_from_the_rules_folder():
     import yaml
-    rules = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))
-    assert load_config()["limits"] == rules["limits"]
+    limits = {}
+    for path in sorted((ROOT / "config" / "rules").glob("*.yaml")):
+        for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]:
+            if rule["path"].startswith("limits."):
+                limits[rule["path"].split(".", 1)[1]] = rule["value"]
+    assert load_config()["limits"] == limits and limits["fuel_buffer_min"] == 10
 
 
 # ------------------------------------------------------------------ the simulator does not decide

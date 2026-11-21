@@ -151,7 +151,7 @@ physics:
 # ------------------------------------------------------------------ TODAY'S BEHAVIOUR (no co-pilot)
 # Simple fixed rules that stand in for what Southwest does today. Not the co-pilot.
 baseline:
-  cancel_if_delay_over_min: 165  # assumption: a flight that would leave more than this late is cancelled
+  cancel_if_delay_over_min: 240  # assumption: a flight that would leave more than this late is cancelled
   rebook_to_next_flight_with_room: true
   max_load_factor: 0.93          # assumption: today's rebooking never fills a plane beyond this share of its seats
   thinning:                      # when a long ground stop is announced, cancel some low-priority departures
@@ -159,11 +159,18 @@ baseline:
     window_after_min: 120        # assumption: flights scheduled during the stop and up to this long after it
     priorities: [P4, P3]         # assumption: cancel P4 flights first, then P3 (never P1 or P2)
     max_fraction_of_window: 0.25 # assumption: cap: at most this share of the departures in that window
+    max_flights: 4               # assumption: and never more than this many flights, however long the stop
+    max_per_announcement: 3      # assumption: and at most this many each time a stop is announced or extended
   crew:                          # crews run out of legal duty time while they wait
     onward_leg_min: 120          # assumption: a crew's duty plan also covers about one more leg after this flight
     reserve_usable_status: [Available, On Call]   # assumption: reserve crews we may call in ("Assigned after trigger" ones are already committed)
+    pilot_extension_min: 30      # assumption: with no reserve free, the captain and airline extend pilots who are this close to short (once per crew)
+    reserve_must_cover_wait: true   # assumption: a reserve crew's duty must also cover the time the flight still has to wait
     late_night_after: "21:00"    # assumption: "Late-night restriction" reserves can't fly departures after this time
     international_region: "Mexico / Caribbean"   # flights to this region need an "International capable" reserve
+    source_data_rules:           # the rule (its id in config/rules/) that a crew in the class data breaks at the start of the day
+      short_rest: pilot_min_rest_hours
+      short_duty: crew_duty_buffer_min
   next_day:                      # passengers with no seat today go on a next-day flight (7 Oct)
     first_departure: "06:30"     # assumption
     spacing_min: 90              # assumption: minutes between extra next-day flights on the same route
@@ -198,5 +205,5 @@ metrics:
 realism:
   min_stop_min: 120              # assumption
   window_after_min: 120          # assumption
-  min_cancelled_pct: 5           # assumption
-  max_cancelled_pct: 25          # assumption
+  min_cancelled_pct: 10          # assumption
+  max_cancelled_pct: 35          # assumption

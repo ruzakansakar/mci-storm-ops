@@ -1,0 +1,427 @@
+# FEDERAL (and airport) LAW. Every entry was checked against the eCFR (ecfr.gov, current to 2026-11-19) unless it says otherwise.
+#
+# Every rule has: id, path (where its value shows up in the merged rules), description, value, source, citation,
+# enforced (true = a function in backend/rules checks it), checked_by (that function's name).
+# source is one of: law | southwest | assumption | class_files
+rules:
+
+  # ------------------------------------------------------------------ PILOTS, 14 CFR part 117
+  - id: pilot_fdp_table_b
+    path: pilot.fdp_table_b
+    description: >-
+      Longest scheduled flight duty period (hours) for a two-pilot crew, by the time the duty period starts (the crew's own
+      acclimated time) and the number of flight segments (1 to 7 or more). A crew that is not acclimated gets 30 minutes less.
+    value:
+      segments: [1, 2, 3, 4, 5, 6, 7]
+      not_acclimated_reduction_min: 30
+      rows:
+        - {from: "00:00", to: "03:59", hours: [9, 9, 9, 9, 9, 9, 9]}
+        - {from: "04:00", to: "04:59", hours: [10, 10, 10, 10, 9, 9, 9]}
+        - {from: "05:00", to: "05:59", hours: [12, 12, 12, 12, 11.5, 11, 10.5]}
+        - {from: "06:00", to: "06:59", hours: [13, 13, 12, 12, 11.5, 11, 10.5]}
+        - {from: "07:00", to: "11:59", hours: [14, 14, 13, 13, 12.5, 12, 11.5]}
+        - {from: "12:00", to: "12:59", hours: [13, 13, 13, 13, 12.5, 12, 11.5]}
+        - {from: "13:00", to: "16:59", hours: [12, 12, 12, 12, 11.5, 11, 10.5]}
+        - {from: "17:00", to: "21:59", hours: [12, 12, 11, 11, 10, 9, 9]}
+        - {from: "22:00", to: "22:59", hours: [11, 11, 10, 10, 9, 9, 9]}
+        - {from: "23:00", to: "23:59", hours: [10, 10, 10, 9, 9, 9, 9]}
+    source: law
+    citation: "14 CFR 117.13(a) and Table B to part 117"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: pilot_fdp_extension_before_takeoff_max_h
+    path: pilot.fdp_extension_before_takeoff_max_h
+    description: >-
+      If something unforeseen happens before takeoff, the captain and the airline together may extend the duty period by up to
+      2 hours. It is a human decision, never automatic.
+    value: 2
+    source: law
+    citation: "14 CFR 117.19(a)(1)"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: pilot_fdp_extension_once_over_min
+    path: pilot.fdp_extension_once_over_min
+    description: An extension of more than 30 minutes may be used only once before the crew gets its next full rest period.
+    value: 30
+    source: law
+    citation: "14 CFR 117.19(a)(2)"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: pilot_fdp_extension_cumulative_cap
+    path: pilot.fdp_extension_cannot_break_cumulative
+    description: A before-takeoff extension is not allowed if it pushes the crew past the cumulative duty limits (60 h in 168 h, 190 h in 672 h).
+    value: true
+    source: law
+    citation: "14 CFR 117.19(a)(3)"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: pilot_fdp_extension_report_days
+    path: pilot.fdp_extension_report_days
+    description: The airline must report to the FAA within 10 days any duty period that went more than 30 minutes over its Table B limit.
+    value: 10
+    source: law
+    citation: "14 CFR 117.19(a)(4) and (b)(4)"
+    enforced: false
+
+  - id: pilot_fdp_extension_after_takeoff
+    path: pilot.fdp_extension_after_takeoff
+    description: After takeoff the duty period may be extended only as far as needed to land safely at the destination or alternate airport.
+    value: only_as_needed_to_land_safely
+    source: law
+    citation: "14 CFR 117.19(b)(1)"
+    enforced: true
+    checked_by: pilot_fdp_limit
+
+  - id: pilot_min_rest_hours
+    path: limits.pilot_min_rest_hours
+    description: Before any duty, a pilot needs at least 10 hours of rest in a row, and the rest must include 8 uninterrupted hours of sleep opportunity.
+    value: 10
+    source: law
+    citation: "14 CFR 117.25(e)"
+    enforced: true
+    checked_by: crew_rest
+
+  - id: pilot_sleep_opportunity_hours
+    path: pilot.sleep_opportunity_hours
+    description: The 10-hour rest has to give at least 8 uninterrupted hours to sleep. If the pilot says it won't, the pilot cannot report.
+    value: 8
+    source: law
+    citation: "14 CFR 117.25(e) and (f)"
+    enforced: true
+    checked_by: crew_rest
+
+  - id: pilot_weekly_free_hours
+    path: pilot.free_hours_in_168h
+    description: At least 30 hours in a row free of all duty in any 168 hours (7 days).
+    value: 30
+    source: law
+    citation: "14 CFR 117.25(b)"
+    enforced: true
+    checked_by: pilot_cumulative_limits
+
+  - id: pilot_fdp_168h_max
+    path: pilot.fdp_hours_168h_max
+    description: No more than 60 flight-duty-period hours in any 168 hours.
+    value: 60
+    source: law
+    citation: "14 CFR 117.23(c)(1)"
+    enforced: true
+    checked_by: pilot_cumulative_limits
+
+  - id: pilot_fdp_672h_max
+    path: pilot.fdp_hours_672h_max
+    description: No more than 190 flight-duty-period hours in any 672 hours (28 days).
+    value: 190
+    source: law
+    citation: "14 CFR 117.23(c)(2)"
+    enforced: true
+    checked_by: pilot_cumulative_limits
+
+  - id: pilot_flight_time_672h_max
+    path: pilot.flight_hours_672h_max
+    description: No more than 100 hours of flight time in any 672 hours.
+    value: 100
+    source: law
+    citation: "14 CFR 117.23(b)(1)"
+    enforced: true
+    checked_by: pilot_cumulative_limits
+
+  - id: pilot_flight_time_365d_max
+    path: pilot.flight_hours_365d_max
+    description: No more than 1,000 hours of flight time in any 365 days.
+    value: 1000
+    source: law
+    citation: "14 CFR 117.23(b)(2)"
+    enforced: true
+    checked_by: pilot_cumulative_limits
+
+  - id: pilot_fatigue_report
+    path: pilot.fatigue_report_blocks_scheduling
+    description: A pilot who reports being too fatigued cannot be assigned to, or kept on, a duty period.
+    value: true
+    source: law
+    citation: "14 CFR 117.5(b) and (c)"
+    enforced: true
+    checked_by: pilot_not_fatigued
+
+  # ------------------------------------------------------------------ FLIGHT ATTENDANTS, 14 CFR 121.467
+  - id: fa_duty_max_h
+    path: fa.duty_max_h
+    description: A scheduled flight attendant duty period is at most 14 hours with the minimum number of flight attendants on board.
+    value: 14
+    source: law
+    citation: "14 CFR 121.467(b)(1)"
+    enforced: true
+    checked_by: fa_duty_limit
+
+  - id: fa_duty_max_h_by_extra
+    path: fa.duty_max_h_by_extra_fas
+    description: >-
+      With extra flight attendants the limit is 16 h (1 extra), 18 h (2 extra), or 20 h (3 extra, and only if a flight lands or
+      takes off outside the 48 contiguous states and DC).
+    value: {1: 16, 2: 18, 3: 20}
+    source: law
+    citation: "14 CFR 121.467(b)(4), (b)(5), (b)(6)"
+    enforced: true
+    checked_by: fa_duty_limit
+
+  - id: fa_rest_after_14h_or_less
+    path: fa.rest_after_14h_or_less_h
+    description: After a duty period of 14 hours or less a flight attendant needs 10 hours of rest, and that rest can never be reduced.
+    value: 10
+    source: law
+    citation: "14 CFR 121.467(b)(2) and (b)(3)"
+    enforced: true
+    checked_by: fa_rest
+
+  - id: fa_rest_after_over_14h
+    path: fa.rest_after_over_14h_h
+    description: After a duty period of more than 14 hours (up to 20) a flight attendant needs 12 hours of rest.
+    value: 12
+    source: law
+    citation: "14 CFR 121.467(b)(7)"
+    enforced: true
+    checked_by: fa_rest
+
+  - id: fa_reduced_rest
+    path: fa.reduced_rest_h
+    description: The 12-hour rest may be scheduled at 10 hours only if the next rest is at least 14 hours and starts within 24 hours.
+    value: {reduced_to_h: 10, next_rest_h: 14, within_h: 24}
+    source: law
+    citation: "14 CFR 121.467(b)(8) and (b)(9)"
+    enforced: false
+
+  - id: fa_weekly_off_h
+    path: fa.weekly_off_h
+    description: At least 24 consecutive hours off duty in any 7 consecutive calendar days.
+    value: 24
+    source: law
+    citation: "14 CFR 121.467(b)(13)"
+    enforced: true
+    checked_by: fa_rest
+
+  - id: fa_beyond_control_exception
+    path: fa.beyond_control_exception
+    description: >-
+      A flight attendant is not counted as scheduled over the duty limit if the flights were scheduled to finish inside it and
+      something the airline could not control (such as weather) now means they will not.
+    value: true
+    source: law
+    citation: "14 CFR 121.467(b)(14)"
+    enforced: true
+    checked_by: fa_duty_limit
+
+  - id: fa_use_part_117_option
+    path: fa.may_use_part_117
+    description: >-
+      An airline may apply the pilot (part 117) limits to flight attendants if the FAA approves its written procedures. We do not
+      know whether Southwest does; we use the 121.467 limits.
+    value: false
+    source: assumption
+    citation: "14 CFR 121.467(c). Whether Southwest uses this option was not verified."
+    enforced: false
+
+  # ------------------------------------------------------------------ DISPATCHERS, 14 CFR 121.465
+  - id: dispatcher_max_consecutive_duty_h
+    path: dispatcher.max_consecutive_duty_h
+    description: A dispatcher is scheduled for at most 10 consecutive hours of duty (unless something beyond the airline's control forces otherwise).
+    value: 10
+    source: law
+    citation: "14 CFR 121.465(b)(1)"
+    enforced: false
+
+  - id: dispatcher_rest_after_10h
+    path: dispatcher.rest_h_if_over_10h_in_24h
+    description: A dispatcher scheduled for more than 10 hours of duty in 24 hours gets at least 8 hours of rest, at or before the end of the 10th hour.
+    value: 8
+    source: law
+    citation: "14 CFR 121.465(b)(2)"
+    enforced: false
+
+  - id: dispatcher_weekly_off_h
+    path: dispatcher.weekly_off_h
+    description: A dispatcher is relieved of all duty for at least 24 consecutive hours in any 7 consecutive days (or the equivalent in a calendar month).
+    value: 24
+    source: law
+    citation: "14 CFR 121.465(b)(3)"
+    enforced: false
+
+  # ------------------------------------------------------------------ TARMAC DELAYS, 14 CFR 259.4
+  - id: tarmac_domestic_min
+    path: limits.tarmac_domestic_min
+    description: On a domestic flight passengers must be able to get off before 3 hours on the tarmac.
+    value: 180
+    source: law
+    citation: "14 CFR 259.4(c)(1)"
+    enforced: true
+    checked_by: tarmac_limit
+
+  - id: tarmac_international_min
+    path: limits.tarmac_international_min
+    description: On an international flight passengers must be able to get off before 4 hours on the tarmac.
+    value: 240
+    source: law
+    citation: "14 CFR 259.4(c)(2)"
+    enforced: true
+    checked_by: tarmac_limit
+
+  - id: tarmac_clock_start
+    path: tarmac.clock_start
+    description: >-
+      The tarmac clock starts when the main door closes for a departing flight, and at touchdown for an arriving flight. A diverted
+      flight is treated as an arriving flight until passengers have the chance to get off; after that it is treated as a departing one.
+    value: {departure: door_close, arrival: touchdown, diversion: arrival_until_deplaning_possible}
+    source: law
+    citation: "14 CFR 259.3 (tarmac delay) and 259.4(c)(3)(i), 259.4(d)"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  - id: tarmac_status_announcement_min
+    path: tarmac.status_announcement_min
+    description: Passengers must be told the status of the delay once it passes 30 minutes.
+    value: 30
+    source: law
+    citation: "14 CFR 259.4(c)(6)"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  - id: tarmac_food_water_min
+    path: limits.tarmac_food_water_min
+    description: Food and drinkable water must be offered no later than 2 hours into the delay (unless the captain decides safety or security prevents it).
+    value: 120
+    source: law
+    citation: "14 CFR 259.4(c)(4)"
+    enforced: true
+    checked_by: tarmac_food_water
+
+  - id: tarmac_lavatories_medical
+    path: tarmac.lavatories_and_medical_always
+    description: Working toilets and medical attention (if needed) must be available during every tarmac delay, from minute one.
+    value: true
+    source: law
+    citation: "14 CFR 259.4(c)(5)"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  - id: tarmac_notify_each_deplane_chance
+    path: tarmac.notify_each_deplane_chance
+    description: Every time passengers on a departing or diverted flight could get off, they must be told they have that chance.
+    value: true
+    source: law
+    citation: "14 CFR 259.4(c)(7)"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  - id: tarmac_exception_captain_safety
+    path: tarmac.exception_captain_safety
+    description: >-
+      The captain may keep passengers on board past the limit if getting off would risk safety or security. This is a human decision;
+      the system never makes it, and the decision has to be logged.
+    value: {decided_by: captain, human_only: true, must_log: true}
+    source: law
+    citation: "14 CFR 259.4(c)(3)(ii)"
+    enforced: true
+    checked_by: tarmac_exception_needs_human
+
+  - id: tarmac_exception_atc
+    path: tarmac.exception_atc
+    description: >-
+      Air traffic control may tell the captain that returning to a gate would significantly disrupt the airport. This is a human
+      judgment; the system never assumes it, and it has to be logged.
+    value: {decided_by: captain_and_atc, human_only: true, must_log: true}
+    source: law
+    citation: "14 CFR 259.4(c)(3)(iii)"
+    enforced: true
+    checked_by: tarmac_exception_needs_human
+
+  - id: tarmac_dot_report_days
+    path: tarmac.dot_report_days
+    description: A report to the Department of Transportation is due within 30 days of any tarmac delay over the limit (3 h domestic, 4 h international).
+    value: 30
+    source: law
+    citation: "14 CFR 259.4(g)(1)"
+    enforced: true
+    checked_by: tarmac_timeline
+
+  # ------------------------------------------------------------------ FUEL AND AIRCRAFT
+  - id: fuel_legal_reserve
+    path: fuel.legal_reserve
+    description: >-
+      An airplane must carry enough fuel to reach its destination, then its most distant alternate, then fly 45 more minutes.
+      That reserve is already on board and is NOT part of "fuel_minutes_extra" (spare holding fuel above the legal reserve).
+    value: {to_destination: true, to_alternate: true, extra_cruise_min: 45}
+    source: law
+    citation: "14 CFR 121.639"
+    enforced: true
+    checked_by: fuel_reserve
+
+  - id: edct_compliance_window_min
+    path: edct.compliance_window_min
+    description: A flight with an FAA departure time (EDCT) is on time if it takes off within 5 minutes before or after it.
+    value: 5
+    source: assumption
+    citation: "FAA traffic-flow dashboards and NBAA describe a plus or minus 5 minute window (tfmlearning.faa.gov, nbaa.org). I could not find one current FAA order that says so in a single sentence, so this is kept as an assumption."
+    enforced: false
+
+  # ------------------------------------------------------------------ AIRPORTS
+  - id: airport_curfews
+    path: airports.curfews
+    description: >-
+      Airports with night limits. SAN bans departures 23:30 to 06:30 (local airport authority rule). DCA has no curfew; it limits
+      night flying (22:00 to 06:59) to aircraft that meet a noise standard. MCI has no curfew (only a night runway-use procedure,
+      which is not a ban). Airports not listed here are treated as having no curfew, which has not been checked for them.
+    value:
+      SAN: {kind: no_departures, from: "23:30", to: "06:30", citation: "San Diego County Regional Airport Authority Code 9.40 (san.org). A Sunday 8:00 start that I was told about was NOT found; not included."}
+      DCA: {kind: noise_limit, from: "22:00", to: "06:59", citation: "DCA nighttime noise rule (flyreagan.com; GAO RCED-00-74). Not a curfew: only aircraft meeting the noise limits may operate."}
+      MCI: {kind: none, citation: "No curfew or noise cap found (Boeing airport noise page, 2011; FAA Part 150). A 22:00 to 06:00 runway-use noise procedure exists but bans nothing."}
+    source: law
+    citation: "SAN: airport authority code 9.40; DCA: FAA/MWAA nighttime noise rule; MCI: none found. Other airports not checked."
+    enforced: true
+    checked_by: airport_curfew
+
+  - id: customs_international_arrivals
+    path: airports.customs_for_international
+    description: >-
+      International arrivals, and international flights that divert, must land where U.S. Customs and Border Protection (customs) works.
+      An emergency landing elsewhere has to be reported to customs.
+    value: true
+    source: law
+    citation: "19 CFR 122.31 (notice of arrival) and 122.35 (emergency or forced landing). Only the first lines were read; the full requirement was not confirmed."
+    enforced: true
+    checked_by: customs_for_international
+
+  # ------------------------------------------------------------------ PASSENGERS WITH DISABILITIES, 14 CFR part 382
+  - id: wheelchair_help_boarding_connecting
+    path: wheelchair.help_required
+    description: Airlines must give help getting on and off the plane and moving between gates to make a connection, when asked or offered and accepted.
+    value: {boarding_and_deplaning: true, connections: true}
+    source: law
+    citation: "14 CFR 382.91 (connections) and 382.95 (boarding and deplaning)"
+    enforced: true
+    checked_by: wheelchair_help_available
+
+  - id: wheelchair_unattended_max_min
+    path: wheelchair.unattended_max_min
+    description: >-
+      A passenger who asked for help must not be left alone for more than 30 minutes in a ground wheelchair or other device in which
+      they cannot move themselves, even with a family member, unless the passenger says in so many words that they waive it.
+    value: 30
+    source: law
+    citation: "14 CFR 382.103"
+    enforced: true
+    checked_by: wheelchair_unattended
+
+  - id: wheelchair_rule_2024_status
+    path: wheelchair.rule_2024_status
+    description: >-
+      DOT's 2024 wheelchair rule (published 17 Dec 2024, in effect 16 Jan 2025) is in force. DOT has paused enforcement of four
+      parts (382.125(e), 382.130(a), 382.132, 382.141(a)(6)) until 30 April 2027, while it writes a follow-up rule. The 30-minute
+      rule above is not one of them.
+    value: {effective: "2025-01-16", paused_sections: ["382.125(e)", "382.130(a)", "382.132", "382.141(a)(6)"], paused_until: "2027-04-30"}
+    source: law
+    citation: "89 FR 102398 (17 Dec 2024); DOT enforcement-discretion notices (Federal Register 2025-10250, 2025-18980, and an August 2026 extension). Found by web search; the August 2026 notice was not read in full."
+    enforced: false

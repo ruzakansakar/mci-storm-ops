@@ -1,0 +1,181 @@
+# SOUTHWEST POLICY AND COMMITMENTS, plus the federal passenger-refund rules that sit next to them in the money section.
+# Same entry layout as law.yaml. source: law | southwest | assumption | class_files
+rules:
+
+  # ------------------------------------------------------------------ CHILDREN FLYING ALONE (Southwest "Unaccompanied Minor")
+  # Southwest's own page (support.southwest.com) confirms ages 5-11. "Nonstop or same plane only" and "never international" come
+  # from the project brief and secondary sources; confirm them on southwest.com before relying on them.
+  - id: child_alone_min_age
+    path: child_alone.min_age
+    description: Children from age 5 fly as unaccompanied minors.
+    value: 5
+    source: southwest
+    citation: "support.southwest.com, Unaccompanied Minors (ages 5-11)"
+    enforced: true
+    checked_by: child_alone_age
+
+  - id: child_alone_max_age
+    path: child_alone.max_age
+    description: Children up to age 11 fly as unaccompanied minors (12 and over fly as adults).
+    value: 11
+    source: southwest
+    citation: "support.southwest.com, Unaccompanied Minors (ages 5-11)"
+    enforced: true
+    checked_by: child_alone_age
+
+  - id: child_alone_nonstop_or_same_plane
+    path: child_alone.nonstop_or_same_plane_only
+    description: A child flying alone goes nonstop or on the same plane all the way. Never rebook a child onto a connection.
+    value: true
+    source: southwest
+    citation: "Project brief and secondary sources; not confirmed on southwest.com"
+    enforced: true
+    checked_by: child_alone_no_connection
+
+  - id: child_alone_international_allowed
+    path: child_alone.international_allowed
+    description: Children flying alone are never booked on international flights.
+    value: false
+    source: southwest
+    citation: "Project brief and secondary sources; not confirmed on southwest.com"
+    enforced: true
+    checked_by: child_alone_international
+
+  # ------------------------------------------------------------------ MONEY: refunds, vouchers, hotels, bags
+  - id: significant_delay_domestic_min
+    path: compensation.significant_delay_domestic_min
+    description: A passenger is owed a refund if they decline a flight that arrives 3 or more hours late (domestic).
+    value: 180
+    source: law
+    citation: "14 CFR part 260 (DOT automatic refund rule, 89 FR 32760, Apr 2024)"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: significant_delay_international_min
+    path: compensation.significant_delay_international_min
+    description: Same refund right when an international flight arrives 6 or more hours late.
+    value: 360
+    source: law
+    citation: "14 CFR part 260 (DOT automatic refund rule, 89 FR 32760, Apr 2024)"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: controllable_delay_min
+    path: compensation.controllable_delay_min
+    description: Southwest's own commitments (meals, hotel, voucher) start at a delay of 3 hours or more that was in Southwest's control.
+    value: 180
+    source: southwest
+    citation: "Southwest Customer Service Commitment"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: voucher_usd
+    path: compensation.voucher_usd
+    description: Travel voucher value for a controllable delay.
+    value: 75
+    source: southwest
+    citation: "DOT settlement with Southwest, Dec 2023 (at least $75)"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: meal_usd
+    path: compensation.meal_usd
+    description: Value of one meal voucher.
+    value: 15
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: hotel_needed_if_overnight
+    path: compensation.hotel_needed_if_overnight
+    description: Hotel and ground transport for passengers stranded overnight by something Southwest controls.
+    value: true
+    source: southwest
+    citation: "Southwest Customer Service Commitment"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: goodwill_usd
+    path: compensation.goodwill_usd
+    description: Optional goodwill credit for uncontrollable cases. Always needs a supervisor's approval.
+    value: 50
+    source: assumption
+    citation: "Class-project choice"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: uncontrollable_causes
+    path: compensation.uncontrollable_causes
+    description: Causes outside the airline's control (weather, air traffic programs, security, the airport).
+    value: [weather, faa_program, ground_stop, security, airport]
+    source: southwest
+    citation: "Southwest Customer Service Commitment (what counts as controllable); the exact list is our reading of it"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: controllable_causes
+    path: compensation.controllable_causes
+    description: Causes inside the airline's control (maintenance, crew, its own IT, staffing, operations).
+    value: [maintenance, crew, it_outage, staffing, operational]
+    source: southwest
+    citation: "Southwest Customer Service Commitment (what counts as controllable); the exact list is our reading of it"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: bag_refund_hours_domestic
+    path: compensation.bag_refund_hours_domestic
+    description: The checked-bag fee is refunded if the bag is more than 12 hours late after a domestic flight lands.
+    value: 12
+    source: law
+    citation: "14 CFR 260.5 (DOT refund rule). Needs a filed mishandled-baggage report."
+    enforced: true
+    checked_by: compensation_for
+
+  - id: bag_refund_hours_international
+    path: compensation.bag_refund_hours_international
+    description: The checked-bag fee is refunded if the bag is more than 15 hours late after an international flight of 12 hours or less.
+    value: 15
+    source: law
+    citation: "14 CFR 260.5"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: bag_refund_hours_international_long
+    path: compensation.bag_refund_hours_international_long
+    description: The same refund after 30 hours on longer international flights.
+    value: 30
+    source: law
+    citation: "14 CFR 260.5"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: long_flight_hours
+    path: compensation.long_flight_hours
+    description: Where "longer international flight" starts. The exact cut-off was not confirmed.
+    value: 12
+    source: assumption
+    citation: "14 CFR 260.5 splits 15 h / 30 h by flight length; the 12-hour cut-off is our reading, not confirmed"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: bag_fee_usd
+    path: compensation.bag_fee_usd
+    description: >-
+      First checked bag fee. Southwest started charging on 28 May 2025 ($35 first, $45 second) and raised it on 9 Apr 2026 to
+      $45 first, $55 second (A-List and Rapid Rewards credit-card holders keep a free first bag). The $35 figure from May 2025 is out of date.
+    value: 45
+    source: southwest
+    citation: "airlinegeeks.com/2026/04/08/southwest-becomes-latest-u-s-airline-to-raise-checked-bag-fees ; fortune.com/2026/04/08/southwest-hiking-baggage-fees-again-fuel-costs-iran-war-delta-jetblue-united-bags-fly-free-policy (news reports, not southwest.com)"
+    enforced: true
+    checked_by: compensation_for
+
+  - id: southwest_rebooks_on_other_airlines
+    path: southwest.rebooks_on_other_airlines
+    description: >-
+      Southwest rebooks passengers on its own next flights (or refunds the ticket). It does not buy tickets on other airlines.
+      So the co-pilot only proposes Southwest flights.
+    value: false
+    source: assumption
+    citation: "Southwest Customer Service Commitment (southwest.com/assets/pdfs/corporate-commitments/customer-service-commitment.pdf), as summarised by a web search. The contract of carriage text (section 4) was not read."
+    enforced: false

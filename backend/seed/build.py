@@ -13,11 +13,11 @@ from datetime import datetime, time, timedelta
 import yaml
 
 from backend.seed import class_files as cf
-from backend.settings import ROOT, SAMPLE_PASSENGERS, SEED, SIM_DATE, TZ
+from backend.settings import ROOT, SAMPLE_PASSENGERS, SEED, SIM_DATE, TZ, read_limits
 
-# Every number comes from config/seed.yaml; legal and safety numbers come from config/rules.yaml.
+# Every number comes from config/seed.yaml; legal and safety numbers come from config/rules/.
 CFG = yaml.safe_load((ROOT / "config" / "seed.yaml").read_text(encoding="utf-8"))
-LIMITS = yaml.safe_load((ROOT / "config" / "rules.yaml").read_text(encoding="utf-8"))["limits"]
+LIMITS = read_limits()
 
 
 def _hhmm(text: str) -> int:
@@ -45,7 +45,7 @@ BASES = set(CFG["bases"])
 DIVERSION_OPTIONS = set(CFG["diversion_options"])
 OVERNIGHT_AIRCRAFT = CFG["aircraft"]["overnight_count"]
 TURN_MIN = CFG["turn_min"]
-MIN_CONNECT_MIN = LIMITS["min_connection_min"]                         # a rule: lives in rules.yaml
+MIN_CONNECT_MIN = LIMITS["min_connection_min"]                         # a rule: lives in config/rules/
 MAX_CONNECT_MIN = CFG["max_connection_min"]
 
 EXTRA_NAMES = {
