@@ -268,7 +268,7 @@ def end_confidence(f: dict, s: dict) -> float:
     table = x["confidence_by_group"] or {}
     for key in group_keys(f):
         if key in table and table[key][1] >= x["min_group_ticks"]:
-            return table[key][0]
+            return min(table[key][0], x["max_confidence"])      # never certain about the future, whatever the training days say
     return min(x["unproven_confidence"], x["confidence_words"]["high"] - 0.05)
 
 

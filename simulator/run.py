@@ -48,8 +48,10 @@ def check_mode(mode: str):
 
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
-             data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None) -> Result:
-    """Play the day. With a writer, results are saved in batches; without one it all stays in memory."""
+             data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None,
+             on_tick=None) -> Result:
+    """Play the day. With a writer, results are saved in batches; without one it all stays in memory.
+    on_tick(t, world, channels): called at the end of every simulated minute (test harnesses read the answer key there)."""
     check_mode(mode)
     cfg = load_config()
     data = data if data is not None else build()
@@ -65,15 +67,24 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     recorder = Recorder(cfg, sc, start)
     every = cfg["day"]["write_every_min"]
 
+    # The reservation system publishes each tracked passenger's trip record: once at the start of the day, then every time it
+    # changes. This is the truth feed the channels should follow (a real passenger service system publishes the same).
+    for pid in sorted(world.truth):
+        world.events.append(_trip_record(start, pid, world.truth[pid]))
     for t in SimClock(start, until).ticks():
         world.step(t)
-        channels.observe(t, world.collect_truth_changes())
+        changes = world.collect_truth_changes()
+        for pid, _, new, _ in changes:
+            world.events.append(_trip_record(t, pid, new))
+        channels.observe(t, changes)
         channels.apply_due(t)
         for e in channels.drain_events():
             world.events.append({"t": e["t"], "type": e["type"], "actor": "simulator", "actor_name": e["actor_name"],
                                  "station": None, "payload": e["payload"], "incident": False})
         channels.refresh()
         recorder.tick(t, world, channels)
+        if on_tick:
+            on_tick(t, world, channels)
         if writer and ((t - start + 1) % every == 0 or t == until):
             writer.flush(world, channels)
             if on_flush:
@@ -84,6 +95,12 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     if writer:
         writer.finish(sc, metrics, mode, until)
     return Result(rid, seed, sc, world, channels, metrics, until)
+
+
+def _trip_record(t: int, pid: str, truth: dict) -> dict:
+    return {"t": t, "type": "trip_record_updated", "actor": "simulator", "actor_name": "reservations", "station": None,
+            "payload": {"passenger_id": pid, "itinerary": list(truth["itinerary"]), "status": truth["status"],
+                        "destination": truth["destination"], "bag_routing": list(truth["bag_routing"])}, "incident": False}
 
 
 def run(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: str | int = "23:59",

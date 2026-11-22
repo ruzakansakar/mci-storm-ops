@@ -405,6 +405,7 @@ CREATE TRIGGER situation_assessments_append_only BEFORE UPDATE OR DELETE ON situ
 
 -- ============================================================ CHECKING & MEASURING
 
+-- Written by the communication agent only (its own rows; it may update their status, never another agent's or run's).
 CREATE TABLE mismatches (
     id             bigserial PRIMARY KEY,
     passenger_id   text NOT NULL REFERENCES passengers(id),
@@ -412,12 +413,22 @@ CREATE TABLE mismatches (
     field          text NOT NULL,                        -- itinerary | status | destination | bag_routing
     shown_value    text,
     true_value     text,
-    cause          text,                                 -- stale_copy | sync_delay | seat_hold | message_failed | bag_system
+    cause          text,                                 -- what the agent suspects: waiting_for_update | stuck | failed_delivery | bag_system | seat_hold | unknown
+    cause_confidence numeric(3,2),
+    severity       text,                                 -- critical | high | medium | low
+    flight_id      text,                                 -- the flight it is about (for the roll-up by flight)
+    status         text NOT NULL DEFAULT 'open',         -- open | cleared
+    since          timestamptz,                          -- when it started being wrong (the truth changed and the channel didn't follow)
     detected_at    timestamptz NOT NULL,
+    cleared_at     timestamptz,                          -- when the channel matched the truth again
+    evidence       jsonb,                                -- event ids and times behind it
+    sources        jsonb,                                -- each source with its as_of time (G01)
+    decision_ids   text[],                               -- G08
     fixed_at       timestamptz,
     fix_applied    text,
     reached_passenger boolean NOT NULL DEFAULT false,
-    run_id         text
+    agent_run_id   text,                                 -- the agent's replay (filled in by AgentContext)
+    run_id         text                                  -- the run it read (filled in by AgentContext; the agent never sees it)
 );
 
 CREATE TABLE metric_runs (

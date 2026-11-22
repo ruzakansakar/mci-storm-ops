@@ -83,6 +83,7 @@ expected_end:
     target_coverage: 0.85              # assumption (chosen on training days): the real end inside the range on this share of moments
     max_early_margin_min: 60           # assumption: the search tries early margins up to this
   min_group_ticks: 30                  # assumption: a group needs this many training moments before its confidence is used
+  max_confidence: 0.95                 # assumption: real programs can overrun (the simulator never overruns a fixed-end one)
   unproven_confidence: 0.5             # assumption: a group with too few training moments is never more than medium
   overdue_confidence: 0.4              # assumption: past the announced end with no FAA update
   ended_not_back_confidence: 0.5       # assumption: the FAA says it ended but flights are still holding or the ramp is closed

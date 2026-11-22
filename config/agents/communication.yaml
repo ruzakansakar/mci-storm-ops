@@ -1,218 +1,212 @@
-# CONTRACT: communication. Messages, and every channel telling the same story. One of two agents allowed to see names.
+# CONTRACT: communication. Every channel telling each passenger the same true story. Written for the whole agent; built in 3 phases.
+#   4b-1 (now)  DETECT: find what each channel shows wrongly, why (as far as a real system can tell), how bad, and when it clears.
+#   4b-2        FIX: re-show the confirmed truth on a channel that is wrong, resend on another channel when a delivery failed.
+#   4b-3        MESSAGES: draft and send messages (names and contacts only for the passengers it is working on, G05).
+# AgentContext refuses any action whose phase has not come yet (capabilities: enabled_in), whatever the agent's code does.
 agent: communication
-purpose: Drafts the messages passengers see and spots screens that show something different from the truth. One of two agents allowed to see names.
+phase: 4b-1
+purpose: >-
+  Every passenger hears the same true story from every channel (app, sms, gate_screen, call_center), quickly, and never anything
+  a human hasn't approved. One of two agents that may ever see names (only from 4b-3, and only for the passengers it is working on).
+
+# ------------------------------------------------------------------ WHAT IT READS (4b-1)
+# No names, contacts or booking refs: they are not listed, so AgentContext refuses them. channel_views (the end-of-day copy) and
+# bookings (end-of-day) are not read either: the state at time T is rebuilt from the events (backend/agents/communication/state_at.py).
 reads:
-  passengers:
-  - id
-  - full_name
-  - final_destination
-  - lives_locally
-  - overnight
-  - contact_channels
-  - as_of
-  channel_views:
-  - passenger_id
-  - channel
-  - shown_itinerary
-  - shown_status
-  - shown_destination
-  - shown_bag_routing
-  - message
-  - updated_at
-  bookings:
-  - passenger_id
-  - seq
-  - flight_id
-  - status
-  - as_of
-  flights:
-  - id
-  - direction
-  - origin
-  - destination
-  - sched_dep
-  - sched_arr
-  - est_dep
-  - est_arr
-  - status
-  - cancel_reason
-  - diverted_to
-  - as_of
-  bags:
-  - tag
-  - passenger_id
-  - routing
-  - current_location
-  - status
-  - as_of
-  recommendations:
-  - id
-  - agent
-  - title
-  - autonomy
-  - approver_role
-  - decision_ids
-  - rule_check_ok
-  - status
-  - created_at
-  incidents:
-  - id
-  - kind
-  - status
-  - likely_cause
-  - controllable
-  - expected_end_min
-  - expected_end_max
-  - run_id
+  events: [id, occurred_at, type, station, payload]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr]       # the published schedule only
+  passengers: [id, segment]          # segment (child_alone / wheelchair / international / connecting / standard): priority only,
+                                     # sensitive, never in any text
+static_reads: [flights, passengers]  # published before the day; segment doesn't change during it
+
+# The feeds it listens to. Only the payload fields listed here reach the agent: the simulator's record of WHY a copy was late
+# (lag_min, cause_if_late) and the message texts are stripped. The only failure signal is a delivery receipt, as a real system has.
+event_feeds:
+  reservations:                      # stand-in for the passenger service system: each tracked passenger's trip record (the truth)
+    trip_record_updated: [passenger_id, itinerary, status, destination, bag_routing]
+  flight_ops:                        # stand-in for Southwest's operations systems (for "is this flight cancelled", departure times)
+    flight_cancelled: [flight_id, reason]
+    flight_delayed: [flight_id, delay_min, new_departure]
+    flight_delay_updated: [flight_id, delay_min, new_departure]
+    flight_departed: [flight_id]
+    flight_arrived: [flight_id]
+    flight_diverted: [flight_id, diverted_to]
+  channels:                          # one feed per channel, each with its own heartbeat (the payload's "channel" names it)
+    _split_by: channel
+    _feeds: [app, sms, gate_screen, call_center]
+    channel_view_updated: [passenger_id, channel, kind, shown_itinerary, shown_status, shown_destination, shown_bag_routing]
+    channel_update_failed: [passenger_id, channel, kind, queued_at]       # the delivery receipt: "this update did not arrive"
+
+# ------------------------------------------------------------------ WHAT IT WRITES
 writes:
+  mismatches:                        # its own rows only: insert, then update their status (AgentContext checks they are its own)
+    mode: insert_or_update
+    columns: [passenger_id, channel, field, shown_value, true_value, cause, cause_confidence, severity, flight_id, status, since,
+              detected_at, cleared_at, evidence, sources, decision_ids]      # agent_run_id and run_id: filled in by AgentContext
   recommendations:
     mode: insert
-    columns:
-    - incident_id
-    - agent
-    - title
-    - why
-    - options
-    - autonomy
-    - approver_role
-    - deadline
-    - rank
-    - safety_rung
-    - data_as_of
-    - status
-    - run_id
-    - created_at
-    - decision_ids
+    columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status,
+              run_id, created_at, decision_ids, supersedes]
   events:
     mode: insert
-    types:
-    - message_drafted
-    - mismatch_spotted
-    - message_held_for_approval
-    - human_decision_needed
+    types: [mismatch_detected, mismatch_cleared, delivery_failure_detected, communication_summary, human_decision_needed,
+            agent_error, message_drafted, message_held_for_approval]
   audit_log:
     mode: insert
+
+# ------------------------------------------------------------------ WHAT IT MAY DO, AND FROM WHEN
+# Every action it may ever propose (they must all be in config/rules/autonomy.yaml). capabilities says when each is switched on.
 actions:
+- escalate_channel_problem
+- detect_mismatch
 - fix_channel_mismatch
-- send_crew_message
-- send_staff_briefing
+- resend_on_other_channel
 - send_status_update
+- send_staff_briefing
+- send_crew_message
 - use_message_template
+- draft_message
+- send_mass_message
+capabilities:
+- {action: detect_mismatch, enabled_in: 4b-1, autonomy: auto, note: "record a mismatch; it changes nothing a passenger sees"}
+- {action: escalate_channel_problem, enabled_in: 4b-1, autonomy: needs_approval, approver: customer_service_supervisor}
+- {action: fix_channel_mismatch, enabled_in: 4b-2, autonomy: auto, note: "only ever re-shows the confirmed truth"}
+- {action: resend_on_other_channel, enabled_in: 4b-2, autonomy: auto}
+- {action: draft_message, enabled_in: 4b-3, autonomy: needs_approval, approver: customer_service_supervisor}
+- {action: send_mass_message, enabled_in: 4b-3, autonomy: needs_approval, approver: customer_service_supervisor,
+   note: "above mass_message_passengers passengers (settings) always a person"}
+- {action: send_status_update, enabled_in: 4b-3, autonomy: auto}
+- {action: send_staff_briefing, enabled_in: 4b-3, autonomy: needs_approval}
+- {action: send_crew_message, enabled_in: 4b-3, autonomy: needs_approval}
+- {action: use_message_template, enabled_in: 4b-3, autonomy: auto}
+# Human only: it may show the facts (ask_human), never propose it.
+human_only:
+- {action: public_statement, decided_by: corporate_communications, decision: O10}
+
+# The decisions it owns (config/decisions.yaml; decided_by exactly as there). Only O03 and the detection half of O11 are on now.
+decisions:
+- {id: O01, question: "First notice: what to say, and when", decided_by: auto, enabled_in: 4b-3}
+- {id: O02, question: "Which channel?", decided_by: auto, enabled_in: 4b-3}
+- {id: O03, question: "Keep every channel saying the same thing: detect and fix mismatches", decided_by: auto,
+   enabled_in: 4b-1, note: "4b-1 detects; 4b-2 fixes"}
+- {id: O04, question: "Correct wrong information already sent", decided_by: auto, enabled_in: 4b-2}
+- {id: O05, question: "Never promise anything that hasn't been approved", decided_by: auto, enabled_in: 4b-3}
+- {id: O06, question: "Plain language and translation", decided_by: auto, enabled_in: 4b-3}
+- {id: O07, question: "How often to update during the stop", decided_by: auto, enabled_in: 4b-3}
+- {id: O08, question: "Messages and scripts for staff", decided_by: customer_service_supervisor, enabled_in: 4b-3}
+- {id: O09, question: "Messages to crews", decided_by: customer_service_supervisor, enabled_in: 4b-3}
+- {id: O10, question: "Public or social media statement", decided_by: corporate_communications (human only), enabled_in: never}
+- {id: O11, question: "A message failed: resend on another channel", decided_by: auto, enabled_in: 4b-1,
+   note: "4b-1 spots failed deliveries; 4b-2 resends"}
+- {id: O12, question: "A passenger with no contact details", decided_by: auto, enabled_in: 4b-3}
+
 never:
-- Never promise compensation, a hotel, a voucher or a rebooking that has not been approved.
-- Never state a cause or an end time as certain when it is only suspected.
-- Never send a message that mentions a diversion decision, a crew problem or a safety matter that a human has not approved.
-- Never send one passenger's details to another passenger.
-- Never edit what a screen shows directly; a fix is an action that goes through the approval rules.
-- Never use a language model without the template fallback ready.
+- Never change the truth (flights, bookings, passengers, bags); it only reads it.
+- Never show or send anything that isn't the confirmed truth or an approved decision.
+- Never promise compensation, a rebooking, a hotel or a time that nobody approved.
+- Never message passengers on a flight where a source conflict (A09) is open; hold and ask a human.
+- Never read or reveal names or contacts, except in 4b-3 for the passengers on its working-on list.
+- Never put sensitive segment information (wheelchair, child flying alone) into any message text.
+- Never use the simulator's internal knowledge of why a channel lagged, only what a real system sees (updates and delivery receipts).
+- Never use AI to decide what is true, who gets messaged, or any promise.
+- Never edit what a screen shows directly; a fix is an action that goes through the approval rules (from 4b-2).
+
 stores:
   temporary:
-    what: Message drafts and the list of screens it is comparing.
+    what: Its working lists (what each channel showed, open mismatches, the lags it has observed).
     kept_until: the incident is closed, then deleted
   permanent:
+  - table: mismatches
+    kept: for the life of the project (its own rows)
   - table: recommendations
     kept: for the life of the project
   - table: events
     kept: for the life of the project, append only
   - table: audit_log
     kept: for the life of the project, never edited or deleted
+
+# ------------------------------------------------------------------ WHAT IT PRODUCES
+# One finding per mismatch (a row in mismatches, and the items of an escalation's "findings").
+finding:
+  type: object
+  additionalProperties: false
+  required: [passenger_id, channel, field, shown_value, true_value, since, age_min, suspected_cause, cause_confidence, severity,
+             evidence, sources, decision_ids]
+  properties:
+    passenger_id: {type: string, minLength: 1}
+    channel: {type: string, enum: [app, sms, gate_screen, call_center]}
+    field: {type: string, enum: [itinerary, status, destination, bag_routing]}
+    shown_value: {type: string}
+    true_value: {type: string}
+    since: {type: string, minLength: 10}
+    age_min: {type: integer, minimum: 0}
+    suspected_cause: {type: string, enum: [waiting_for_update, stuck, failed_delivery, bag_system, seat_hold, unknown]}
+    cause_confidence: {type: number, minimum: 0, maximum: 1}
+    severity: {type: string, enum: [critical, high, medium, low]}
+    flight_id: {type: [string, "null"]}
+    evidence: {type: array, items: {type: object}}
+    sources: {type: array, minItems: 1, items: {type: object}}
+    decision_ids: {type: array, minItems: 1, items: {type: string, minLength: 3}}
+# A proposal (4b-1: an escalation to a person; 4b-3 adds the message fields).
 output:
   type: object
   additionalProperties: false
-  required:
-  - title
-  - why
-  - data_as_of
-  - options
-  - sources
-  - decision_ids
-  - audience_passenger_ids
-  - channels
-  - draft_text
-  - used_template
-  - promises_compensation
+  required: [title, why, data_as_of, options, sources, decision_ids, findings]
   properties:
-    title:
-      type: string
-      minLength: 1
-    why:
-      type: string
-      minLength: 1
-    data_as_of:
-      type: string
-    options:
-      type: array
-      items:
-        type: object
-    audience_passenger_ids:
-      type: array
-      items:
-        type: string
-    channels:
-      type: array
-      items:
-        type: string
-        enum:
-        - app
-        - sms
-        - gate_screen
-        - call_center
-        - email
-    draft_text:
-      type: string
-      minLength: 1
-      maxLength: 600
-    used_template:
-      type: boolean
-    promises_compensation:
-      type: boolean
-    safety_rung:
-      type: integer
-      minimum: 1
-      maximum: 8
-    decision_ids:
-      type: array
-      minItems: 1
-      items:
-        type: string
-        minLength: 3
+    title: {type: string, minLength: 1}
+    why: {type: string, minLength: 1}
+    data_as_of: {type: string}
+    options: {type: array, items: {type: object}}
+    findings: {type: array, items: {type: object}}
+    flight_id: {type: [string, "null"]}
+    audience_passenger_ids: {type: array, items: {type: string}}                       # 4b-3
+    channels: {type: array, items: {type: string, enum: [app, sms, gate_screen, call_center, email]}}   # 4b-3
+    draft_text: {type: string, minLength: 1, maxLength: 600}                           # 4b-3
+    used_template: {type: boolean}                                                     # 4b-3
+    promises_compensation: {type: boolean}                                             # 4b-3
+    safety_rung: {type: integer, minimum: 1, maximum: 8}
+    decision_ids: {type: array, minItems: 1, items: {type: string, minLength: 3}}
     sources:
       type: array
       minItems: 1
       items:
         type: object
         additionalProperties: false
-        required:
-        - source
-        - as_of
+        required: [source, as_of]
         properties:
-          fact:
-            type: string
-          source:
-            type: string
-            minLength: 1
-          as_of:
-            type: string
-            minLength: 10
-max_data_age_sec: 60
-time_budget_sec: 15
-escalate_when:
-- A draft would need to mention money, a safety matter or a cause that is not confirmed.
-- More than 10% of the people it is writing to show a screen that disagrees with the truth.
-- A message failed to reach a child flying alone, or a passenger who needs wheelchair help.
+          fact: {type: string}
+          source: {type: string, minLength: 1}
+          as_of: {type: string, minLength: 10}
+
+max_data_age_sec: 120                # a feed whose heartbeat is older than this is stale: no mismatch is called on it
+time_budget_sec: 10                  # one scan of all tracked passengers
+escalate_when:                       # numbers in config/agent_settings/communication.yaml
+- More than flight_passengers_wrong tracked passengers are shown wrong flight information for the same flight.
+- A child flying alone or a wheelchair passenger is shown a cancelled or wrong flight for more than vulnerable_wrong_min minutes.
+- More than failures_per_window delivery failures on one channel within failures_window_min.
+- (4b-3) A draft would need to mention money, a safety matter or a cause that is not confirmed.
 ai_allowed:
   allowed: true
   for:
-  - message drafts for passengers
-  fallback: a fixed message template filled with the confirmed facts; used whenever the language model is slow, down, or its draft is rejected
+  - message drafts for passengers (4b-3 only)
+  fallback: a fixed message template filled with the confirmed facts; used whenever the language model is slow, down, or its draft fails the fact check
   never_for:
-  - deciding whether to send
-  - what is owed
-  - or any operational action
+  - deciding what is true
+  - deciding who gets messaged
+  - any promise, what is owed, or any operational action
+  - detection (4b-1 uses no AI at all)
 success:
-- metric: minutes until all four screens agree after a change
-  target: 5 or fewer
-- metric: messages that promise something not approved
+- metric: recall (share of real wrong-screen periods it detected)
+  target: at least 98%
+- metric: precision (share of its detections that were real)
+  target: at least 98%
+- metric: minutes from a truth change being visible to its detection
+  target: 1 or fewer
+- metric: critical cases (cancelled flight shown as operating, vulnerable passenger shown wrong information near departure) flagged critical
+  target: 100%
+- metric: mismatches called on a stale feed
   target: '0'
-- metric: passengers who see wrong information at the same time
-  target: 50% fewer than today
+- metric: reads of names or contacts in 4b-1
+  target: '0'
+- metric: (4b-3) messages that promise something not approved
+  target: '0'

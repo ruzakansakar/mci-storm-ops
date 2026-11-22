@@ -108,7 +108,7 @@ def test_high_confidence_is_only_used_where_training_days_proved_it():
         used = next(k for k in A.group_keys(f) if k in table and table[k][1] >= x["min_group_ticks"]) \
             if any(k in table and table[k][1] >= x["min_group_ticks"] for k in A.group_keys(f)) else None
         if c >= x["confidence_words"]["high"]:
-            assert used and table[used][0] == c, key             # "high" only from a group with enough training moments
+            assert used and min(table[used][0], x["max_confidence"]) == c, key   # "high" only from a proven group (capped)
     f = {"cause": "crew", "changes": "0", "time": "day", "messy": False}         # a group never seen on training days
     assert A.end_confidence(f, S) < x["confidence_words"]["high"]
 

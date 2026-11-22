@@ -88,6 +88,14 @@ highlighted). Right: what the agent said, when it said it. The agent never saw t
     return str(path)
 
 
+def _communication_scores() -> dict:
+    """The Communication judge's results (chaos/judge_communication.py), by chaos seed, if it has been run."""
+    path = OUT / "communication.json"
+    if not path.exists():
+        return {}
+    return {s["seed"]: s for s in json.loads(path.read_text(encoding="utf-8")) if s.get("chaos")}
+
+
 def write_index(scores: list[dict], title: str = "Chaos days for the Situation agent") -> str:
     OUT.mkdir(parents=True, exist_ok=True)
     n = len(scores)
@@ -108,10 +116,28 @@ def write_index(scores: list[dict], title: str = "Chaos days for the Situation a
     if hi_n:
         tops += f"; 'high confidence' ranges right {hi_in / hi_n:.0%} of the time (they claim {hi_claim / hi_n:.0%})"
     tops += f"<br>False alarms: {false_alarms}. Average time to notice an incident: {sum(det) / len(det):.1f} min." if det else f"<br>False alarms: {false_alarms}."
+    comm = _communication_scores()
+    mine = [comm[s["chaos_seed"]] for s in scores if s["chaos_seed"] in comm]
+    if mine:
+        real, found = sum(c["real"] for c in mine), sum(c["found"] for c in mine)
+        rec = sum(c["recall"] * c["real"] for c in mine) / real if real else 1.0
+        prec = sum(c["precision"] * c["found"] for c in mine) / found if found else 1.0
+        crit = f"{sum(c['critical_flagged'] for c in mine)}/{sum(c['critical_real'] for c in mine)}"
+        tops += (f"<br><b>Communication agent</b> on {len(mine)} of these days: {sum(c['verdict'] == 'PASS' for c in mine)} pass; "
+                 f"recall {rec:.1%}, precision {prec:.1%}, worst detection delay {max(c['delay_max'] for c in mine):.0f} min, critical "
+                 f"cases flagged {crit}, calls on a stale feed {sum(c['stale_calls'] for c in mine)}. "
+                 f"<a href='communication.html'>Communication summary table</a>")
+
+    def com_cell(seed):
+        c = comm.get(seed)
+        if not c:
+            return "-"
+        return f"{_badge(c['verdict'])} {c['found']}/{c['real']} found, precision {c['precision']:.0%}, critical {c['critical_flagged']}/{c['critical_real']}"
     rate_rows = "".join(f"<tr><td>{_e(nm)}</td><td>{p}/{t}</td><td>{w}</td><td>{f}</td><td>{(p / t if t else 0):.0%}</td></tr>"
                         for nm, p, w, f, t in rates)
     day_rows = "".join(
         f"<tr><td><a href='{_e(s['run_id'])}.html'>{s['chaos_seed']}</a></td><td>{_e(s['summary'])}</td><td>{_badge(s['verdict'])}</td>"
+        f"<td>{com_cell(s['chaos_seed'])}</td>"
         f"<td>{'<br>'.join(_e(c['name'] + ': ' + c['reason']) for c in s['checks'] if c['result'] in ('FAIL', 'WARN')) or '-'}</td></tr>"
         for s in scores)
     page = f"""<!doctype html><meta charset="utf-8"><title>{_e(title)}</title>{STYLE}
@@ -119,7 +145,7 @@ def write_index(scores: list[dict], title: str = "Chaos days for the Situation a
 <div class="box">{tops}</div>
 <div class="box"><h3 style="margin-top:0">Pass rate per check</h3><table><tr><th>Check</th><th>Passed</th><th>Warnings</th><th>Failed</th><th>Pass rate</th></tr>{rate_rows}</table>
 <div class="sub">Checks that don't apply to a day (for example "security" on a day without one) are left out of its count.</div></div>
-<div class="box"><h3 style="margin-top:0">Days</h3><table><tr><th>Chaos seed</th><th>What happened</th><th>Verdict</th><th>What went wrong</th></tr>{day_rows}</table></div>"""
+<div class="box"><h3 style="margin-top:0">Days</h3><table><tr><th>Chaos seed</th><th>What happened</th><th>Situation verdict</th><th>Communication (mismatches found / real)</th><th>What went wrong (Situation)</th></tr>{day_rows}</table></div>"""
     path = OUT / "index.html"
     path.write_text(page, encoding="utf-8")
     return str(path)

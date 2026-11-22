@@ -1,0 +1,55 @@
+# Settings for the Communication agent (backend/agents/communication/). Every number is a class-project assumption.
+# The agent reads only this file and the database (through AgentContext). Never the simulator's code or config: it does not know
+# how late each channel is meant to be or how often it fails. It learns the usual lag of each channel from what it observes.
+
+station: MCI
+channels: [app, sms, gate_screen, call_center]
+fields: [itinerary, status, destination, bag_routing]
+
+run:
+  every_min: 1                         # assumption: scan every simulated minute (every event is on the minute, so this also
+                                       # catches every truth change and delivery receipt the minute it arrives)
+  day_start: "05:00"                   # assumption: replay window
+  day_end: "23:59"                     # assumption
+  watchdog_after_sec: 180              # assumption: wake this long after a feed goes quiet (as the Situation agent does)
+
+data:
+  truth_feed: reservations             # the trip records: if this is stale, nothing is checked
+  # assumption: at the start of the day every channel shows the start-of-day trip record (the overnight sync), so before any
+  # change nothing is wrong. A channel is then rebuilt from its own updates.
+
+cause:
+  # "waiting for a normal update" while younger than the channel's usual lag; "stuck" after it. The usual lag is MEASURED by the
+  # agent: how long each channel took to catch up on the mismatches it saw clear today.
+  usual_lag_percentile: 0.9            # assumption: "usual" = this share of the catch-ups it has seen were at least this fast
+  min_lag_observations: 10             # assumption: until it has seen this many catch-ups on a channel, it uses the default
+  default_usual_lag_min: 15            # assumption: before it has its own measurements
+  confidence:                          # assumption: how sure each kind of evidence makes it
+    failed_delivery: 0.9               # a delivery receipt says the update did not arrive
+    bag_system: 0.8                    # only the bag routing differs
+    seat_hold: 0.6                     # the change it is waiting for is a rebooking (new flight ids)
+    waiting_for_update: 0.7
+    stuck: 0.6
+    unknown: 0.3                       # the channel shows something the truth never said today
+
+severity:                              # from the passenger's point of view
+  vulnerable_segments: [child_alone, wheelchair]
+  vulnerable_within_min: 120           # assumption: critical for these passengers if the flight leaves within 2 h
+  near_departure_min: 180              # assumption: high if a wrong flight or status and the flight leaves within 3 h
+  old_after_min: 30                    # assumption: high if wrong for longer than this
+  far_future_min: 720                  # assumption: low if the flight leaves more than 12 h from now (e.g. tomorrow)
+  boost_within_min: 60                 # assumption: one level up ("about to matter") if the flight leaves within 1 h
+
+escalate:                              # the contract's escalate_when (a recommendation to the customer service supervisor)
+  flight_passengers_wrong: 5           # assumption: more than this many tracked passengers wrong about the same flight
+  vulnerable_wrong_min: 10             # assumption: a vulnerable passenger shown a cancelled or wrong flight for longer than this
+  failures_per_window: 3               # assumption: more than this many failed deliveries on one channel...
+  failures_window_min: 30              # ...within this many minutes
+
+summary_every_min: 15                  # assumption: a communication_summary event at most this often (and when a critical one opens)
+
+later:                                 # used from 4b-3 on
+  mass_message_passengers: 50          # assumption: a message to more passengers than this always needs the supervisor
+
+ai:
+  enabled: false                       # no AI in 4b-1

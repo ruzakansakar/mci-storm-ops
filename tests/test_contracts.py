@@ -179,7 +179,9 @@ def test_only_two_agents_may_read_names_and_contact_details():
     assert PII_AGENTS == {"passenger_care", "communication"}
     for agent, c in CONTRACTS.items():
         reads_pii = any(col in PII_COLUMNS.get(t, ()) for t, cols in c.reads.items() for col in cols)
-        assert reads_pii == (agent in PII_AGENTS), agent
+        # communication may see names only from phase 4b-3 (messages); in 4b-1 (detection) its contract lists none
+        expected = agent in PII_AGENTS and not (agent == "communication" and c.phase in ("4b-1", "4b-2"))
+        assert reads_pii == expected, agent
     data = raw("network_recovery")
     data["reads"]["passengers"] = ["id", "full_name"]
     with pytest.raises(ContractError, match="names and contact details"):
@@ -261,6 +263,10 @@ def test_an_agent_can_propose_each_of_its_actions_and_it_waits_for_the_rule_chec
     ctx = ctx_for(agent, db)
     for action in c.actions:
         ready(ctx, action)
+        if not c.enabled(action):                          # switched on in a later phase: refused until then
+            with pytest.raises(ContractViolation, match="phase"):
+                ctx.propose(action, good_output(agent, action))
+            continue
         rec_id = ctx.propose(action, good_output(agent, action))
         row = db.execute("SELECT agent, status, autonomy, rule_check_ok, decision_ids FROM recommendations WHERE id=%s", (rec_id,)).fetchone()
         assert row[0] == agent and row[1] == "pending" and row[3] is None and row[4]       # unchecked until the orchestrator runs check()
@@ -395,7 +401,12 @@ def test_a_refusal_is_a_clear_error_an_event_and_an_audit_row(db):
 def test_passenger_names_are_hidden_from_agents_that_may_not_see_them_and_scoped_for_those_that_may(db):
     for agent in AGENT_NAMES:
         ctx = ctx_for(agent, db)
-        if agent in PII_AGENTS:
+        if agent == "communication" and CONTRACTS[agent].phase in ("4b-1", "4b-2"):
+            ctx.working_on(["PAX0001"])                    # even for a passenger it says it works on: no names before 4b-3
+            for col in ("full_name", "booking_ref", "contact_channels"):
+                with pytest.raises(ContractViolation):
+                    ctx.read("passengers", ["id", col], where={"id": "PAX0001"})
+        elif agent in PII_AGENTS:
             with pytest.raises(ContractViolation, match="working on"):
                 ctx.read("passengers", ["id", "full_name"], where={"id": "PAX0001"})          # hasn't said who it works on
             ctx.working_on(["PAX0001"])

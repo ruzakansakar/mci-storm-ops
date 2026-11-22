@@ -118,7 +118,8 @@ def collect(conn, run_id: str) -> dict:
                    next((p["id"] for p in pax_list if p["changed"]), pax_list[0]["id"]))
     series = metrics.pop("timeseries")
     situation = collect_situation(conn, run_id)
-    return {"situation": situation, "run": {"id": run_id, "seed": seed, "mode": mode, "scenario": scenario}, "incident": incident,
+    communication = collect_communication(conn, run_id, default)
+    return {"situation": situation, "communication": communication, "run": {"id": run_id, "seed": seed, "mode": mode, "scenario": scenario}, "incident": incident,
             "metrics": metrics, "series": series, "events": events, "passengers": pax_list, "default_passenger": default}
 
 
@@ -155,6 +156,25 @@ def collect_situation(conn, run_id: str) -> dict | None:
         slot(at)["happened"].append(f"{typ}: {_text(typ, payload)}")
     rows = [{"t": t, **v} for t, v in sorted(by_t.items())]
     return {"agent_run_id": arid, "rows": rows}
+
+
+def collect_communication(conn, run_id: str, focus: str) -> dict | None:
+    """The Communication agent's latest replay of this run: every mismatch it detected (start, end, severity, cause)."""
+    row = conn.execute("SELECT agent_run_id FROM mismatches WHERE run_id=%s ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
+    if not row:
+        return None
+    arid = row[0]
+    items = []
+    for pid, ch, field, shown, true, cause, sev, since, detected, cleared in conn.execute(
+            "SELECT passenger_id, channel, field, shown_value, true_value, cause, severity, since, detected_at, cleared_at FROM mismatches "
+            "WHERE agent_run_id=%s ORDER BY since, id", (arid,)):
+        items.append({"pid": pid, "channel": ch, "field": field, "shown": shown, "true": true, "cause": cause, "severity": sev,
+                      "since": minute_of(since), "detected": minute_of(detected), "cleared": minute_of(cleared) if cleared else None})
+    sev = {}
+    for x in items:
+        sev[x["severity"]] = sev.get(x["severity"], 0) + 1
+    return {"agent_run_id": arid, "items": items, "by_severity": sev, "focus": focus,
+            "focus_items": [x for x in items if x["pid"] == focus]}
 
 
 def build_html(data: dict) -> str:
@@ -219,6 +239,13 @@ PAGE = r"""<!doctype html>
 <section><h2 style="margin-top:0">Situation agent: what it said vs what really happened</h2>
  <div class="sub" id="sitinfo"></div>
  <div class="scroll" style="margin-top:8px"><table id="situation"></table></div></section>
+<section><h2 style="margin-top:0">Communication agent: the mismatches it detected vs the real wrong screens</h2>
+ <div class="sub" id="cominfo"></div>
+ <div id="c3"></div>
+ <div class="legend"><span><i class="sw" style="background:#c0392b"></i>Real: passengers with a wrong screen (simulator)</span>
+  <span><i class="sw" style="background:#2c6fbb"></i>Detected: passengers with an open mismatch (agent)</span></div>
+ <h3 id="comfocush">Detections for the default passenger</h3>
+ <div class="scroll"><table id="comfocus"></table></div></section>
 <section><h2 style="margin-top:0">What happened (events)</h2>
  <div class="chips" id="chips"></div>
  <div class="scroll" style="margin-top:8px"><table id="events"></table></div></section>
@@ -304,6 +331,25 @@ const GROUPS = [['Scheduled',['scheduled'],'#9fb4c7'],['Delayed or held',['groun
   const f = frame(1060,240,ymax);
   const pts = S.t.map((t,i)=>`${f.x(t)},${f.y(S.pax_disagreeing[i])}`).join(' ');
   $('c2').innerHTML = f.s+`<polyline points="${pts}" fill="none" stroke="#c0392b" stroke-width="2"/></svg>`;
+})();
+
+// ---------- communication agent
+(function(){
+  const C = D.communication;
+  if (!C) { $('cominfo').textContent = 'The Communication agent has not been run on this day. Run: python -m backend.agents.communication.run --run-id ' + D.run.id + ' --replay'; return; }
+  $('cominfo').textContent = `Replay ${C.agent_run_id}: ${C.items.length} mismatches detected (` +
+    Object.entries(C.by_severity).map(([k,v])=>`${v} ${k}`).join(', ') + '). Each counts a passenger from when it started being wrong to when the channel caught up.';
+  const detected = S.t.map(t => new Set(C.items.filter(x => x.since <= t && (x.cleared === null || t < x.cleared)).map(x => x.pid)).size);
+  const ymax = Math.max(5, Math.ceil(Math.max(...S.pax_disagreeing, ...detected)/10)*10);
+  const f = frame(1060,240,ymax);
+  const real = S.t.map((t,i)=>`${f.x(t)},${f.y(S.pax_disagreeing[i])}`).join(' ');
+  const mine = S.t.map((t,i)=>`${f.x(t)},${f.y(detected[i])}`).join(' ');
+  $('c3').innerHTML = f.s+`<polyline points="${real}" fill="none" stroke="#c0392b" stroke-width="4" opacity="0.45"/>`+
+    `<polyline points="${mine}" fill="none" stroke="#2c6fbb" stroke-width="1.6" stroke-dasharray="5 3"/></svg>`;
+  const rows = C.focus_items; $("comfocush").textContent = "What it detected on the screens of " + C.focus + " (Maya Torres by default)";
+  $('comfocus').innerHTML = `<tr><th>Wrong from</th><th>Detected</th><th>Cleared</th><th>Channel</th><th>Field</th><th>Shown</th><th>True</th><th>Suspected cause</th><th>Severity</th></tr>` +
+    (rows.length ? rows.map(x=>`<tr><td>${hm(x.since)}</td><td>${hm(x.detected)}</td><td>${x.cleared===null?'still open':hm(x.cleared)}</td><td>${esc(x.channel)}</td><td>${esc(x.field)}</td><td>${esc(x.shown)}</td><td>${esc(x.true)}</td><td>${esc(x.cause)}</td><td>${esc(x.severity)}</td></tr>`).join('')
+     : `<tr><td colspan="9">No mismatches detected for ${esc(C.focus)}.</td></tr>`);
 })();
 
 // ---------- passenger lookup

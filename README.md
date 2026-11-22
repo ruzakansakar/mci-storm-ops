@@ -19,6 +19,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 3c | Agreed setup, rule check, decision catalog, shared AI guardrails | **done** |
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4a | Situation agent | **done** |
+| 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
+| 4b-2, 4b-3 | Communication agent: fix channels, then messages | |
 | 4b | Orchestrator | |
 | 5 | Guardrail + Network Recovery (milestone 1) | |
 | 6 | Communication, consistency check, Passenger Care, Station & Staff (milestone 2) | |
@@ -338,6 +340,35 @@ What changed:
   is right at least as often as it claims in every group (it was not for storms, mornings, 0 changes, or messy data).
 - Smaller: one S01 for a feed and the system behind it (they used to replace each other every 5 minutes), and a flap back to abnormal
   within 30 min of "normal" is the same incident (no second set of proposals).
+
+## The Communication agent, part 1: detecting mismatches (Phase 4b-1)
+
+Every passenger should hear the same true story from every channel (app, SMS, gate screen, call center). Phase 4b-1 only **finds**
+what each channel shows wrongly; it fixes nothing and writes no messages. Code: `backend/agents/communication/`, settings (every
+number an assumption): `config/agent_settings/communication.yaml`, contract (written for all three phases):
+`config/agents/communication.yaml`.
+
+```bash
+python -m backend.agents.communication.run --run-id a31_storm-s7-today --at 14:58                      # what is wrong at 14:58
+python -m backend.agents.communication.run --run-id a31_storm-s7-today --replay                        # the whole day (about 2-3 min on Neon)
+python -m backend.agents.communication.run --run-id a31_storm-s7-today --passenger PAX0001 --replay    # Maya, next to what really happened
+python -m chaos.judge_communication       # score it against the simulator's answer key: seed 7 + 20 random chaos days, in memory
+python -m simulator.report --latest       # the debug page has a "Communication agent" section
+```
+
+- **The truth feed.** The simulator now publishes each tracked passenger's trip record (`trip_record_updated`: itinerary, status,
+  destination, bag routing) at the start of the day and whenever it changes, as a real reservation system would. The agent rebuilds
+  the truth and what every channel shows at time T from events only (`state_at.py`), never from the end-of-day tables.
+- **No answer key.** The channel events still carry the simulator's `lag_min` and `cause_if_late` (the debug page uses them), but the
+  contract lists only the fields a real system publishes, so AgentContext strips them. The only failure signal is the delivery receipt.
+- **Freshness.** Each channel is its own feed with its own heartbeat (the contract's `_split_by: channel`). A stale channel is not
+  checked; a stale truth feed stops all checks ("cannot_check: <feed> stale since HH:MM").
+- **Privacy.** No names, contacts or booking refs are in the 4b-1 contract, so AgentContext refuses them even with working_on.
+- **Phases.** The contract has `phase: 4b-1` and an `enabled_in` per action; AgentContext refuses fix and message actions until their
+  phase. `mismatches` is written only by this agent, only its own rows (AgentContext checks), each with sources and decision ids.
+- **Scoring.** `chaos/judge_communication.py` reads the simulator's answer key (which screens were really wrong, when, and why) and
+  measures recall, precision, detection delay, cause accuracy, critical cases, stale-feed handling and name reads.
+  Summary: `reports/chaos/communication.html`; the chaos index gets a Communication column.
 
 ## Rules for conflicting files
 

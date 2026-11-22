@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 
 from backend.contracts import jsonschema_lite
 from backend.contracts.decisions import load_decisions
-from backend.contracts.loader import (INCIDENT_TABLES, INCIDENT_WRITERS, PII_AGENTS, PII_COLUMNS, TRUTH_TABLES, Contract,
+from backend.contracts.loader import (INCIDENT_TABLES, INCIDENT_WRITERS, OWN_TABLES, PII_AGENTS, PII_COLUMNS, TRUTH_TABLES, Contract,
                                       load_contracts, schema_tables)
 from backend.rules import load_rules
 from backend.rules.autonomy import autonomy_for
@@ -92,12 +92,13 @@ class AgentContext:
     def feed_age_sec(self, feed: str) -> float:
         return (self.now - self.feed_last(feed)).total_seconds()
 
-    def read_events(self, since: datetime | None = None) -> list[dict]:
-        """Events of its feeds that happened after `since` (if given) and at or before now. Same enforcement as read()."""
-        return self.read("events", since=since, order_by="occurred_at")
+    def read_events(self, since: datetime | None = None, delivered_since: datetime | None = None) -> list[dict]:
+        """Events of its feeds that happened after `since` (if given) and at or before now. Same enforcement as read().
+        delivered_since: only events DELIVERED after this time (for incremental reading; a late event counts when it arrives)."""
+        return self.read("events", since=since, delivered_since=delivered_since, order_by="occurred_at")
 
     def read(self, table: str, columns: list[str] | None = None, where: dict | None = None, limit: int | None = None,
-             order_by: str | None = None, since: datetime | None = None) -> list[dict]:
+             order_by: str | None = None, since: datetime | None = None, delivered_since: datetime | None = None) -> list[dict]:
         allowed = self.contract.reads.get(table)
         if allowed is None:
             self._violate("read", f"table '{table}' is not in this agent's reads")
@@ -132,6 +133,9 @@ class AgentContext:
             if since is not None:
                 parts.append(sql.SQL("occurred_at > %s"))
                 params.append(since)
+            if delivered_since is not None:
+                parts.append(sql.SQL("coalesce(published_at, occurred_at) > %s"))
+                params.append(delivered_since)
             if self.source_run_id is not None:
                 parts.append(sql.SQL("run_id = %s"))
                 params.append(self.source_run_id)
@@ -176,6 +180,11 @@ class AgentContext:
         feed, fields = self.contract.event_types.get(row["type"], (None, None))
         if feed is None:
             return None
+        if feed in self.contract.feed_split:                # one feed per value of a payload field (e.g. one per channel)
+            field, names = self.contract.feed_split[feed]
+            feed = (row.get("payload") or {}).get(field)
+            if feed not in names:
+                return None
         silent = self.feeds.window(feed, self.now)
         if silent and row["occurred_at"] >= silent[0]:      # the feed is silent: nothing it sent since it went quiet arrives yet
             return None
@@ -208,6 +217,17 @@ class AgentContext:
     # ------------------------------------------------------------------ writing
     def write(self, table: str, values: dict, mode: str = "insert", row_id=None):
         """Insert (or update one row of) a table the contract allows. Every write also goes to the audit log."""
+        w = self._check(table, values, mode, row_id)
+        return self._write_checked(table, self._with_run_ids(table, values, mode), mode, row_id, w)
+
+    def _with_run_ids(self, table, values, mode):
+        """Rows of an agent's own table carry its replay id and the run it read, filled in here (the agent never sees the run)."""
+        if table == "mismatches" and mode == "insert":
+            return {**values, "agent_run_id": self.run_id, "run_id": self.source_run_id}
+        return values
+
+    def _check(self, table: str, values: dict, mode: str, row_id=None, check_owner: bool = True) -> dict:
+        """Everything a write must pass, for one row. Returns the contract's entry for the table."""
         if table in TRUTH_TABLES:
             self._violate("write", f"'{table}' is a truth table; agents never write to it (a human-approved action does)")
         w = self.contract.writes.get(table)
@@ -215,6 +235,18 @@ class AgentContext:
             self._violate("write", f"table '{table}' is not in this agent's writes")
         if table in INCIDENT_TABLES and self.agent not in INCIDENT_WRITERS:
             self._violate("write", "only the orchestrator writes incidents")
+        if table in OWN_TABLES and self.agent not in OWN_TABLES[table]:
+            self._violate("write", f"only {sorted(OWN_TABLES[table])} writes {table}")
+        if table == "mismatches":
+            if mode == "insert" and (not values.get("sources") or not values.get("decision_ids")
+                                     or not all(_iso(x.get("as_of")) for x in values["sources"])):
+                self._violate("output", "a mismatch needs its sources, each with an as_of time (G01), and decision ids (G08)")
+            if mode == "update" and check_owner:
+                self.cur.execute("SELECT agent_run_id FROM mismatches WHERE id = %s", (row_id,))
+                own = self.cur.fetchone()
+                if not own or own[0] != self.run_id:
+                    self._violate("write", "an agent may only update its own mismatch rows (this run's)")
+            self._check_decisions(values.get("decision_ids"))
         if w["mode"] != "insert_or_update" and w["mode"] != mode:
             self._violate("write", f"this agent may only {w['mode']} on '{table}', not {mode}")
         allowed = w.get("columns")
@@ -228,6 +260,9 @@ class AgentContext:
             status = values.get("status")
             if status is not None and status not in w.get("status_values", []):
                 self._violate("write", f"status '{status}' is not one this agent may set")
+        return w
+
+    def _write_checked(self, table, values, mode, row_id, w):
         cols = list(values)
         if mode == "insert":
             q = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
@@ -250,6 +285,56 @@ class AgentContext:
             return row_id
         self._violate("write", f"unknown write mode '{mode}'")
 
+    def write_many(self, table: str, rows: list[dict], mode: str = "insert", row_ids: list | None = None) -> list:
+        """Many rows at once, for an agent that writes a lot (the communication agent's mismatches). Every row gets the same checks
+        as write() and its own audit row; the rows go to the database in a few round trips instead of several per row."""
+        if not rows:
+            return []
+        if mode == "update" and (row_ids is None or len(row_ids) != len(rows)):
+            self._violate("write", "an update needs the id of every row")
+        if mode == "update" and table == "mismatches":
+            self.cur.execute("SELECT id, agent_run_id FROM mismatches WHERE id = ANY(%s)", (list(row_ids),))
+            own = dict(self.cur.fetchall())
+            if any(own.get(i) != self.run_id for i in row_ids):
+                self._violate("write", "an agent may only update its own mismatch rows (this run's)")
+        for v in rows:                             # every check of write() on every row (ownership was checked above, for all)
+            self._check(table, v, mode, check_owner=False)
+        if mode == "insert":
+            rows = [self._with_run_ids(table, v, mode) for v in rows]
+            cols = list(rows[0])
+            if any(list(v) != cols for v in rows):
+                self._violate("write", "write_many needs the same columns in every row")
+            q = sql.SQL("INSERT INTO {} ({}) VALUES ({}) RETURNING id").format(
+                sql.Identifier(table), sql.SQL(", ").join(map(sql.Identifier, cols)), sql.SQL(", ").join(sql.Placeholder() * len(cols)))
+            self.cur.executemany(q, [[_adapt(c, v[c]) for c in cols] for v in rows], returning=True)
+            ids = []
+            while True:
+                ids.append(self.cur.fetchone()[0])
+                if not self.cur.nextset():
+                    break
+            audit = [(f"{self.agent} wrote {table}", table, i, None, _safe(v)) for i, v in zip(ids, rows)]
+        else:
+            groups = {}
+            for i, v in zip(row_ids, rows):
+                groups.setdefault(tuple(v), []).append((i, v))
+            for cols, items in groups.items():
+                q = sql.SQL("UPDATE {} SET {} WHERE id = %s").format(
+                    sql.Identifier(table), sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(c)) for c in cols))
+                self.cur.executemany(q, [[_adapt(c, v[c]) for c in cols] + [i] for i, v in items])
+            ids = list(row_ids)
+            audit = [(f"{self.agent} updated {table}", table, i, None, _safe(v)) for i, v in zip(ids, rows)]
+        if table != "audit_log":
+            self.cur.executemany(
+                "INSERT INTO audit_log (at, actor, actor_name, what, entity_type, entity_id, before, after, run_id) "
+                "VALUES (%s, 'agent', %s, %s, %s, %s, %s, %s, %s)",
+                [(self.now, self.agent, what, et, str(i), _json(b), _json(a), self.run_id) for what, et, i, b, a in audit])
+        return ids
+
+    def record_events(self, items: list[tuple]) -> list:
+        """Several of this agent's own events at once: [(type, payload)]."""
+        return self.write_many("events", [{"occurred_at": self.now, "type": t, "actor": "agent", "actor_name": self.agent,
+                                           "station": None, "payload": p or {}, "run_id": self.run_id} for t, p in items])
+
     def record_event(self, type_: str, payload: dict | None = None, station: str | None = None) -> int:
         """One of this agent's own events (only the types listed in its contract)."""
         return self.write("events", {"occurred_at": self.now, "type": type_, "actor": "agent", "actor_name": self.agent,
@@ -271,6 +356,9 @@ class AgentContext:
 
     def propose(self, action: str | None, output: dict, safety_rung: int | None = None, supersedes: int | None = None) -> int:
         """Save a proposal for the orchestrator's rule check. It is never shown to a human until that check passes it."""
+        if action is not None and action in self.contract.actions and not self.contract.enabled(action):
+            self._violate("action", f"'{action}' is switched on in phase {self.contract.enabled_in[action]}; this is phase "
+                                    f"{self.contract.phase}")
         if action is not None and action not in self.contract.actions:
             if action in self.rules["autonomy"] and self.rules["autonomy"][action]["level"] == "human_only":
                 self._violate("action", f"'{action}' is a human-only decision; this agent can only ask_human with the facts")

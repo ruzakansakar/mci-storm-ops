@@ -18,12 +18,16 @@ RULE_CHECK_COLUMNS = {"rule_check_ok", "rule_check_notes", "rule_ids"}   # only 
 # The facts of the world. No agent may ever write to these directly: a truth change happens only through an approved action.
 TRUTH_TABLES = {
     "stations", "aircraft", "crews", "flights", "passenger_groups", "passengers", "bookings", "bags", "hotels", "staff",
-    "later_capacity", "route_tiers", "transport_options", "hotel_rate_tiers", "channel_views", "system_health", "mismatches",
+    "later_capacity", "route_tiers", "transport_options", "hotel_rate_tiers", "channel_views", "system_health",
     "decisions", "actions", "metric_runs", "data_issues",
 }
 # The only tables an agent can write to: proposals, its own events, the audit log, and (orchestrator only) incidents.
-WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments"}
-OWN_TABLES = {"situation_assessments": {"situation"}}     # shared state: only its owner writes it
+WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments", "mismatches"}
+OWN_TABLES = {"situation_assessments": {"situation"},      # shared state: only its owner writes it
+              "mismatches": {"communication"}}             # what the channels show wrongly: only communication records it
+# Build phases in order. A contract may name, per action, the phase it is switched on in (capabilities: action -> enabled_in);
+# AgentContext refuses an action whose phase has not come yet.
+PHASES = ("4b-1", "4b-2", "4b-3")
 INCIDENT_TABLES = {"incidents", "incident_events"}
 INCIDENT_WRITERS = {"orchestrator"}
 WRITE_MODES = {"insert", "update", "insert_or_update"}
@@ -73,8 +77,20 @@ class Contract:
         self.required_checks: dict = data.get("required_checks") or {}
         self.static_reads: set = set(data.get("static_reads") or [])
         self.event_feeds: dict | None = data.get("event_feeds")
-        # event type -> (feed, payload fields it may see)
-        self.event_types: dict = {t: (feed, fields) for feed, types in (self.event_feeds or {}).items() for t, fields in types.items()}
+        # event type -> (feed, payload fields it may see). Keys starting with "_" describe the feed itself, not an event type.
+        self.event_types: dict = {t: (feed, fields) for feed, types in (self.event_feeds or {}).items() for t, fields in types.items()
+                                  if not t.startswith("_")}
+        # feed -> (payload field, allowed values): one feed per value of that field (e.g. one per channel), each with its own heartbeat
+        self.feed_split: dict = {feed: (types["_split_by"], list(types["_feeds"])) for feed, types in (self.event_feeds or {}).items()
+                                 if "_split_by" in types}
+        self.phase: str | None = data.get("phase")
+        self.enabled_in: dict = {c["action"]: c["enabled_in"] for c in data.get("capabilities") or [] if c.get("action")}
+
+    def enabled(self, action: str) -> bool:
+        """Is this action switched on in the contract's current phase? (No phase or no entry: always.)"""
+        if not self.phase or action not in self.enabled_in:
+            return True
+        return PHASES.index(self.enabled_in[action]) <= PHASES.index(self.phase)
 
     def __getitem__(self, key):
         return self.data[key]
@@ -144,12 +160,23 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
             raise ContractError(f"{name}: event_feeds needs events in reads")
         seen = set()
         for feed, types in feeds.items():
+            if "_split_by" in types and not types.get("_feeds"):
+                raise ContractError(f"{name}: event_feeds.{feed} splits by '{types['_split_by']}' but lists no _feeds")
             for t, fields in types.items():
+                if t.startswith("_"):
+                    continue
                 if t in seen:
                     raise ContractError(f"{name}: event type '{t}' is listed under two feeds")
                 if not isinstance(fields, list):
                     raise ContractError(f"{name}: event_feeds.{feed}.{t} must list the payload fields it may see")
                 seen.add(t)
+    if data.get("phase") is not None and data["phase"] not in PHASES:
+        raise ContractError(f"{name}: phase must be one of {PHASES}")
+    for cap in data.get("capabilities") or []:
+        if cap.get("enabled_in") not in PHASES:
+            raise ContractError(f"{name}: capability {cap.get('action') or cap.get('decision')} needs enabled_in, one of {PHASES}")
+        if cap.get("action") and cap["action"] not in data["actions"]:
+            raise ContractError(f"{name}: capability names action '{cap['action']}', which is not in its actions")
     unknown = [a for a in data["actions"] if a not in rules["autonomy"]]
     if unknown:
         raise ContractError(f"{name}: actions not in the autonomy rules: {unknown}")
