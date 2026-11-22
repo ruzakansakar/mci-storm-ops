@@ -20,7 +20,9 @@ from psycopg.types.json import Jsonb
 from backend.agents.situation.run import replay
 from backend.contracts.feeds import Feeds
 from backend.database import connect
-from chaos.generator import TRUTH_DIR, load_chaos, overlay_events, plan_day, run_id_for, scenario_for, truth_for, write_truth
+from backend.settings import TZ
+from chaos.generator import (TRUTH_DIR, add_visibility, load_chaos, overlay_events, plan_day, run_id_for, scenario_for, truth_for,
+                             write_truth)
 from simulator.clock import at
 from simulator.store import Writer
 
@@ -66,7 +68,8 @@ class ChaosWriter(Writer):
         if self.left and e["type"] in LATE_TYPES and e["t"] >= self.after and self.rng.random() < 0.25:
             self.left -= 1
             delay = self.rng.randint(*load_chaos()["messy_data"]["late_by_min"])
-            self.late.append({"type": e["type"], "at": at(e["t"]).isoformat(), "delivered": at(e["t"] + delay).isoformat()})
+            self.late.append({"type": e["type"], "at": at(e["t"]).isoformat(), "delivered": at(e["t"] + delay).isoformat(),
+                              "flight_id": (e.get("payload") or {}).get("flight_id")})
             return at(e["t"] + delay)
         return None
 
@@ -85,8 +88,8 @@ def make_day(conn, seed: int, data: dict) -> dict:
         old = json.loads(path.read_text(encoding="utf-8"))
         res = simulate(seed, "chaos", data=data, prebuilt=scenario_for(plan), run_id=run_id)     # same day, in memory only
         truth = truth_for(plan, res.world, overlay_events(plan, res.world.events, res.world.flights))
-        truth["messy"]["late_events"] = old["messy"].get("late_events", [])
-        write_truth(truth)                                 # the truth is recomputed by the same rules (in case they improved)
+        truth["messy"]["late_events"] = _late_from_db(conn, run_id) or old["messy"].get("late_events", [])
+        write_truth(add_visibility(truth))                 # the truth is recomputed by the same rules (in case they improved)
         return truth
     writer = ChaosWriter(conn, run_id, seed, plan)
     res = simulate(seed, "chaos", data=data, writer=writer, prebuilt=scenario_for(plan), run_id=run_id)
@@ -101,8 +104,16 @@ def make_day(conn, seed: int, data: dict) -> dict:
     conn.commit()
     truth = truth_for(plan, res.world, over)
     truth["messy"]["late_events"] = writer.late
-    write_truth(truth)
+    write_truth(add_visibility(truth))
     return truth
+
+
+def _late_from_db(conn, run_id) -> list[dict]:
+    """The world events this day delivered late, read back from the database (days made before late events kept flight ids)."""
+    rows = conn.execute("SELECT occurred_at, published_at, type, payload FROM events WHERE run_id=%s AND published_at IS NOT NULL "
+                        "AND actor_name <> 'faa_feed' ORDER BY id", (run_id,)).fetchall()
+    return [{"type": typ, "at": occ.astimezone(TZ).isoformat(), "delivered": pub.astimezone(TZ).isoformat(),
+             "flight_id": (p or {}).get("flight_id")} for occ, pub, typ, p in rows]
 
 
 def feeds_for(truth: dict) -> Feeds:

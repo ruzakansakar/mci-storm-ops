@@ -8,7 +8,9 @@ from functools import lru_cache
 
 import yaml
 
-from backend.settings import ROOT
+from backend.rules import recovery as recovery_rules
+from backend.rules.loader import load_rules
+from backend.settings import ROOT, TZ
 from chaos.generator import read_truth
 
 SCORING = ROOT / "config" / "chaos_scoring.yaml"
@@ -24,6 +26,11 @@ def scoring() -> dict:
 
 def _dt(s):
     return datetime.fromisoformat(s) if isinstance(s, str) else s
+
+
+def _local(t):
+    """The database hands times back in UTC; the reasons the judge prints are in MCI local time, like the truth file."""
+    return t.astimezone(TZ) if isinstance(t, datetime) else t
 
 
 def _mins(td: timedelta) -> float:
@@ -43,11 +50,17 @@ def load_outputs(conn, run_id: str) -> dict:
     for v in versions:
         for k in ("confidence", "end_confidence"):
             v[k] = float(v[k]) if v[k] is not None else None
+        for k in ("assessed_at", "expected_end_earliest", "expected_end_likely", "expected_end_latest"):
+            v[k] = _local(v[k])
     recs = [dict(zip(["id", "created_at", "decision_ids", "supersedes", "autonomy", "title"], r)) for r in conn.execute(
         "SELECT id, created_at, decision_ids, supersedes, autonomy, title FROM recommendations WHERE run_id=%s AND agent='situation' "
         "ORDER BY id", (arid,)).fetchall()]
     events = [dict(zip(["occurred_at", "type", "payload"], r)) for r in conn.execute(
         "SELECT occurred_at, type, payload FROM events WHERE run_id=%s ORDER BY id", (arid,)).fetchall()]
+    for r in recs:
+        r["created_at"] = _local(r["created_at"])
+    for e in events:
+        e["occurred_at"] = _local(e["occurred_at"])
     return {"agent_run_id": arid, "versions": versions, "recs": recs, "events": events, "timing": timing}
 
 
@@ -65,8 +78,10 @@ def judge(truth: dict, out: dict) -> dict:
     V, R, E = out["versions"], out["recs"], out["events"]
     incidents = truth["incidents"]
     for i in incidents:
-        for k in ("start", "end", "first_signal"):
+        for k in ("start", "end", "first_signal", "first_visible"):
             i[k + "_dt"] = _dt(i[k]) if i.get(k) else None
+        # the detection clock starts when the first real signal could be SEEN (a signal delivered late can't be noticed earlier)
+        i["first_signal_dt"] = max(i["first_signal_dt"], i["first_visible_dt"] or i["first_signal_dt"])
     checks = []
 
     def add(name, result, reason):
@@ -146,14 +161,16 @@ def judge(truth: dict, out: dict) -> dict:
         "never confident about a wrong cause")
 
     # 4. two incidents
+    # two incidents overlap only once both could be seen: a crew wave "starts" with its first real signal, not before
     pairs = [(a, b) for k, a in enumerate(incidents) for b in incidents[k + 1:]
-             if a["start_dt"] < (b["end_dt"] or b["start_dt"]) and b["start_dt"] < (a["end_dt"] or a["start_dt"]) and a["type"] != b["type"]]
+             if a["first_signal_dt"] < (b["end_dt"] or b["start_dt"]) and b["first_signal_dt"] < (a["end_dt"] or a["start_dt"])
+             and a["type"] != b["type"]]
     if not pairs:
         add("two incidents", "N/A", "only one incident at a time")
     else:
         res = []
         for a, b in pairs:
-            lo, hi = max(a["start_dt"], b["start_dt"]), min(a["end_dt"] or b["end_dt"], b["end_dt"] or a["end_dt"])
+            lo, hi = max(a["first_signal_dt"], b["first_signal_dt"]), min(a["end_dt"] or b["end_dt"], b["end_dt"] or a["end_dt"])
             during = [v for v in V if lo <= v["assessed_at"] <= hi + timedelta(minutes=5)]
             if status_at(V, lo) and status_at(V, lo) not in during:
                 during.insert(0, status_at(V, lo))         # the picture already in effect when the overlap began
@@ -207,7 +224,10 @@ def judge(truth: dict, out: dict) -> dict:
     else:
         res = []
         for o in long_:
-            first = next((v for v in V if v["assessed_at"] >= o["start"] and v["status"].startswith("cannot_assess")), None)
+            # already saying "cannot assess" when this silence began (e.g. it is inside a longer one) counts from its start
+            cur = status_at(V, o["start"])
+            first = {**cur, "assessed_at": o["start"]} if cur and cur["status"].startswith("cannot_assess") else \
+                next((v for v in V if v["assessed_at"] >= o["start"] and v["status"].startswith("cannot_assess")), None)
             if not first or _mins(first["assessed_at"] - o["start"]) > sc["stale_within_min"] or first["assessed_at"] > o["end"]:
                 res.append(("FAIL", f"{o['feed']} silent from {o['start']:%H:%M}: no 'cannot assess' within {sc['stale_within_min']} min"))
                 continue
@@ -218,7 +238,10 @@ def judge(truth: dict, out: dict) -> dict:
                 continue
             if _mins(o["end"] - o["start"]) > sc["s01_after_min"] + sc["s01_grace_min"]:
                 lo, hi = o["start"] + timedelta(minutes=sc["s01_after_min"]), o["start"] + timedelta(minutes=sc["s01_after_min"] + sc["s01_grace_min"])
-                s01 = [r for r in R if "S01" in (r["decision_ids"] or []) and lo <= r["created_at"] <= hi]
+                replaced = {r["supersedes"]: r["created_at"] for r in R if r["supersedes"]}
+                # proposed in the window, or already open then (raised for a longer silence this one sits inside)
+                s01 = [r for r in R if "S01" in (r["decision_ids"] or []) and r["created_at"] <= hi
+                       and (r["created_at"] >= lo or replaced.get(r["id"], hi) >= lo)]
                 if not s01:
                     res.append(("FAIL", f"{o['feed']} down over {sc['s01_after_min']} min but no S01 proposed by {hi:%H:%M}"))
                     continue
@@ -229,7 +252,9 @@ def judge(truth: dict, out: dict) -> dict:
     # 7. conflicts
     cfs = [c for c in truth["conflicts"] if c.get("detectable")]
     if not cfs:
-        add("conflicts", "N/A", "no detectable conflict injected" + (" (a false 'stop ended' with no plane holding)" if truth["conflicts"] else ""))
+        why = "; ".join(c.get("note") or ("a false 'stop ended' with no plane holding" if c["kind"] == "false_end" else
+                                          f"{c['kind'].replace('_', ' ')} hidden by a silent feed") for c in truth["conflicts"])
+        add("conflicts", "N/A", "no detectable conflict injected" + (f" ({why})" if why else ""))
     else:
         res = []
         for c in cfs:
@@ -296,35 +321,58 @@ def judge(truth: dict, out: dict) -> dict:
         add("messy data", "FAIL" if any(r[0] == "FAIL" for r in res) else "WARN" if res else "PASS",
             "; ".join(r[1] for r in res) if res else f"no crash; {dup or 0} duplicate(s) and {unread or 0} unreadable event(s) set aside")
 
-    # 11. recovery
-    if not incidents or any(i.get("running_at_day_end") for i in incidents):
+    # 11. recovery: the expected status comes from the ONE definition the agent also uses (backend/rules/recovery.py), applied
+    # to what really happened. Inside the incident's busy spell (operations not back): abnormal. After it: recovery while the
+    # aftermath remains (cancelled-flight passengers without a seat, aircraft out of position, passengers stranded overnight
+    # until the incident is closed), normal after that. The agent may lag the truth by recovery_grace_min.
+    if not incidents or any(i.get("running_at_day_end") for i in incidents) or "operations" not in truth:
         add("recovery", "N/A", "no incident ended today")
     else:
-        end = max((i["end_dt"] or i["start_dt"]) for i in incidents) + timedelta(minutes=sc["recovery_grace_min"])
-        day_end = end.replace(hour=23, minute=59)
+        quiet = load_rules()["recovery"]["operations_back_quiet_min"]
+        ops = truth["operations"]
+        blocks = [(_dt(a_), _dt(b_) if b_ else None, why) for a_, b_, why in ops["blocks"]]
+        activity = [(_dt(x), why) for x, why in ops["activity"]]
+        last_end = max((i["end_dt"] or i["start_dt"]) for i in incidents)
         af = truth["aftermath"]
-        cx = [_dt(x[0]) for x in af["cancelled"]]
+        unrebooked = [(_dt(x[0]), x[2]) for x in af.get("unrebooked", [])]
         stranded = _dt(af["stranded_overnight_first"]) if af["stranded_overnight_first"] else None
+        grace = timedelta(minutes=sc["recovery_grace_min"])
+
+        def expected(t):
+            spells = recovery_rules.busy_spells(t, blocks, activity, quiet)
+            cur = spells[-1] if spells and spells[-1]["back_at"] is None else None
+            if cur and cur["start"] <= last_end:
+                return "abnormal", recovery_rules.why_not_back(t, blocks, activity, quiet)
+            away = [d["flight_id"] for d in af["diverted"] if _dt(d["diverted"]) <= t and (d["back"] is None or _dt(d["back"]) > t)]
+            left = recovery_rules.aftermath(sum(n for x, n in unrebooked if x <= t), away, 1 if stranded and stranded <= t else 0)
+            back = max((sp["back_at"] for sp in spells if sp["start"] <= last_end and sp["back_at"]), default=None)
+            return ("recovery" if left else "normal"), (left, back)
+
         res = []
-        t = end
+        t = last_end + grace
+        day_end = incidents[0]["start_dt"].replace(hour=23, minute=59)     # the simulated day (and the replay) end at 23:59
         while t <= day_end:
-            away = [d for d in af["diverted"] if _dt(d["diverted"]) <= t and (d["back"] is None or _dt(d["back"]) > t)]
-            after = bool([x for x in cx if x <= t]) or (stranded and stranded <= t) or bool(away)
             v = status_at(V, t)
             st = v["status"] if v else "normal"
-            if in_outage(t) or st.startswith("cannot_assess"):
+            now, why = expected(t)
+            ok = {now, expected(t - grace)[0]}
+            if in_outage(t) or st.startswith("cannot_assess") or st in ok:
                 pass
-            elif after and st == "normal":
-                res.append(("FAIL", f"said normal at {t:%H:%M} while the aftermath remained"))
+            elif st == "normal" and now == "recovery":
+                res.append(("FAIL", f"said normal at {t:%H:%M} while the aftermath remained ({'; '.join(why[0])})"))
                 break
-            elif after and st == "abnormal":
-                res.append(("WARN", f"still 'abnormal' at {t:%H:%M}, after operations were back"))
-            elif not after and st == "recovery":
+            elif st == "abnormal":
+                res.append(("WARN", f"still 'abnormal' at {t:%H:%M}, after operations were back"
+                                    + (f" (at {why[1]:%H:%M})" if why[1] else "")))
+            elif now == "abnormal":
+                res.append(("WARN", f"said '{st}' at {t:%H:%M} but operations were not back ({'; '.join(why)})"))
+            elif st == "recovery":
                 res.append(("WARN", f"'recovery' at {t:%H:%M} with no aftermath left"))
             t += timedelta(minutes=sc["recovery_sample_every_min"])
         worst = "FAIL" if any(r[0] == "FAIL" for r in res) else "WARN" if res else "PASS"
         res.sort(key=lambda r: {"FAIL": 0, "WARN": 1}[r[0]])
-        add("recovery", worst, res[0][1] if res else "recovery status while the aftermath remained, normal after")
+        add("recovery", worst, res[0][1] if res else "abnormal until operations were back, then recovery while the aftermath "
+                                                     "remained, normal after")
 
     # 12. human clutter
     superseded = {r["supersedes"] for r in R if r["supersedes"]}

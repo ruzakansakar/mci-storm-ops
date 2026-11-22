@@ -22,11 +22,23 @@ class Feeds:
         return {f: min(w[0] for w in ws) for f, ws in self.outages.items() if ws}
 
     def window(self, feed: str, now: datetime):
-        """The outage window this feed is in at `now`, or None if it is up."""
-        for start, end in self.outages.get(feed, []):
+        """The outage window this feed is in at `now`, or None if it is up. Overlapping or touching windows are one silence:
+        it started when the first began and lasts until the last ends (a second outage inside a first one must not make the
+        heartbeat look fresh again)."""
+        for start, end in self._merged(feed):
             if start <= now and (end is None or now < end):
                 return start, end
         return None
+
+    def _merged(self, feed: str) -> list[tuple]:
+        out = []
+        for start, end in sorted(self.outages.get(feed, []), key=lambda w: w[0]):
+            if out and (out[-1][1] is None or start <= out[-1][1]):
+                last = out[-1]
+                out[-1] = (last[0], None if end is None or last[1] is None else max(last[1], end))
+            else:
+                out.append((start, end))
+        return out
 
     def last_heartbeat(self, feed: str, now: datetime) -> datetime:
         w = self.window(feed, now)

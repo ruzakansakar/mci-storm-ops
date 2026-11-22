@@ -9,6 +9,10 @@ Real feeds are messy, so it is defensive about its inputs (whatever the source):
   * an event seen twice (same type, time and content) counts once;
   * events are applied in the order they happened, even if one was delivered late;
   * an event whose payload is missing fields or has the wrong types is set aside and counted as unreadable, never guessed at.
+The FAA program's announced end is the one in the notice with the LATEST issue time (the time the FAA issued it, not the time it
+reached us), so a duplicate, a late or an out-of-order notice can't move it. A "started" notice for a program that is already
+running is a re-issue (an update of the end), not a new program. Two different notices with the same issue time disagree: both
+are kept as a conflict (A09) and the later end is used until a human says which is right.
 """
 import json
 from dataclasses import dataclass, field
@@ -71,6 +75,8 @@ class Program:
     shortened: int = 0
     ended: datetime | None = None
     notices: list = field(default_factory=list)      # (event id, time, type)
+    ends: list = field(default_factory=list)         # (issue time, announced end), one per issue time, in issue order
+    conflicts: list = field(default_factory=list)    # (issue time, [ends], [event ids]): same issue time, different ends
 
     @property
     def last_notice_at(self) -> datetime:
@@ -110,6 +116,7 @@ class FlightState:
     on_tarmac: bool = False
     tarmac_since: datetime | None = None
     hold_since: datetime | None = None
+    first_delayed_at: datetime | None = None
     events: list = field(default_factory=list)       # (event id, time, type)
 
 
@@ -138,6 +145,10 @@ class State:
     unreadable: list = field(default_factory=list)             # (event id, type, why) set aside
     duplicates: int = 0
     incident_seen: bool = False                                # something abnormal was signalled earlier today
+    messy: list = field(default_factory=list)                  # (time, feed, "duplicate" | "unreadable") when messy data came in
+    holds: list = field(default_factory=list)                  # [start, end or None, flight id] holding spells
+    system_periods: list = field(default_factory=list)         # [system, start, end or None] reported not up
+    activity: list = field(default_factory=list)               # (time, what): a flight newly delayed or cancelled
 
     def active_notices(self, source=None):
         return [n for n in self.notices if n.cleared is None and (source is None or n.source == source)]
@@ -157,17 +168,52 @@ def build_state(schedule: list[dict], events: list[dict], t: datetime) -> State:
         key = (e["type"], e["occurred_at"], json.dumps(e.get("payload"), sort_keys=True, default=str))
         if key in seen:
             st.duplicates += 1
+            st.messy.append((e["occurred_at"], e.get("feed", "?"), "duplicate"))
             continue
         seen.add(key)
         why = _unusable(e)
         if why:
             st.unreadable.append((e["id"], e["type"], why))
+            st.messy.append((e["occurred_at"], e.get("feed", "?"), "unreadable"))
             continue
         try:
             _apply(st, e)
         except (KeyError, TypeError, ValueError, AttributeError) as err:     # never let one odd event break the picture
             st.unreadable.append((e["id"], e["type"], f"could not use it: {err}"))
+            st.messy.append((e["occurred_at"], e.get("feed", "?"), "unreadable"))
     return st
+
+
+def blocks(st: State) -> list:
+    """The intervals (start, end or None, why) that keep operations from being back (backend/rules/recovery.py)."""
+    out = []
+    for p in st.past_programs + ([st.program] if st.program else []):
+        out.append((p.started, p.ended, f"FAA {p.kind.replace('_', ' ')} active"))
+    for a, b, _, _ in st.ramp_closures:
+        out.append((a, b, "ramp closed"))
+    for n in st.notices:
+        out.append((n.since, n.cleared, f"{n.source.replace('_', ' ')} notice open: {n.kind.replace('_', ' ')}"))
+    for system, a, b in st.system_periods:
+        out.append((a, b, f"{system} reported down"))
+    for a, b, fid in st.holds:
+        out.append((a, b, f"{fid} holding"))
+    return out
+
+
+def _program_notice(p: "Program", when: datetime, new_end: datetime, eid, typ: str):
+    """Apply one FAA notice to the running program. Events arrive here in issue order, so the latest issue time decides the
+    announced end; the number of changes is recounted from that history (a duplicate changes nothing)."""
+    if p.ends and p.ends[-1][0] == when:
+        if p.ends[-1][1] != new_end:                    # same issue time, different end: they disagree
+            p.conflicts.append((when, sorted({p.ends[-1][1], new_end}), [p.notices[-1][0], eid]))
+            p.ends[-1] = (when, max(p.ends[-1][1], new_end))      # until a human decides: the later end (safer to plan on)
+    else:
+        p.ends.append((when, new_end))
+    pairs = list(zip(p.ends, p.ends[1:]))
+    p.extensions = sum(1 for (_, a), (_, b) in pairs if b > a)
+    p.shortened = sum(1 for (_, a), (_, b) in pairs if b < a)
+    p.announced_end = p.ends[-1][1]
+    p.notices.append((eid, when, typ))
 
 
 def _unusable(e: dict) -> str | None:
@@ -198,21 +244,20 @@ def _apply(st: State, e: dict):
     typ, p, when, eid = e["type"], e.get("payload") or {}, e["occurred_at"], e["id"]
     st.last_event_at[e.get("feed", "?")] = when
     program_event = typ.startswith(("ground_stop_", "ground_delay_"))
-    if program_event and typ.endswith("_started"):
+    kind = p.get("program", typ.rsplit("_", 1)[0]) if program_event else None
+    if program_event and typ.endswith("_started") and st.program and st.program.ended is None and st.program.kind == kind:
+        _program_notice(st.program, when, at_minute(p["expected_end"]), eid, typ)     # a re-issued notice: an update
+        st.program.reason = p.get("reason") or st.program.reason
+    elif program_event and typ.endswith("_started"):
         if st.program:
             st.past_programs.append(st.program)
-        st.program = Program(p.get("program", typ.rsplit("_", 1)[0]), when, at_minute(p["expected_end"]), p.get("reason") or "")
+        st.program = Program(kind, when, at_minute(p["expected_end"]), p.get("reason") or "")
         st.program.notices.append((eid, when, typ))
+        st.program.ends.append((when, st.program.announced_end))
         st.incident_seen = True
-    elif program_event and typ.endswith("_extended") and st.program:
-        new_end = at_minute(p["expected_end"])
-        if new_end > st.program.announced_end:
-            st.program.extensions += 1
-        elif new_end < st.program.announced_end:
-            st.program.shortened += 1
-        st.program.announced_end = new_end
+    elif program_event and typ.endswith("_extended") and st.program and st.program.ended is None:
+        _program_notice(st.program, when, at_minute(p["expected_end"]), eid, typ)
         st.program.reason = p.get("reason") or st.program.reason
-        st.program.notices.append((eid, when, typ))
     elif program_event and typ.endswith("_ended") and st.program:
         st.program.ended = when
         st.program.notices.append((eid, when, typ))
@@ -239,7 +284,14 @@ def _apply(st: State, e: dict):
             st.notices.append(Notice(source, kind, p.get("area"), when, end, (eid, when, typ)))
             st.incident_seen = True
     elif typ == "system_status_changed":
+        was = st.systems.get(p["system"], {}).get("status", "up")
         st.systems[p["system"]] = {"status": p["status"], "since": when, "event": (eid, when, typ)}
+        if p["status"] != "up" and was == "up":
+            st.system_periods.append([p["system"], when, None])
+        elif p["status"] == "up" and was != "up":
+            for sp in st.system_periods:
+                if sp[0] == p["system"] and sp[2] is None:
+                    sp[2] = when
         if p["status"] != "up":
             st.incident_seen = True
     elif typ == "station_status":
@@ -259,6 +311,9 @@ def _apply(st: State, e: dict):
         if p.get("pax") is not None:
             f.pax = p["pax"]
         if typ in ("flight_delayed", "flight_delay_updated"):
+            if f.first_delayed_at is None:
+                f.first_delayed_at = when
+                st.activity.append((when, f"{f.id} delayed"))
             if f.status in ("scheduled", "delayed"):
                 if f.status == "scheduled" and f.direction == "departure":
                     st.newly_delayed.append((when, f.id))
@@ -270,14 +325,19 @@ def _apply(st: State, e: dict):
         elif typ == "flight_holding":
             if f.status != "holding":
                 f.hold_since = when
+                st.holds.append([when, None, f.id])
             f.status = "holding"
             if p.get("expected_landing"):
                 f.est_landing = parse_clock(p["expected_landing"])
         elif typ == "flight_diverted":
+            _end_hold(st, f, when)
             f.status, f.diverted_to, f.diverted_at = "diverted", p.get("diverted_to"), when
         elif typ == "flight_resumed":
             f.status = "resumed"
         elif typ == "flight_cancelled":
+            _end_hold(st, f, when)
+            if f.cancelled_at is None:
+                st.activity.append((when, f"{f.id} cancelled"))
             f.status, f.cancel_reason, f.cancelled_at = "cancelled", p.get("reason"), when
         elif typ == "tarmac_started":
             f.on_tarmac, f.tarmac_since = True, when
@@ -289,4 +349,12 @@ def _apply(st: State, e: dict):
             if st.program and st.program.kind == "ground_stop" and st.program.ended is None and not st.ramp_open:
                 st.departed_during_stop.append((f.id, eid, when))
         elif typ == "flight_arrived":
+            _end_hold(st, f, when)
             f.status = "arrived"
+
+
+def _end_hold(st: State, f: FlightState, when: datetime):
+    if f.status == "holding":
+        for h in st.holds:
+            if h[2] == f.id and h[1] is None:
+                h[1] = when

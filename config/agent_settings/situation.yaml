@@ -7,10 +7,10 @@ run:
   every_min: 5                         # assumption: assess every 5 simulated minutes
   day_start: "05:00"                   # assumption: replay window
   day_end: "23:59"                     # assumption
-  # assess immediately when one of these happens
+  # assess immediately when one of these is delivered (a late event wakes the agent when it arrives)
   trigger_events: [ground_stop_started, ground_stop_extended, ground_stop_ended, ground_delay_started, ground_delay_extended,
-                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled, airport_ops_notice,
-                   police_tsa_notice, system_status_changed]
+                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled, flight_delayed,
+                   flight_delay_updated, flight_holding, airport_ops_notice, police_tsa_notice, system_status_changed]
   watchdog_after_sec: 180              # assumption: wake this long after a source goes quiet (its heartbeat is then too old)
 
 detect:                                # A01: abnormal if any of these (or an FAA program, a closed ramp, an open notice, a system down)
@@ -20,6 +20,17 @@ detect:                                # A01: abnormal if any of these (or an FA
   fresh_diversion_min: 60              # assumption: a diversion counts as a fresh signal for this long
   cancellations_window_min: 60         # assumption
   cancellations_threshold: 2           # assumption: this many cancellations within the window is abnormal
+  # Slow build-ups with no announcement. They only count events since operations were last back after an earlier incident
+  # (so the clean-up after one incident is never taken for the start of a new one).
+  crew_cancellations_window_min: 120   # assumption: crew-out-of-duty cancellations this close together are one build-up
+  crew_cancellations_threshold: 2      # assumption: a single crew cancellation happens on ordinary days; two is a pattern
+  new_delays_window_min: 30            # assumption: rolling window for newly delayed flights (departures and arrivals)
+  # The normal number of newly delayed flights in that window, by hour of day. CALIBRATED on training days 1-100 only: the
+  # most seen outside any incident (python -m chaos.calibrate --baseline). A real station would set these from its own history.
+  normal_new_delays_by_hour: {5: 1, 6: 1, 7: 1, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1, 16: 1, 17: 1, 18: 1, 19: 1,
+                              20: 1, 21: 1, 22: 1, 23: 1}
+  delays_above_normal: 1               # assumption: this many more than normal in the window is an early (low confidence) signal
+  min_new_delays: 2                    # assumption: never on a single delay
 
 classify:                              # A02: rules, not AI
   # words in the FAA notice's stated reason -> type
@@ -35,6 +46,8 @@ classify:                              # A02: rules, not AI
     security_threat: security
   second_cause_sources: [faa_feed, airport_ops, police_tsa, system_monitor]   # a cause these report on their own is a second incident
   crew_cancellations_for_crew_cause: 2 # assumption: this many crew-out-of-duty cancellations with no external cause = a crew event
+  # assumption: "crew suspected" starts below 0.5 and rises as more crews time out (2, 3, 4 or more cancellations)
+  crew_confidence_by_cancellations: [0.45, 0.55, 0.65]
   unknown_confidence: 0.3              # assumption: confidence when nothing points to a cause
   # confidence from how many independent sources agree (1, 2, 3 or more)
   confidence_by_agreeing_sources: [0.5, 0.75, 0.9]   # assumption
@@ -50,25 +63,96 @@ classify:                              # A02: rules, not AI
   needs_review_reasons: [crew out of legal duty, maintenance, staffing]
   long_delay_min: 180                  # assumption: delays at least this long also get a per-flight controllability
 
-# A05 / A06. latest = announced end + base margin (by cause) + per change + per hour already running (capped).
-# CALIBRATED on chaos training days 1-100 only (python -m chaos.calibrate), then frozen. See README for before/after.
+# A05 / A06. While an FAA program runs:
+#   earliest = announced end - early margin (by cause)
+#   latest   = announced end + late margin (by cause and number of changes so far: 0, 1, 2+)
+#              + extra if evening, if the storm is still growing, if FAA data were messy or conflicting recently (capped)
+#   confidence = how often the real end fell inside the range in this moment's group on the training days (rounded down).
+# CALIBRATED on chaos training days 1-100 only (python -m chaos.calibrate --search --write), then frozen. Margins never shrink and
+# confidences never rise with more changes. See README for the table by group, before and after.
 expected_end:
-  early_margin_min: 0                  # assumption: a stop rarely ends early, so earliest = the announced end
-  base_margin_min:                     # assumption (calibrated)
-    weather: 60
-    faa_program: 60
-    it_outage: 60
-    airport: 60
-    security: 60
-    crew: 60
-    unknown: 60
-  margin_per_extension_min: 0         # assumption (calibrated): per change of the announced end so far
-  margin_per_hour_running_min: 0      # assumption (calibrated)
-  max_margin_min: 180                  # assumption
-  confidence_by_changes: [0.8, 0.75, 0.75, 0.75, 0.65]   # assumption (calibrated): end confidence after 0, 1, 2, 3, 4+ changes
+  evening_from: "18:00"                # assumption
+  recent_min: 30                       # assumption: "recent" for an extension, lightning or messy FAA data
+  min_early_margin_min: 0              # assumption
+  min_late_margin_min: 15              # assumption: never a range that is really a single time
+  max_margin_min: 240                  # assumption
+  early_margin_min: {airport: 0, faa_program: 0, it_outage: 0, security: 0, unknown: 30, weather: 30}       # calibrated
+  late_margin_min: {airport: [0, 0, 0], faa_program: [0, 0, 0], it_outage: [0, 0, 0], security: [0, 0, 0], unknown: [90, 90, 90], weather: [90, 90, 90]}   # calibrated
+  extra_late_min: {evening: 0, growing: 0, messy_faa: 0}   # calibrated
+  calibration:
+    target_coverage: 0.85              # assumption (chosen on training days): the real end inside the range on this share of moments
+    max_early_margin_min: 60           # assumption: the search tries early margins up to this
+  min_group_ticks: 30                  # assumption: a group needs this many training moments before its confidence is used
+  unproven_confidence: 0.5             # assumption: a group with too few training moments is never more than medium
+  overdue_confidence: 0.4              # assumption: past the announced end with no FAA update
+  ended_not_back_confidence: 0.5       # assumption: the FAA says it ended but flights are still holding or the ramp is closed
+  # calibrated: group -> [confidence, training moments]. Groups: cause | changes so far | day or evening | messy or clean
+  confidence_by_group:
+    "airport": [1.0, 231]
+    "airport|0": [1.0, 231]
+    "airport|0|day": [1.0, 110]
+    "airport|0|day|clean": [1.0, 85]
+    "airport|0|day|messy": [1.0, 25]
+    "airport|0|evening": [1.0, 121]
+    "airport|0|evening|clean": [1.0, 93]
+    "airport|0|evening|messy": [1.0, 28]
+    "faa_program": [1.0, 397]
+    "faa_program|0": [1.0, 397]
+    "faa_program|0|day": [1.0, 243]
+    "faa_program|0|day|clean": [1.0, 201]
+    "faa_program|0|day|messy": [1.0, 42]
+    "faa_program|0|evening": [1.0, 154]
+    "faa_program|0|evening|clean": [1.0, 154]
+    "it_outage": [1.0, 5]
+    "it_outage|0": [1.0, 5]
+    "it_outage|0|day": [1.0, 4]
+    "it_outage|0|day|clean": [1.0, 4]
+    "it_outage|0|evening": [1.0, 1]
+    "it_outage|0|evening|clean": [1.0, 1]
+    "security": [1.0, 48]
+    "security|0": [1.0, 48]
+    "security|0|day": [1.0, 25]
+    "security|0|day|clean": [1.0, 22]
+    "security|0|day|messy": [1.0, 3]
+    "security|0|evening": [1.0, 23]
+    "security|0|evening|clean": [1.0, 7]
+    "security|0|evening|messy": [1.0, 16]
+    "weather": [0.85, 1295]
+    "weather|0": [0.85, 899]
+    "weather|0|day": [0.8, 626]
+    "weather|0|day|clean": [0.75, 374]
+    "weather|0|day|messy": [0.85, 252]
+    "weather|0|evening": [0.9, 273]
+    "weather|0|evening|clean": [0.9, 191]
+    "weather|0|evening|messy": [1.0, 82]
+    "weather|1": [0.85, 210]
+    "weather|1|day": [0.8, 157]
+    "weather|1|day|clean": [0.75, 56]
+    "weather|1|day|messy": [0.85, 101]
+    "weather|1|evening": [0.9, 53]
+    "weather|1|evening|clean": [0.9, 42]
+    "weather|1|evening|messy": [1.0, 11]
+    "weather|2+": [0.85, 186]
+    "weather|2+|day": [0.8, 127]
+    "weather|2+|day|clean": [0.75, 69]
+    "weather|2+|day|messy": [0.85, 58]
+    "weather|2+|evening": [0.9, 59]
+    "weather|2+|evening|clean": [0.9, 32]
+    "weather|2+|evening|messy": [1.0, 27]
   notice_margin_min: 30                # assumption: airport notice or ramp: latest = its expected end + this
   notice_confidence: 0.5               # assumption
   confidence_words: {high: 0.7, medium: 0.45}   # assumption: at least 0.7 = high, at least 0.45 = medium, else low
+
+recovery:
+  # "Operations back" is ONE definition shared with the chaos judge: backend/rules/recovery.py, with its quiet time in
+  # config/rules/operations.yaml (operations_back_quiet_min). abnormal -> recovery when operations are back;
+  # recovery -> normal when the aftermath is cleared.
+  # assumption: the reservation system re-accommodates a cancelled flight's passengers within this long; those it can't place
+  # today are reported as stranded overnight. Until then the agent counts them as "still to rebook" (it can't see rebookings).
+  rebooking_settle_min: 15
+  # assumption (checked on training days 1-100): delays and cancellations that start within this long after an incident's
+  # operations came back are its aftermath (crews who worked through it time out later), not a new incident
+  aftermath_attribution_min: 120
 
 impact:
   window_after_latest_end_min: 120     # assumption: flights up to 2 h after the latest expected end count as affected

@@ -4,7 +4,8 @@ It reads only through AgentContext (which cuts events at its current time, hides
 source wouldn't publish) and writes only through it. Rules decide the cause, the times and the numbers; no AI.
 
 Status: normal -> abnormal (something is happening) -> recovery (operations are back, but cancelled-flight passengers, stranded
-passengers or aircraft out of position remain) -> normal. Deciding that the incident is over (A10) stays with the orchestrator.
+passengers or aircraft out of position remain) -> normal. "Operations back" and "aftermath cleared" are one definition shared
+with the test judge (backend/rules/recovery.py). Deciding that the incident is over (A10) stays with the orchestrator.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -12,8 +13,10 @@ from functools import lru_cache
 
 import yaml
 
-from backend.agents.situation.state_at import DAY0, State, build_state, hhmm
-from backend.settings import ROOT
+from backend.agents.situation.state_at import DAY0, State, blocks, build_state, hhmm
+from backend.rules import recovery as R
+from backend.rules.loader import load_rules
+from backend.settings import ROOT, TZ
 
 SETTINGS_FILE = ROOT / "config" / "agent_settings" / "situation.yaml"
 WORDS = {"weather": "thunderstorms / lightning at MCI", "faa_program": "an FAA traffic program at MCI",
@@ -24,6 +27,12 @@ WORDS = {"weather": "thunderstorms / lightning at MCI", "faa_program": "an FAA t
 @lru_cache
 def load_settings() -> dict:
     return yaml.safe_load(SETTINGS_FILE.read_text(encoding="utf-8"))
+
+
+@lru_cache
+def quiet_min() -> float:
+    """The shared "operations back" quiet time (config/rules/operations.yaml: operations_back_quiet_min)."""
+    return load_rules()["recovery"]["operations_back_quiet_min"]
 
 
 @dataclass
@@ -37,13 +46,15 @@ class Memory:
     open: dict = field(default_factory=dict)        # decision -> {"id", "key"}: the one open proposal per decision this incident
     last_p02: datetime | None = None
     asked: set = field(default_factory=set)         # ask_human keys already sent
+    normal_since: datetime | None = None            # when it last wrote "normal" (a flap back within minutes is the same incident)
     history: list = field(default_factory=list)     # what it wrote and proposed (for the replay printout)
 
 
 # ---------------------------------------------------------------- the pieces of an assessment
 
-def _detect(st: State, health: dict, s: dict) -> list[str]:
-    """A01: the signals that make the day abnormal right now (empty list = not abnormal)."""
+def _detect(st: State, health: dict, s: dict, since=None) -> list[str]:
+    """A01: the signals that make the day abnormal right now (empty list = not abnormal). The build-up signals (delays and
+    cancellations in a rolling window) only count events after `since`: when operations were last back after an earlier incident."""
     d = s["detect"]
     why = []
     p = st.program
@@ -56,9 +67,6 @@ def _detect(st: State, health: dict, s: dict) -> list[str]:
     for system, h in health.items():
         if h["status"] != "up":
             why.append(f"{system} {h['status']}")
-    recent = [f for when, f in st.newly_delayed if st.t - when <= timedelta(minutes=d["delayed_departures_window_min"])]
-    if len(recent) >= d["delayed_departures_threshold"]:
-        why.append(f"{len(recent)} departures delayed in the last {d['delayed_departures_window_min']} min")
     holding = [f for f in st.flights.values() if f.direction == "arrival" and f.status == "holding"]
     # a fresh diversion is a signal, unless the FAA program behind it has already ended (then it is aftermath: recovery)
     over = p is not None and p.ended is not None
@@ -66,32 +74,63 @@ def _detect(st: State, health: dict, s: dict) -> list[str]:
                              and f.diverted_at and st.t - f.diverted_at <= timedelta(minutes=d["fresh_diversion_min"])]
     if len(holding) + len(fresh) >= d["holding_or_diverted_inbound"]:
         why.append(f"{len(holding)} inbound flights holding, {len(fresh)} just diverted")
-    cx = [f for f in st.flights.values() if f.cancelled_at and st.t - f.cancelled_at <= timedelta(minutes=d["cancellations_window_min"])]
-    if len(cx) >= d["cancellations_threshold"]:
-        why.append(f"{len(cx)} flights cancelled in the last {d['cancellations_window_min']} min")
-    return why
+    return why + _build_up(st, st.t, since, s)
 
 
-def _wave_seen(st: State, s: dict) -> bool:
-    """Was there, earlier today, a burst of cancellations big enough to count as abnormal? (Then what follows is recovery.)"""
+def _build_up(st: State, t, since, s: dict) -> list[str]:
+    """Patterns with no announcement, as of t, counting only events after `since`: a burst of cancellations, crews timing out
+    one after another, or more flights newly delayed than is normal for that hour."""
     d = s["detect"]
-    times = sorted(f.cancelled_at for f in st.flights.values() if f.cancelled_at)
-    k, w = d["cancellations_threshold"], timedelta(minutes=d["cancellations_window_min"])
-    return any(times[i + k - 1] - times[i] <= w for i in range(len(times) - k + 1)) if len(times) >= k else False
 
-
-def _aftermath(st: State) -> list[str]:
-    """What still needs looking after once operations are back (for the recovery status)."""
+    def recent(times, minutes):
+        return [x for x in times if x and (since is None or x > since) and t - timedelta(minutes=minutes) < x <= t]
     out = []
-    cx = [f for f in st.flights.values() if f.status == "cancelled"]
-    if cx:
-        out.append(f"{len(cx)} cancelled flights' passengers")
-    if st.stranded_overnight:
-        out.append(f"{st.stranded_overnight} passengers stranded overnight")
-    away = [f.id for f in st.flights.values() if f.status in ("diverted", "resumed")]
-    if away:
-        out.append(f"{len(away)} aircraft out of position")
+    cx = recent([f.cancelled_at for f in st.flights.values()], d["cancellations_window_min"])
+    if len(cx) >= d["cancellations_threshold"]:
+        out.append(f"{len(cx)} flights cancelled in the last {d['cancellations_window_min']} min")
+    crew = recent([f.cancelled_at for f in st.flights.values() if f.cancel_reason == "crew out of legal duty"],
+                  d["crew_cancellations_window_min"])
+    if len(crew) >= d["crew_cancellations_threshold"]:
+        out.append(f"{len(crew)} cancellations for crew out of legal duty in the last {d['crew_cancellations_window_min']} min")
+    delays = recent([f.first_delayed_at for f in st.flights.values()], d["new_delays_window_min"])
+    normal = d["normal_new_delays_by_hour"].get(t.astimezone(TZ).hour, 0)
+    if len(delays) >= max(normal + d["delays_above_normal"], d["min_new_delays"]):
+        out.append(f"{len(delays)} flights newly delayed in the last {d['new_delays_window_min']} min (normal for this hour: "
+                   f"up to {normal})")
     return out
+
+
+def _spells(st: State, s: dict) -> tuple[list[dict], object]:
+    """The day's busy spells (backend/rules/recovery.py), each marked as an incident or not, and when operations were last back
+    after an incident. A spell is an incident if it had an FAA program, a closed ramp, an open notice or a system down, two
+    flights holding at once, or a build-up signal (counting only events since operations were last back). A spell with only
+    delays and cancellations that starts soon after an incident's operations came back is that incident's aftermath (crews who
+    worked through a long stop time out in the hours after it), not a new incident."""
+    spells = R.busy_spells(st.t, blocks(st), st.activity, quiet_min())
+    last_back = incident_back = None                  # events up to last_back are used up; incident_back: the last incident's
+    after = timedelta(minutes=s["recovery"]["aftermath_attribution_min"])
+    for sp in spells:
+        hard = [b for b in sp["blocks"] if not b[2].endswith(" holding")]
+        holds = [b for b in sp["blocks"] if b[2].endswith(" holding")]
+        two_holding = any(sum(1 for c, d_, _ in holds if c <= a < (d_ or st.t + timedelta(days=1))) >= 2 for a, _, _ in holds)
+        sp["aftermath_of_last"] = bool(not hard and not two_holding and incident_back and sp["start"] - incident_back < after)
+        sp["incident"] = bool(hard or two_holding or (not sp["aftermath_of_last"] and
+                                                      any(_build_up(st, x, last_back, s) for x, _ in sp["activity"])))
+        if sp["back_at"] is not None and (sp["incident"] or sp["aftermath_of_last"]):
+            last_back = sp["back_at"]
+            if sp["incident"]:
+                incident_back = sp["back_at"]
+    return spells, last_back
+
+
+def _aftermath(st: State, s: dict) -> list[str]:
+    """What still needs looking after once operations are back (backend/rules/recovery.py). The agent can't see rebookings:
+    a cancelled flight's passengers count as "still to rebook" until the reservation system has had time to re-accommodate them
+    (those it couldn't place today are reported as stranded overnight)."""
+    settle = timedelta(minutes=s["recovery"]["rebooking_settle_min"])
+    rebooking = any(f.cancelled_at and st.t - f.cancelled_at < settle for f in st.flights.values())
+    away = sorted(f.id for f in st.flights.values() if f.status in ("diverted", "resumed"))
+    return R.aftermath(None if rebooking else 0, away, st.stranded_overnight)
 
 
 def _classify(st: State, health: dict, s: dict) -> dict:
@@ -149,6 +188,10 @@ def _classify(st: State, health: dict, s: dict) -> dict:
     agree = len(known[best])
     ladder = c["confidence_by_agreeing_sources"]
     conf = ladder[min(agree, len(ladder)) - 1]
+    if best == "crew" and known[best] == {"flight_ops"}:
+        # crews timing out with nothing else behind it: "crew suspected", low at first, higher as more crews time out
+        cl = c["crew_confidence_by_cancellations"]
+        conf = cl[min(len(crew) - c["crew_cancellations_for_crew_cause"], len(cl) - 1)]
     others = sorted(k for k in known if k != best)
     if others:
         conf = min(conf, c["confidence_if_signals_disagree"])
@@ -185,34 +228,89 @@ def _controllable(st: State, kind: str, s: dict) -> tuple[bool | None, list[dict
     return incident, rows
 
 
-def _expected_end(st: State, kind: str, s: dict) -> dict:
+def program_cause(p, kind: str, s: dict) -> str:
+    """Why the FAA issued THIS program (from its stated reason), which is what its end depends on; the day's main suspected
+    cause can be something else (a storm during an IT outage). Falls back to the main cause when the notice gives no reason."""
+    reason = (p.reason or "").lower()
+    hit = [k for k, words in s["classify"]["faa_reason_words"].items() if any(w in reason for w in words)]
+    return hit[0] if hit else kind
+
+
+def end_features(st: State, kind: str, s: dict) -> dict:
+    """What makes the end of the running FAA program uncertain, from what the agent can see now."""
+    x = s["expected_end"]
+    p = st.program
+    kind = program_cause(p, kind, s)
+    n = p.extensions + p.shortened
+    recent = timedelta(minutes=x["recent_min"])
+    lightning = any(b is None and "lightning" in (r or "") for a, b, _, r in st.ramp_closures)
+    just_extended = any(st.t - when <= recent and b > a for (_, a), (when, b) in zip(p.ends, p.ends[1:]))
+    evening = st.t.astimezone(TZ).hour >= int(x["evening_from"].split(":")[0])
+    return {"cause": kind, "changes": "0" if n == 0 else "1" if n == 1 else "2+", "evening": evening,
+            "time": "evening" if evening else "day",
+            "messy": any(st.t - recent <= when <= st.t for when, _, _ in st.messy),
+            "messy_faa": any(st.t - recent <= when <= st.t and feed == "faa_feed" for when, feed, _ in st.messy)
+                         or any(st.t - when <= recent for when, _, _ in p.conflicts),
+            "growing": lightning or just_extended}
+
+
+def group_keys(f: dict) -> list[str]:
+    """The groups a moment belongs to, most specific first (for the calibrated confidence table)."""
+    m = "messy" if f["messy"] else "clean"
+    return [f"{f['cause']}|{f['changes']}|{f['time']}|{m}", f"{f['cause']}|{f['changes']}|{f['time']}", f"{f['cause']}|{f['changes']}",
+            f"{f['cause']}"]
+
+
+def end_confidence(f: dict, s: dict) -> float:
+    """How often, on the training days, the real end fell inside the range in this moment's group (rounded down). It is never
+    "high" in a group where that was not proven on enough training moments."""
+    x = s["expected_end"]
+    table = x["confidence_by_group"] or {}
+    for key in group_keys(f):
+        if key in table and table[key][1] >= x["min_group_ticks"]:
+            return table[key][0]
+    return min(x["unproven_confidence"], x["confidence_words"]["high"] - 0.05)
+
+
+def _expected_end(st: State, kind: str, s: dict, ops_back: bool = True) -> dict:
     """A05: earliest / likely / latest, with a confidence. Never a single time while it is still running.
-    The margins and confidences come from the settings file (calibrated on training days, then frozen)."""
+    latest = announced end + a margin for the cause and the number of changes so far, plus extra margins for an evening storm,
+    a storm still growing (lightning on the ramp now, or extended in the last half hour) and recent messy or conflicting FAA
+    data. earliest = announced end - an early margin for the cause. The margins and the confidence table are calibrated on
+    training days 1-100 only (see the settings file), then frozen."""
     x = s["expected_end"]
     none = {"earliest": None, "likely": None, "latest": None, "confidence": None, "what": None, "extensions": 0, "ended": None}
     p = st.program
     if p is not None and p.ended is None:
-        running_h = max(0.0, (st.t - p.started).total_seconds() / 3600)
-        n = p.extensions + p.shortened
-        margin = (x["base_margin_min"].get(kind, x["base_margin_min"]["unknown"]) + x["margin_per_extension_min"] * n
-                  + x["margin_per_hour_running_min"] * running_h)
-        margin = min(margin, x["max_margin_min"])
-        ladder = x["confidence_by_changes"]
-        conf = ladder[min(n, len(ladder) - 1)]
-        likely = p.announced_end
-        return {"earliest": max(st.t, likely - timedelta(minutes=x["early_margin_min"])), "likely": likely,
-                "latest": likely + timedelta(minutes=round(margin)), "confidence": conf, "what": p.kind,
-                "extensions": p.extensions, "ended": None}
+        f = end_features(st, kind, s)
+        fam = f["cause"] if f["cause"] in x["late_margin_min"] else "unknown"
+        late = x["late_margin_min"][fam][{"0": 0, "1": 1, "2+": 2}[f["changes"]]]
+        late += sum(x["extra_late_min"][k] for k in ("evening", "growing", "messy_faa") if f[k])
+        late = min(max(late, x["min_late_margin_min"]), x["max_margin_min"])
+        early = max(x["early_margin_min"].get(fam, x["early_margin_min"]["unknown"]), x["min_early_margin_min"])
+        likely = max(p.announced_end, st.t)
+        conf = end_confidence(f, s)
+        if p.announced_end < st.t:                   # past its announced end and no word from the FAA: say so, don't guess
+            conf = min(conf, x["overdue_confidence"])
+        return {"earliest": max(st.t, p.announced_end - timedelta(minutes=early)), "likely": likely,
+                "latest": likely + timedelta(minutes=round(late)), "confidence": conf, "what": p.kind,
+                "extensions": p.extensions, "ended": None, "features": f}
     timed = [n for n in st.active_notices() if n.expected_end]
     if timed:                                        # an airport notice with an expected end (power, runway)
         likely = max(n.expected_end for n in timed)
-        return {"earliest": max(st.t, likely - timedelta(minutes=x["early_margin_min"])), "likely": likely,
+        return {"earliest": max(st.t, likely - timedelta(minutes=x["min_early_margin_min"])), "likely": likely,
                 "latest": likely + timedelta(minutes=x["notice_margin_min"]), "confidence": x["notice_confidence"], "what": "notice",
                 "extensions": 0, "ended": None}
     if not st.ramp_open:
         likely = st.ramp_expected_open or st.t
         return {"earliest": max(st.t, likely), "likely": likely, "latest": likely + timedelta(minutes=x["notice_margin_min"]),
                 "confidence": x["notice_confidence"], "what": "ramp", "extensions": 0, "ended": None}
+    if p is not None and p.ended is not None and not ops_back:
+        # the FAA says it ended, but operations are not back (flights still holding, the ramp still closed): the notice may be
+        # premature, so the range stays open up to the end last announced, at medium confidence at most
+        latest = max(p.announced_end, p.ended) + timedelta(minutes=x["min_late_margin_min"])
+        return {"earliest": p.ended, "likely": p.ended, "latest": max(latest, st.t), "confidence": x["ended_not_back_confidence"],
+                "what": "ended, operations not back", "extensions": p.extensions, "ended": p.ended}
     if p is not None and p.ended is not None:
         return {"earliest": p.ended, "likely": p.ended, "latest": p.ended, "confidence": 1.0, "what": "ended",
                 "extensions": p.extensions, "ended": p.ended}
@@ -292,6 +390,11 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
     """A09: facts that disagree. Both sides are recorded; the agent never picks one."""
     d = s["data"]
     out = []
+    for prog in st.past_programs + ([st.program] if st.program else []):
+        for when, ends, eids in prog.conflicts:
+            out.append({"key": f"faa-notices:{when.isoformat()}",
+                        "what": f"two FAA notices issued at {hhmm(when)} give different ends ({' and '.join(hhmm(e) for e in ends)})",
+                        "values": [{"source": "faa_feed", "says": f"ends {hhmm(e)}", "event_id": i} for e, i in zip(ends, eids)]})
     for fid, eid, when in st.departed_during_stop:
         out.append({"key": f"departed-during-stop:{fid}", "what": f"{fid} reported departed while the stop is on and the ramp closed",
                     "values": [{"source": "flight_ops", "says": f"{fid} departed at {hhmm(when)}", "event_id": eid},
@@ -404,16 +507,23 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
         if a["conflicts"]:
             a["decision_ids"].append("A09")
     else:
-        because = _detect(st, health, s)
+        spells, since = _spells(st, s)
+        current = spells[-1] if spells and spells[-1]["back_at"] is None else None
+        # delays and cancellations right after an incident are its aftermath: they are not a new build-up
+        because = _detect(st, health, s, t if current and current["aftermath_of_last"] else since)
+        if not because and current and current["incident"]:
+            # the incident's signals have stopped but operations are not back yet (backend/rules/recovery.py)
+            because = ["operations not back yet: " + "; ".join(R.why_not_back(t, blocks(st), st.activity, quiet_min()))]
         a["abnormal_because"] = because
-        aftermath = _aftermath(st) if (st.incident_seen or _wave_seen(st, s)) else []
+        incident_today = st.incident_seen or any(sp["incident"] for sp in spells)
+        aftermath = _aftermath(st, s) if incident_today and not because else []
         if because or aftermath:
             a["status"] = "abnormal" if because else "recovery"
             a["aftermath"] = aftermath
             cls = _classify(st, health, s)
             a.update(type=cls["type"], likely_cause=cls["likely_cause"], confidence=cls["confidence"], evidence=cls["evidence"])
             a["incident_controllable"], a["flight_controllability"] = _controllable(st, cls["type"], s)
-            end = _expected_end(st, cls["type"], s)
+            end = _expected_end(st, cls["type"], s, ops_back=a["status"] != "abnormal")
             a.update(end_earliest=end["earliest"], end_likely=end["likely"], end_latest=end["latest"], end_confidence=end["confidence"],
                      end_confidence_word=_word(end["confidence"], s))
             a["impact"] = _impact(st, end, cls["others"], s)
@@ -436,9 +546,12 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
     if not write:
         return result
     if changed:
-        if a["status"] == "abnormal" and (memory.last is None or memory.last["status"] in ("normal",)):
+        back_for = t - memory.normal_since if memory.normal_since else None
+        if a["status"] == "abnormal" and (memory.last is None or (memory.last["status"] == "normal" and (
+                back_for is None or back_for >= timedelta(minutes=quiet_min())))):
             memory.incident_no += 1               # a new incident: its proposals start afresh
             memory.open = {}
+        memory.normal_since = (memory.normal_since or t) if a["status"] == "normal" else None
         _write(ctx, memory, a, snap, result)
     if memory.last_id is not None:
         _propose(ctx, memory, a, st, result, s, health)
@@ -539,17 +652,16 @@ def _propose(ctx, memory, a, st, result, s, health):
                                "supersedes": bool(cur)})
 
     t = a["assessed_at"]
-    down_after = timedelta(minutes=s["data"]["propose_s01_after_down_min"])
-    for x in a["stale_sources"]:
-        if x["minutes"] > s["data"]["propose_s01_after_down_min"]:
-            propose("S01", ("feed", x["source"], x["since"]), "switch_to_manual_fallback",
-                    f"{x['source']} has been down since {x['since']}: switch to the manual fallback?",
-                    f"No heartbeat from {x['source']} for {x['minutes']} min; the assessment depends on it.")
-    for d in a["systems_down"]:
-        if d["minutes"] > s["data"]["propose_s01_after_down_min"]:
-            propose("S01", ("system", d["system"], d["since"]), "switch_to_manual_fallback",
-                    f"{d['system']} reported down since {d['since']}: switch to the manual fallback?",
-                    f"The system monitor reports {d['system']} down for {d['minutes']} min.")
+    # one S01 for everything that is down (a feed and the system behind it are one question, not two that replace each other)
+    after = s["data"]["propose_s01_after_down_min"]
+    down = [("feed", x["source"], x["since"], x["minutes"]) for x in a["stale_sources"] if x["minutes"] > after] + \
+           [("system", d["system"], d["since"], d["minutes"]) for d in a["systems_down"] if d["minutes"] > after]
+    if down:
+        propose("S01", tuple(sorted(k[:3] for k in down)), "switch_to_manual_fallback",
+                f"{' and '.join(f'{k[1]} down since {k[2]}' for k in down)}: switch to the manual fallback?",
+                "; ".join((f"no heartbeat from {k[1]} for {k[3]} min" if k[0] == "feed" else
+                           f"the system monitor reports {k[1]} down for {k[3]} min") for k in down)
+                + "; the assessment depends on it.")
     if a["conflicts"]:
         keys = tuple(sorted(c["key"] for c in a["conflicts"]))
         if not (memory.open.get("A09") and set(keys) <= set(memory.open["A09"]["key"])):

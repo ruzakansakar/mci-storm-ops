@@ -276,7 +276,10 @@ python -m chaos.run --surprise            # one brand-new random day: what the a
 python -m chaos.run --seed 17             # replay exactly chaos day 17 (to reproduce a failure)
 python -m chaos.run --days 20             # 20 new random days (about 4 min on Neon), then the summary page
 python -m chaos.run --days 20 --fresh     # the same, after resetting the database
-python -m chaos.calibrate                 # end-time ranges on training days 1-100 and test days 101-150
+python -m chaos.calibrate                 # end-time calibration by group on training days 1-100
+python -m chaos.calibrate --seeds 5000-5059          # the same table on other days (measured only)
+python -m chaos.calibrate --search --write           # choose end margins and confidences on training days 1-100 ONLY
+python -m chaos.memory_replay --seeds 1-100 --show   # the whole agent + judge on many days in memory (no database, ~0.3 s a day)
 ```
 Open `reports/chaos/index.html` (double-click) for the summary, and click a day for its timeline.
 
@@ -292,13 +295,49 @@ Open `reports/chaos/index.html` (double-click) for the summary, and click a day 
 - **The judge** (`chaos/judge.py`, rules in `config/chaos_scoring.yaml`) reads the agent's rows back from the database and the truth,
   never the agent's code, and gives 14 checks a PASS / WARN / FAIL with a reason: detection, cause, overconfidence, two incidents,
   expected end, stale feeds, conflicts, security, controllable, messy data, recovery, human clutter, guardrails, speed.
-- **Calibration.** The end-time margins and end confidences in `config/agent_settings/situation.yaml` were chosen on chaos days 1-100
-  only, then frozen; days 101-150 are only measured. Real end inside the range: 75% -> 81% on training, 81% -> 83% on test. "High
-  confidence" is right 82% (training) and 83% (test) of the time, against the about 79-80% it claims.
+- **Calibration.** The end-time margins and end confidences in `config/agent_settings/situation.yaml` are chosen on chaos days 1-100
+  only, then frozen; every other day is only measured. See "Part 2" below for the table by group.
 - **Agent fixes that came out of it:** a "recovery" status (operations back, aftermath remains), one open proposal per decision per
   incident (a new value supersedes the old one, `recommendations.supersedes`), an FAA status check only after 30 min without an FAA update,
   defensive reading of messy inputs (duplicates counted once, late events put back in order, broken events set aside), and naming a
   second problem when two happen at once.
+
+### Part 2: fixes after the 60-day run (chaos seeds 3791350-3791409: 37 PASS, 18 WARN, 5 FAIL)
+
+Root causes, each with a test in `tests/test_situation_fixes.py`:
+
+| Day | What was really wrong | Whose bug |
+|---|---|---|
+| 3791364, 3791374 | The range was the announced end + a flat 60 min whatever the cause, and said "high" (0.8) for storms, where it was right only 70% of the time on training days. Duplicate FAA notices were already ignored. | agent |
+| 3791390 | One FAA notice, no messy data involved: the storm ended 30 min **early**, and the earliest end was always the announced end. | agent |
+| 3791409 | The second crew cancellation (11:05) was delivered 17 min late. The replay clock woke the agent on an event's *happened* time, not its *delivered* time, so it next looked at 11:25. The judge also started the clock at 11:05, before anyone could see it. | agent (clock) + judge |
+| 3791386 | Times: the database returns UTC, so 06:45 was printed as 11:45 (display only). Guessing: the 06:45-07:15 silence sat inside the IT outage's 06:09-08:26 silence and the heartbeat simulator took the inner window, so the feed looked fresh at 06:45. No A09: system health said the system was **down** then, so there was no "health up" to conflict with. | simulator (heartbeats) + generator (truth) + judge (display, nested silence) |
+| recovery WARNs | The agent's "N flights cancelled in the last 60 min" kept it abnormal for up to an hour after the cause was gone, and the agent and the judge each had their own idea of "operations back". | agent + judge |
+
+What changed:
+- **One definition of "operations back"** (`backend/rules/recovery.py`, quiet time `operations_back_quiet_min` in
+  `config/rules/operations.yaml`), used by the agent and the judge: no FAA program, ramp open, nothing holding, every feed and system
+  healthy, and no flight newly delayed or cancelled in the last 30 min. abnormal -> recovery when operations are back; recovery ->
+  normal when no cancelled-flight passengers wait for a seat and no aircraft is out of position (stranded overnight passengers keep
+  it in recovery until A10). Delays and cancellations within 2 h after an incident's operations came back are its aftermath, not a new
+  incident.
+- **Announced end:** the notice with the latest issue time wins (duplicates, late or out-of-order notices can't move it); a re-issued
+  "started" notice is an update; two notices with the same issue time and different ends are an A09 conflict.
+- **End range:** by the program's own cause and the number of changes so far, with extras for evening, a growing storm and messy FAA
+  data (all calibrated; the extras came out 0 on training days). Confidence = the group's real coverage on training days, rounded down;
+  never "high" in a group with fewer than 30 training moments; never higher after more changes. Past the announced end with no word,
+  or "ended" while planes still hold: medium at most.
+- **Slow build-ups:** the agent now wakes on every delay and cancellation when it is delivered; two crew cancellations within 2 h are an
+  early "crew suspected" at 0.45, rising to 0.65 as more crews time out; newly delayed flights are compared with that hour's normal level.
+- **Judge fixes** (each a real judge error, not a loosening): times printed in MCI local time; the detection clock starts when the
+  first signal was delivered; an agent already saying "cannot assess" (or with an S01 already open) when a nested silence begins
+  counts; "health up, feed down" is no conflict while health says down; two incidents overlap only once both could be seen; the
+  recovery check uses the shared definition and stops at 23:59.
+- **Results:** fresh days 7318420-7318479 (never tuned on): 56 PASS, 4 WARN, 0 FAIL (old batch: 37 / 18 / 5). Training days 1-100
+  in memory: 92 PASS, 8 WARN, 0 FAIL. Real end inside the range on training moments: 80% -> 93%, weather 70% -> 89%, and "high"
+  is right at least as often as it claims in every group (it was not for storms, mornings, 0 changes, or messy data).
+- Smaller: one S01 for a feed and the system behind it (they used to replace each other every 5 minutes), and a flap back to abnormal
+  within 30 min of "normal" is the same incident (no second set of proposals).
 
 ## Rules for conflicting files
 

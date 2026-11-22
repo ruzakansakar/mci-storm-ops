@@ -20,7 +20,9 @@ from backend.contracts.feeds import Feeds
 from backend.database import connect
 
 
-def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = None) -> list[datetime]:
+def wake_times(delivered: list[datetime], feeds: Feeds, s: dict, until: datetime | None = None) -> list[datetime]:
+    """When the agent is woken: every few minutes, the moment a trigger event is DELIVERED (a late event wakes it when it
+    arrives, not at the time it says it happened, which has already passed), and when a source goes quiet or comes back."""
     r = s["run"]
     start, end = parse_clock(r["day_start"]), parse_clock(r["day_end"])
     if until:
@@ -30,11 +32,9 @@ def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = Non
     while t <= end:
         times.add(t)
         t += timedelta(minutes=r["every_min"])
-    cur.execute("SELECT DISTINCT occurred_at FROM events WHERE run_id = %s AND type = ANY(%s) AND occurred_at BETWEEN %s AND %s",
-                (run_id, r["trigger_events"], start, end))
-    times |= {row[0] for row in cur.fetchall()}
+    times |= set(delivered)
     # A source going quiet is a status change too: wake when it goes quiet, when its heartbeat is first too old (a watchdog
-    # timer, like a real heartbeat monitor), and when it is back.
+    # timer, like a real heartbeat monitor), and when it is back (its held-back events are delivered then).
     max_age = timedelta(seconds=int(r["watchdog_after_sec"]))
     for at in feeds.change_times():
         times |= {at, at + max_age}
@@ -42,15 +42,23 @@ def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = Non
     return sorted(times)
 
 
+def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = None) -> list[datetime]:
+    r = s["run"]
+    cur.execute("SELECT DISTINCT coalesce(published_at, occurred_at) FROM events WHERE run_id = %s AND type = ANY(%s)",
+                (run_id, r["trigger_events"]))
+    return wake_times([row[0] for row in cur.fetchall()], feeds, s, until)
+
+
 def _save(memory: Memory) -> dict:
     return {"version": memory.version, "last": memory.last, "last_id": memory.last_id, "incident_no": memory.incident_no,
-            "open": dict(memory.open), "asked": set(memory.asked), "last_p02": memory.last_p02, "n_hist": len(memory.history)}
+            "open": dict(memory.open), "asked": set(memory.asked), "last_p02": memory.last_p02, "n_hist": len(memory.history),
+            "normal_since": memory.normal_since}
 
 
 def _restore(memory: Memory, saved: dict) -> None:
     memory.version, memory.last, memory.last_id = saved["version"], saved["last"], saved["last_id"]
     memory.incident_no, memory.open, memory.asked = saved["incident_no"], saved["open"], saved["asked"]
-    memory.last_p02 = saved["last_p02"]
+    memory.last_p02, memory.normal_since = saved["last_p02"], saved["normal_since"]
     del memory.history[saved["n_hist"]:]
 
 

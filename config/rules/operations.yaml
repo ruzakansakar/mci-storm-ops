@@ -334,3 +334,15 @@ rules:
     source: assumption
     citation: "Class-project choice; Southwest's actual waiver practice was not checked"
     enforced: false
+
+  # ------------------------------------------------------------------ RECOVERY
+  - id: operations_back_quiet_min
+    path: recovery.operations_back_quiet_min
+    description: >-
+      Operations count as back after an incident only when no flight has been newly delayed or cancelled for this many minutes
+      (as well as: no FAA program, ramp open, nothing holding, every feed and system healthy). The one definition is
+      backend/rules/recovery.py; the Situation agent and the chaos judge both use it.
+    value: 30
+    source: assumption
+    citation: "Class-project choice"
+    enforced: false

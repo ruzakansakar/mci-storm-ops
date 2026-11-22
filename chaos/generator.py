@@ -375,7 +375,8 @@ def truth_for(plan: Plan, world, overlay: list[dict]) -> dict:
         need = c["crew_wave"]["incident_if_cancellations"]
         if len(mine) >= need:
             incidents.append({"n": len(incidents) + 1, "kind": "crew_wave", "type": "crew", "controllable": True, "start": iso(w["start"]),
-                              "end": iso(mine[-1][0]), "first_signal": iso(mine[need - 1][0]), "has_end": False, "program": None})
+                              "end": iso(mine[-1][0]), "first_signal": iso(mine[need - 1][0]), "has_end": False, "program": None,
+                              "signals": [[iso(t), f] for t, f in mine], "signals_needed": need})
     uncontrollable = [i for i in incidents if i["controllable"] is False]
     review = []
     for t, fid in crew_cx:
@@ -396,8 +397,23 @@ def truth_for(plan: Plan, world, overlay: list[dict]) -> dict:
         silent.append(("flight_ops", p["start"], p["end"]))
     if plan.second and plan.second["kind"] == "it_outage":
         silent.append(("flight_ops", plan.second["start"], plan.second["end"]))
+    # when the system monitor itself reports Southwest's flight system down (an IT outage)
+    it_down = [(x["start"], x["end"]) for x in (p, plan.second) if x and x["kind"] == "it_outage"]
     for cf in plan.conflicts:
         item = {"kind": cf["kind"], "at": iso(cf["t"])}
+        if cf["kind"] == "health_up_feed_down" and cf["feed"] == "flight_ops":
+            # While system health says the flight system is DOWN there is no "health up" to disagree with the silent feed.
+            # The conflict exists only for the part of the silence when health says up again.
+            silence = next(f for f in plan.feed_outages if f["feed"] == cf["feed"] and f["start"] == cf["t"])
+            t = cf["t"]
+            for s0, e0 in sorted(it_down):
+                if s0 <= t < e0:
+                    t = e0
+            if t >= silence["end"]:
+                item.update(detectable=False, note="system health reported the system down during the whole silence")
+                conflicts.append(item)
+                continue
+            item["at"] = iso(t)
         if cf["kind"] == "false_end":
             held = {e["payload"]["flight_id"] for e in ev if e["type"] == "flight_holding" and e["t"] <= cf["t"]}
             landed_by = {e["payload"]["flight_id"] for e in ev if e["type"] in ("flight_arrived", "flight_diverted") and e["t"] <= cf["t"] + 20}
@@ -420,16 +436,60 @@ def truth_for(plan: Plan, world, overlay: list[dict]) -> dict:
     if plan.second and plan.second["kind"] == "it_outage":
         outages.append({"feed": "flight_ops", "start": iso(plan.second["start"]), "end": iso(plan.second["end"]), "why": "Southwest IT outage"})
     security = [{"at": i["start"]} for i in incidents if i["type"] == "security"]
+    # What really kept operations from being back (backend/rules/recovery.py), for the judge's recovery check
+    blocks = []
+    if p:
+        blocks.append([iso(p["start"]), iso(p["end"]), f"FAA {p['program'].replace('_', ' ')} active"])
+        if p.get("ramp"):
+            blocks.append([iso(p["ramp"][0]), iso(p["ramp"][1]), "ramp closed"])
+    for x in (p, plan.second):
+        if x and x["kind"] in ("it_outage", "power_outage", "runway_closure", "security"):
+            blocks.append([iso(x["start"]), iso(x["end"]), f"{x['kind'].replace('_', ' ')} not cleared"])
+    for o in outages:
+        blocks.append([o["start"], o["end"], f"{o['feed']} feed not healthy"])
+    holding_since = {}
+    for e in ev:
+        fid = (e.get("payload") or {}).get("flight_id")
+        if e["type"] == "flight_holding" and fid not in holding_since:
+            holding_since[fid] = e["t"]
+        elif e["type"] in ("flight_arrived", "flight_diverted", "flight_cancelled") and fid in holding_since:
+            blocks.append([iso(holding_since.pop(fid)), iso(e["t"]), f"{fid} holding"])
+    blocks += [[iso(t), None, f"{fid} holding"] for fid, t in holding_since.items()]
+    first_delay = {}
+    for e in ev:
+        if e["type"] in ("flight_delayed", "flight_delay_updated"):
+            first_delay.setdefault(e["payload"]["flight_id"], e["t"])
+    activity = sorted([[iso(t), f"{fid} delayed"] for fid, t in first_delay.items()] +
+                      [[iso(t), f"{fid} cancelled"] for t, fid in cancelled])
+    seats_left = {fid: sum(g["count"] for (f, _), g in world.groups.items() if f == fid) for _, fid in cancelled}
+    unrebooked = [[iso(t), fid, seats_left[fid]] for t, fid in cancelled if seats_left.get(fid)]
     truth = {
         "run_id": run_id_for(plan.seed), "chaos_seed": plan.seed, "ingredients": plan.ingredients,
         "quiet": not incidents, "incidents": incidents, "feed_outages": outages, "conflicts": conflicts, "security": security,
         "crew_cancellations_needing_review": sorted(set(review)),
         "aftermath": {"cancelled": [[iso(t), f] for t, f in cancelled], "stranded_overnight_first": iso(stranded[0]) if stranded else None,
-                      "diverted": diverted},
+                      "diverted": diverted, "unrebooked": unrebooked},
+        "operations": {"blocks": blocks, "activity": activity},
         "messy": {**plan.messy, "unknown_types": [e["type"] for e in overlay if e["type"] in c["messy_data"]["unknown_types"]]},
         "normal_variation": [{"at": iso(x["t"]), "flight_id": x["flight_id"]} for x in plan.normal_variation],
     }
     truth["summary"] = describe(truth)
+    return truth
+
+
+def add_visibility(truth: dict) -> dict:
+    """When each incident's first real signal could first be SEEN. A signal delivered late (messy data) cannot be noticed before
+    it arrives, so the detection clock starts at delivery. Needs truth["messy"]["late_events"] (with flight ids)."""
+    late = {}
+    for x in (truth.get("messy") or {}).get("late_events", []):
+        if x.get("flight_id"):
+            late.setdefault((x["type"], x["at"], x["flight_id"]), x["delivered"])
+    for i in truth["incidents"]:
+        if not i.get("signals"):
+            i["first_visible"] = i["first_signal"]
+            continue
+        seen = sorted(max(t, late.get(("flight_cancelled", t, f), t)) for t, f in i["signals"])
+        i["first_visible"] = max(i["first_signal"], seen[i["signals_needed"] - 1])
     return truth
 
 
