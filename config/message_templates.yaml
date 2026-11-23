@@ -34,6 +34,12 @@ next:
   timed_sms: "Next update by {next_time}."
   if_changes_sms: "We will text you if anything changes."
 
+airborne:                              # the passenger is in the air at send time (no "before you go to the gate")
+  connection: "When you land in {land_city}, please check this app for your connection."
+  connection_sms: "When you land in {land_city}, check your texts for your connection."
+  final: "When you land in {land_city}, please check this app for any updates."
+  final_sms: "When you land in {land_city}, check your texts for any updates."
+
 templates:
   first_notice:                        # O01: the passenger's flight is affected by the incident (auto)
     reviewed_for_promises: true
@@ -66,12 +72,12 @@ templates:
     dont_know: "{end}"
     do_now: "Please check again before you go to the gate."
 
-  cancellation_rebooking:              # O14: cancelled and rebooked (needs approval: customer_service_supervisor)
+  cancellation_rebooking:              # O14: cancelled and rebooked; confirmed facts only, so automatic
     reviewed_for_promises: true
     know: "Your flight {old_flight} to {city} is cancelled. You are now booked on {new_flight}, leaving Kansas City at {dep_time} on {dep_date}."
     dont_know: "Nothing else about your trip has changed so far."
-    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it. If you need another option, please talk to a Southwest agent at the airport or call Southwest."
-    sms_do_now: "Your new booking is confirmed. For another option, call Southwest."
+    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it."
+    sms_do_now: "Your new booking is confirmed."
 
   cancellation_only:                   # O14: cancelled, not rebooked yet (needs approval)
     reviewed_for_promises: true
@@ -80,12 +86,12 @@ templates:
     do_now: "Please talk to a Southwest agent at the airport or call Southwest about your options."
     sms_do_now: "Please call Southwest about your options."
 
-  rebooking:                           # O14: booked onto another flight (e.g. after a missed connection) (needs approval)
+  rebooking:                           # O14: booked onto another flight (e.g. a missed connection); confirmed facts only: automatic
     reviewed_for_promises: true
     know: "Your trip has changed. You are now booked on {new_flight} to {city}, leaving Kansas City at {dep_time} on {dep_date}."
     dont_know: "Nothing else about your trip has changed so far."
-    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it. If you need another option, please talk to a Southwest agent at the airport or call Southwest."
-    sms_do_now: "Your new booking is confirmed. For another option, call Southwest."
+    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it."
+    sms_do_now: "Your new booking is confirmed."
 
   overnight_notice:                    # O14: the trip now continues tomorrow (needs approval)
     reviewed_for_promises: true

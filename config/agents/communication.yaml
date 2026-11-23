@@ -51,6 +51,8 @@ event_feeds:
     flight_arrived: [flight_id]
     flight_diverted: [flight_id, diverted_to]
     next_day_flight_created: [flight_id, route, departs]   # 4b-3: a flight for tomorrow that rebooked passengers may be on
+    flight_airborne: [flight_id]       # an inbound flight took off: its passengers are in the air until it lands or diverts
+    flight_holding: [flight_id]        # circling, still in the air
   channels:                          # one feed per channel, each with its own heartbeat (the payload's "channel" names it)
     _split_by: channel
     _feeds: [app, sms, gate_screen, call_center]
@@ -129,7 +131,9 @@ decisions:
 - {id: O12, question: "A passenger with no contact details", decided_by: auto, enabled_in: 4b-3}
 - {id: O13, question: "Tell passengers on a diverted flight what happens next", decided_by: auto, enabled_in: 4b-3}
 - {id: O14, question: "Tell passengers their flight is cancelled (and, once Passenger Care decides it, what they are owed)",
-   decided_by: customer_service_supervisor, enabled_in: 4b-3, note: "cancellation, rebooking and overnight notices"}
+   decided_by: auto, enabled_in: 4b-3,
+   note: "a notice that ONLY states confirmed facts (cancelled; booked on the confirmed new flight and time) is automatic
+          (send_status_update); options or overnight arrangements need the supervisor (draft_message)"}
 - {id: A09, question: "Two systems disagree on a fact: which wins?", decided_by: network_operations_control, enabled_in: 4b-3,
    note: "raised by Situation; Communication may ALSO raise it when a conflict holds passenger corrections (also_raised_by)"}
 

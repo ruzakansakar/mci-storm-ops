@@ -499,8 +499,9 @@ what we don't know yet, what to do now, and when the next update comes.
 
 Who decides:
 
-- Restating the truth is automatic: first notice, delay, diversion, "no change yet".
-- The supervisor approves cancellations, rebookings, overnight notices, corrections and staff notes.
+- Restating the truth is automatic: first notice, delay, diversion, "no change yet" (hourly), and a cancellation or rebooking that only states the confirmed new flight and time.
+- A passenger who is in the air is told what to do when they land, not "before you go to the gate".
+- The supervisor approves anything beyond confirmed facts (options, overnight arrangements), corrections and staff notes.
 - One approval covers a batch to more than 50 passengers.
 
 Delivery and anti-spam:
