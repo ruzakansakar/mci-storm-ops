@@ -20,7 +20,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4a | Situation agent | **done** |
 | 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
-| 4b-2 | Communication fixes + paired co-pilot simulation | implemented; verification recorded below |
+| 4b-2 | Communication agent, part 2: fix screens + today vs with co-pilot | **done** |
 | 4c | Shared state: Communication reads Situation assessments | next |
 | 4b-3 | Communication message writing | after shared state |
 | Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
@@ -132,7 +132,8 @@ python -m simulator.report --run-id a31_storm-s7-today
 ```
 
 `--mode copilot` corrects screens automatically after the rule check. Run today first, then copilot: the second run preserves
-today's events and numbers and saves its own alongside them. Re-running today starts a fresh pair and rebuilds the database.
+today's events, numbers, truth tables and `channel_views` (today's screens), and saves its own events, recommendations and
+numbers alongside them under the `-copilot` run id. Re-running today starts a fresh pair and rebuilds the database.
 All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumption`).
 
 **How it works, in plain English**
@@ -393,8 +394,10 @@ Trip and baggage components retain their separate transport delays. Gate updates
 call-center updates to that passenger's notes; app/SMS corrections are pushes.
 
 At most three correction requests per passenger per channel in any rolling 30 minutes are allowed, including resends. The
-same version is not repeated for 15 minutes. A failed delivery, or a screen wrong for 30 minutes, can trigger the same confirmed
-record on another supported channel the passenger has. All thresholds are assumptions in the Communication settings.
+same version is not repeated on a channel while its delivery is still expected: the agent waits at least 15 minutes and at
+least that channel's usual lag as it has measured it today, unless a failed-delivery receipt has arrived since. A failed
+delivery, or a screen wrong for 30 minutes, can trigger the same confirmed record on another supported channel the passenger
+has (app or SMS), once per trip version. All thresholds are assumptions in the Communication settings.
 
 Both runs store comparison numbers in `metric_runs`. The report overlays their wrong-screen counts, shows every measure side
 by side and includes Maya's minute-by-minute views for both modes. Recovery includes lost updates. Median/worst catch-up times
@@ -423,6 +426,12 @@ random days. The chosen seeds are saved in `reports/chaos/comparison-seeds.json`
 `python -m chaos.compare --seeds <comma-separated-seeds>`. Paired days assert identical operational truth and non-channel
 events. Random-day comparisons include published chaos overlays, late deliveries and feed outages. They are evaluation only;
 settings are never calibrated on them. `python -m chaos.judge_communication --seed7-only` re-scores detection in memory.
+
+**Result (verified).** Seed 7: passenger-minutes on a wrong screen 13,625 today vs 6,152 with co-pilot (55% fewer), critical
+1,594 vs 570, lost updates still wrong at day end 12 vs 0. Maya's screens after her 14:55 rebooking: app 15:12 -> 14:57, SMS
+15:14 -> 14:59, gate 15:20 -> 15:06, call center 15:32 -> 15:17; her call center, stuck on "diverted" all afternoon today, shows
+"delayed" at 14:43. On 20 fresh random days: 51% fewer on average (15 days had wrong screens), best 72%, worst 13%, no day
+worse, world truth identical on every day. Today mode is byte-for-byte what it was before 4b-2.
 
 ## Rules for conflicting files
 

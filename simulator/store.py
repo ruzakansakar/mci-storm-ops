@@ -50,7 +50,9 @@ class Writer:
                       Jsonb(a["before"]), Jsonb(a["after"]), self.run_id) for a in au])
             if self.persist_truth:
                 self._state(cur, world)
-            self._views(cur, channels)
+                self._views(cur, channels)          # channel_views holds TODAY's screens; a co-pilot run keeps them (its own
+            else:                                   # screens live in its channel events and metrics, under its own run id)
+                channels.touched = set()
         self.conn.commit()
 
     def published_at(self, e):

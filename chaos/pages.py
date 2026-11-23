@@ -13,7 +13,7 @@ from chaos.judge import CHECKS
 OUT = ROOT / "reports" / "chaos"
 COLOR = {"PASS": "#2e7d32", "WARN": "#b26a00", "FAIL": "#c62828", "N/A": "#777"}
 BG = {"PASS": "#e8f5e9", "WARN": "#fff4e0", "FAIL": "#fdecea", "N/A": "#f3f3f3"}
-STYLE = """<p><a href="comparison.html">Today vs with co-pilot: paired days and summary</a></p><style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222;max-width:1250px}h1{margin:0 0 4px}
+STYLE = """<style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222;max-width:1250px}h1{margin:0 0 4px}
 .sub{color:#666;font-size:13px}table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
 td,th{border-bottom:1px solid #e4e4e4;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}
 .v{font-weight:600;padding:2px 8px;border-radius:10px;display:inline-block}.box{border:1px solid #e4e4e4;border-radius:8px;padding:12px;margin:14px 0}
@@ -96,6 +96,18 @@ def _communication_scores() -> dict:
     return {s["seed"]: s for s in json.loads(path.read_text(encoding="utf-8")) if s.get("chaos")}
 
 
+def _comparison_scores() -> dict:
+    """Today vs with co-pilot (chaos/compare.py), by chaos seed, if it has been run."""
+    path = OUT / "comparison.json"
+    if not path.exists():
+        return {}
+    return {r["seed"]: r for r in json.loads(path.read_text(encoding="utf-8")) if r.get("chaos")}
+
+
+def _pm(r, mode):
+    return r[mode]["passenger_minutes_of_disagreement"]
+
+
 def write_index(scores: list[dict], title: str = "Chaos days for the Situation agent") -> str:
     OUT.mkdir(parents=True, exist_ok=True)
     n = len(scores)
@@ -128,6 +140,26 @@ def write_index(scores: list[dict], title: str = "Chaos days for the Situation a
                  f"cases flagged {crit}, calls on a stale feed {sum(c['stale_calls'] for c in mine)}. "
                  f"<a href='communication.html'>Communication summary table</a>")
 
+    pair = _comparison_scores()
+    paired = [pair[s["chaos_seed"]] for s in scores if s["chaos_seed"] in pair]
+    if paired:
+        rates_c = [r["improvement_pct"] for r in paired]
+        worse = [r["seed"] for r in paired if r["improvement_pct"] < 0]
+        tops += (f"<br><b>Today vs with co-pilot</b> on {len(paired)} of these days (same world, only the screens differ): "
+                 f"passenger-minutes on a wrong screen {sum(_pm(r, 'today') for r in paired):,} today vs "
+                 f"{sum(_pm(r, 'copilot') for r in paired):,} with co-pilot; average {sum(rates_c) / len(rates_c):.0f}% fewer, "
+                 f"best {max(rates_c):.0f}%, worst {min(rates_c):.0f}%; days where co-pilot was worse: "
+                 f"{', '.join(map(str, worse)) or 'none'}. <a href='comparison.html'>Comparison table</a>")
+
+    def pair_cell(seed):
+        r = pair.get(seed)
+        if not r:
+            return "-"
+        if not _pm(r, "today"):
+            return "nobody's screen was wrong"
+        return (f"{_pm(r, 'today')} &rarr; {_pm(r, 'copilot')} passenger-min ({r['improvement_pct']:.0f}% fewer); critical "
+                f"{r['today']['critical_passenger_minutes_wrong']} &rarr; {r['copilot']['critical_passenger_minutes_wrong']}")
+
     def com_cell(seed):
         c = comm.get(seed)
         if not c:
@@ -137,7 +169,7 @@ def write_index(scores: list[dict], title: str = "Chaos days for the Situation a
                         for nm, p, w, f, t in rates)
     day_rows = "".join(
         f"<tr><td><a href='{_e(s['run_id'])}.html'>{s['chaos_seed']}</a></td><td>{_e(s['summary'])}</td><td>{_badge(s['verdict'])}</td>"
-        f"<td>{com_cell(s['chaos_seed'])}</td>"
+        f"<td>{com_cell(s['chaos_seed'])}</td><td>{pair_cell(s['chaos_seed'])}</td>"
         f"<td>{'<br>'.join(_e(c['name'] + ': ' + c['reason']) for c in s['checks'] if c['result'] in ('FAIL', 'WARN')) or '-'}</td></tr>"
         for s in scores)
     page = f"""<!doctype html><meta charset="utf-8"><title>{_e(title)}</title>{STYLE}
@@ -145,7 +177,7 @@ def write_index(scores: list[dict], title: str = "Chaos days for the Situation a
 <div class="box">{tops}</div>
 <div class="box"><h3 style="margin-top:0">Pass rate per check</h3><table><tr><th>Check</th><th>Passed</th><th>Warnings</th><th>Failed</th><th>Pass rate</th></tr>{rate_rows}</table>
 <div class="sub">Checks that don't apply to a day (for example "security" on a day without one) are left out of its count.</div></div>
-<div class="box"><h3 style="margin-top:0">Days</h3><table><tr><th>Chaos seed</th><th>What happened</th><th>Situation verdict</th><th>Communication (mismatches found / real)</th><th>What went wrong (Situation)</th></tr>{day_rows}</table></div>"""
+<div class="box"><h3 style="margin-top:0">Days</h3><table><tr><th>Chaos seed</th><th>What happened</th><th>Situation verdict</th><th>Communication (mismatches found / real)</th><th>Today &rarr; with co-pilot (wrong-screen passenger-minutes)</th><th>What went wrong (Situation)</th></tr>{day_rows}</table></div>"""
     path = OUT / "index.html"
     path.write_text(page, encoding="utf-8")
     return str(path)

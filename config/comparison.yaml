@@ -1,3 +1,5 @@
 random_days: 20                  # assumption: requested evaluation sample size
 seed_min: 10000000               # assumption: reserve a fresh evaluation-only seed range
 seed_max: 99999999               # assumption: never tune against this evaluation batch
+focus_passenger: Maya Torres     # the story passenger whose four screens the comparison follows minute by minute (by name, so it
+                                 # works on any day; measuring code only, never an agent input)

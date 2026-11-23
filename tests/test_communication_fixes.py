@@ -161,3 +161,109 @@ def test_noncritical_wait_and_critical_skips_it():
     ctx.events[1]["payload"]["status"] = "delayed"
     r = scan(ctx, Memory(), write=False)
     assert not propose_fixes(ctx, r, FixMemory())
+
+
+# ------------------------------------------------------------------ seed 7, with co-pilot: what was actually applied
+
+def _applied(result):
+    return [e for e in result.world.events if e["type"] == "channel_fix_applied"]
+
+
+def test_maya_stuck_call_center_diverted_view_is_fixed(pair):
+    today, co = pair
+    t_v = next(v for v in today.metrics["maya_versions"] if v["changed_at"] == 850)          # 14:10 back from STL: "delayed"
+    c_v = next(v for v in co.metrics["maya_versions"] if v["changed_at"] == 850)
+    assert "call_center" not in t_v["catch_up"]                     # today the lost update leaves it on "diverted"
+    assert 850 < c_v["catch_up"]["call_center"] < 895              # with co-pilot it shows "delayed" before the 14:55 change
+    fixes = [e["payload"]["proposal"] for e in _applied(co) if e["payload"]["proposal"]["passenger_id"] == "PAX0001"
+             and e["payload"]["proposal"]["original_channel"] == "call_center" and 850 <= e["t"] < 895]
+    assert fixes and all(p["confirmed"]["status"] == "delayed" for p in fixes)
+
+
+def test_every_applied_fix_is_exactly_the_confirmed_trip_at_that_minute(pair):
+    co = pair[1]
+    latest, checked = {}, 0
+    for e in co.world.events:                                        # events are in time order
+        if e["type"] == "trip_record_updated":
+            p = e["payload"]
+            latest[p["passenger_id"]] = {k: p[k] for k in ("itinerary", "status", "destination", "bag_routing")}
+        elif e["type"] == "channel_fix_applied":
+            prop = e["payload"]["proposal"]
+            assert prop["confirmed"] == latest[prop["passenger_id"]]
+            assert not any(k in prop for k in ("message", "offer", "draft_text", "promises"))
+            checked += 1
+    assert checked > 100
+
+
+def test_no_names_contacts_or_booking_refs_anywhere_in_agent_output(pair):
+    from backend.seed.build import build
+    co = pair[1]
+    secret = {p["full_name"] for p in build()["passengers"]} | {p["booking_ref"] for p in build()["passengers"]}
+    text = repr([e for e in co.world.events if e["actor"] == "agent"]) + repr([a for a in co.world.audit_rows if a["actor"] == "agent"])
+    assert not [s for s in secret if s in text]
+    assert co.metrics["contract_violations"] == 0
+
+
+def test_every_check_and_apply_is_in_events_and_audit(pair):
+    co = pair[1]
+    kinds = ("rule_check_passed", "rule_check_blocked", "channel_fix_applied", "channel_fix_blocked")
+    events = Counter_of(e["type"] for e in co.world.events if e["actor"] == "agent" and e["type"] in kinds)
+    audits = Counter_of(a["what"] for a in co.world.audit_rows if a["actor"] == "agent" and a["what"] in kinds)
+    assert events == audits and events["channel_fix_applied"] > 0
+    assert events["rule_check_passed"] + events["rule_check_blocked"] >= events["channel_fix_applied"]
+
+
+def Counter_of(items):
+    from collections import Counter
+    return Counter(items)
+
+
+def test_no_repeat_of_a_version_too_soon_and_one_resend_per_version(pair):
+    co, cfg = pair[1], load_settings()["fix"]
+    failed = [(e["t"], e["payload"]["passenger_id"], e["payload"]["channel"]) for e in co.world.events
+              if e["type"] == "channel_update_failed"]
+    last, resends = {}, set()
+    for e in _applied(co):
+        p = e["payload"]["proposal"]
+        if p["action"] == "resend_on_other_channel":
+            key = (p["passenger_id"], p["channel"], p["truth_as_of"])
+            assert key not in resends
+            resends.add(key)
+            continue
+        key = (p["passenger_id"], p["channel"], p["truth_as_of"])
+        if key in last and e["t"] - last[key] < cfg["retry_min"]:   # only allowed straight after a failed delivery receipt
+            assert any(last[key] < t <= e["t"] and pid == key[0] and ch == key[1] for t, pid, ch in failed)
+        last[key] = e["t"]
+
+
+def test_both_modes_survive_in_the_database_and_today_is_untouched():
+    import contextlib
+    import io
+    from backend.database import connect
+    from scripts.reset_db import main as reset_db
+    from simulator.run import run
+
+    def snapshot(conn):
+        return (conn.execute("SELECT md5(string_agg(f::text, '|' ORDER BY id)) FROM flights f").fetchone()[0],
+                conn.execute("SELECT md5(string_agg(b::text, '|' ORDER BY passenger_id, seq)) FROM bookings b").fetchone()[0],
+                conn.execute("SELECT md5(string_agg(v::text, '|' ORDER BY passenger_id, channel)) FROM channel_views v").fetchone()[0],
+                conn.execute("SELECT count(*) FROM events WHERE run_id='a31_storm-s7-today'").fetchone()[0])
+    try:
+        run(7, "a31_storm", until="12:20")
+        with connect() as conn:
+            before = snapshot(conn)
+        with pytest.raises(ValueError):
+            run(7, "random", mode="copilot", until="12:20")        # no matching today run
+        run(7, "a31_storm", mode="copilot", until="12:20")
+        with connect() as conn:
+            assert snapshot(conn) == before                         # today's truth, screens and events are all still there
+            modes = [r[0] for r in conn.execute("SELECT mode FROM metric_runs WHERE seed=7 AND scenario='a31_storm' ORDER BY id")]
+            assert modes == ["today", "copilot"]
+            assert conn.execute("SELECT count(*) FROM events WHERE run_id='a31_storm-s7-copilot' AND type='channel_fix_applied'"
+                                ).fetchone()[0] > 0
+            assert conn.execute("SELECT count(*) FROM recommendations WHERE run_id='a31_storm-s7-copilot'").fetchone()[0] > 0
+        with pytest.raises(ValueError, match="already exists"):
+            run(7, "a31_storm", mode="copilot", until="12:20")
+    finally:
+        with contextlib.redirect_stdout(io.StringIO()):
+            reset_db()

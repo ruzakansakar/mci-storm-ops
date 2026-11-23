@@ -12,8 +12,9 @@ def snapshot(row):
 
 
 class ComparisonRecorder:
-    def __init__(self, settings):
+    def __init__(self, settings, focus=None):
         self.settings = settings
+        self.focus = focus                    # the story passenger's id (config/comparison.yaml focus_passenger)
         self.previous = {}
         self.pending = {}
         self.latencies = []
@@ -54,18 +55,18 @@ class ComparisonRecorder:
                 if pid in self.pending:
                     self.superseded += 1
                 self.pending[pid] = (t, snap)
-                if pid == "PAX0001":
+                if pid == self.focus:
                     self.maya_versions.append({"changed_at": t, "truth": snap, "catch_up": {}})
             self.previous[pid] = snap
             if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in self.settings["channels"]):
                 self.latencies.append(t - self.pending.pop(pid)[0])
-        if "PAX0001" in world.truth:
-            self.maya.append({"t": t, "truth": snapshot(world.truth["PAX0001"]),
-                              "channels": {ch: snapshot(channels.shown[("PAX0001", ch)]) for ch in self.settings["channels"]}})
+        if self.focus in world.truth:
+            self.maya.append({"t": t, "truth": snapshot(world.truth[self.focus]),
+                              "channels": {ch: snapshot(channels.shown[(self.focus, ch)]) for ch in self.settings["channels"]}})
             if self.maya_versions:
                 version = self.maya_versions[-1]
                 for ch in self.settings["channels"]:
-                    if ch not in version["catch_up"] and all(channels.shown[("PAX0001", ch)][f] == world.truth["PAX0001"][f]
+                    if ch not in version["catch_up"] and all(channels.shown[(self.focus, ch)][f] == world.truth[self.focus][f]
                                                             for f in FIELDS[:3]):
                         version["catch_up"][ch] = t
 
@@ -83,6 +84,10 @@ class ComparisonRecorder:
                          and p["original_channel"] == e["payload"]["channel"]
                          and p["truth_as_of"] == e["payload"]["version_at"]
                          and p["data_as_of"] >= e["payload"]["failed_at"] for p in applied)}
+        retried = {e["payload"]["fix_id"] for e in failures
+                   if any(p["passenger_id"] == e["payload"]["passenger_id"] and p["original_channel"] == e["payload"]["channel"]
+                          and p["truth_as_of"] == e["payload"]["version_at"] and p["data_as_of"] >= e["payload"]["failed_at"]
+                          for p in applied)}
         return {"critical_passenger_minutes_wrong": self.critical_minutes,
                 "all_screens_agree_after_stop_min": None if self.first_agree is None else self.first_agree - stop_end,
                 "all_screens_stay_correct_after_stop_min": None if channels.dis else max(0, (self.last_wrong or stop_end - 1) + 1 - stop_end),
@@ -99,9 +104,17 @@ class ComparisonRecorder:
                 "all_pushes_per_passenger_max": max(total_pax.values(), default=0),
                 "all_pushes_per_channel": {ch: total_ch[ch] for ch in self.settings["channels"]},
                 "fixes_failed": len({e["payload"]["fix_id"] for e in failures}), "failed_fixes_resent": len(resent),
+                "failed_fixes_retried": len(retried),
                 "failed_delivery_components": len(failures),
                 "maya_versions": self.maya_versions, "maya_minutes": self.maya,
                 "comparison_series": {"t": self.times, "pax_disagreeing": self.counts}}
+
+
+def focus_passenger(data):
+    import yaml
+    from backend.settings import ROOT
+    name = yaml.safe_load((ROOT / "config" / "comparison.yaml").read_text(encoding="utf-8"))["focus_passenger"]
+    return next((p["id"] for p in data["passengers"] if p["full_name"] == name), None)
 
 
 def truth_fingerprint(result):

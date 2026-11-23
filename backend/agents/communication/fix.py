@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from backend.agents.communication.detect import LEVELS, load_settings
+from backend.agents.communication.detect import LEVELS, load_settings, usual_lag
 from backend.agents.communication.state_at import FIELDS
 
 
@@ -17,6 +17,7 @@ class FixMemory:
     pushes: dict = field(default_factory=lambda: defaultdict(deque))
     sent_versions: dict = field(default_factory=dict)
     held: set = field(default_factory=set)
+    resent: set = field(default_factory=set)          # (passenger, other channel, trip version) already resent once
 
 
 def conflicts_from_events(events):
@@ -43,8 +44,16 @@ def conflicts_from_events(events):
     return conflicts
 
 
+def _last_failure(findings):
+    """When the newest delivery receipt (failed delivery) among these findings arrived, if any."""
+    times = [datetime.fromisoformat(e["at"]) for x in findings for e in x.get("evidence", ())
+             if e.get("type") == "channel_update_failed" and e.get("at")]
+    return max(times, default=None)
+
+
 def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=None):
-    s = (settings or load_settings())["fix"]
+    full = settings or load_settings()
+    s = full["fix"]
     st, now = result["state"], ctx.now
     if ctx.feed_age_sec("reservations") > ctx.contract.max_data_age_sec:
         key = ("truth feed stale", ctx.feed_last("reservations"))
@@ -95,6 +104,7 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
             alternate = next((c for c in s["alternate_order"] if c != ch and c in available), None)
             if alternate:
                 targets.append((alternate, "resend_on_other_channel"))
+        failure_at = _last_failure(findings)
         for target, action in targets:
             key = (pid, target)
             pushes = memory.pushes[key]
@@ -102,9 +112,19 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
                 pushes.popleft()
             if len(pushes) >= s["max_pushes"]:
                 continue
-            previous = memory.sent_versions.get(key)
-            if previous and previous[0] == truth["at"] and now - previous[1] < timedelta(minutes=s["retry_min"]):
-                continue
+            if action == "resend_on_other_channel":
+                # The same trip version goes to another channel once: that channel is not wrong, so repeating it is spam.
+                if (pid, target, truth["at"]) in memory.resent:
+                    continue
+            else:
+                previous = memory.sent_versions.get(key)
+                if previous and previous[0] == truth["at"]:
+                    # Do not repeat a version while its delivery is still expected: wait at least retry_min, and at least
+                    # the channel's usual lag as the agent has measured it today, unless a failed-delivery receipt came since.
+                    wait = max(s["retry_min"], usual_lag(st, target, full))
+                    failed_since = failure_at is not None and failure_at > previous[1]
+                    if not failed_since and now - previous[1] < timedelta(minutes=wait):
+                        continue
             confirmed = {f: list(truth[f]) if isinstance(truth[f], tuple) else truth[f] for f in FIELDS}
             option = {"agent": "communication", "action": action, "passenger_id": pid, "channel": target,
                       "original_channel": ch, "confirmed": confirmed, "truth_as_of": truth["at"].isoformat(),
@@ -118,5 +138,8 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
             rid = ctx.propose(action, output)
             proposals.append({**option, "id": rid, "data_as_of": now})
             pushes.append(now)
-            memory.sent_versions[key] = (truth["at"], now)
+            if action == "resend_on_other_channel":
+                memory.resent.add((pid, target, truth["at"]))
+            else:
+                memory.sent_versions[key] = (truth["at"], now)
     return proposals

@@ -41,8 +41,7 @@ WORKING RULES
 - The project owner is not a programmer: final replies are plain English, no jargon, in the required format.
 
 BUILD PHASES
-Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection.
-Now: 4b-2 Communication fixes + co-pilot mode implemented; finish the recorded verification before merging.
+Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode (verified, merged).
 Next: 4c shared state (Communication reads situation_assessments), 4b-3 messages, then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
 
 PHASE 4b-2 IMPLEMENTATION
@@ -51,9 +50,11 @@ PHASE 4b-2 IMPLEMENTATION
 - Only fix_channel_mismatch and resend_on_other_channel were newly enabled. Message actions remain 4b-3. The contact_channel_types API exposes only supported channel type names; raw contacts and names remain forbidden.
 - config/channel_causes.yaml is the shared cause vocabulary. Raw simulator events retain legacy labels for byte-for-byte today-event compatibility; reported labels are canonical. Changed itineraries are not evidence of seat-only holds.
 - Corrections use normal channel delay/load/jitter/failure draws, on a separate random stream. New correction requests can race pending copies; version checks prevent older copies undoing newer corrections. Already confirmed seats do not repeat reservation holds. Trip and baggage delivery components retain separate delays.
-- Run today first, then copilot. Today resets the database; copilot preserves today's records, writes its own events/metrics and never updates operational truth tables. Run-local proposal IDs in execution events correspond to local_proposal_id in saved recommendation options.
+- Run today first, then copilot. Today resets the database; copilot preserves today's records (truth tables AND channel_views, which hold today's screens), writes its own events/recommendations/metrics under the -copilot run id and never updates operational truth tables. A second copilot run is refused until today is rerun. Run-local proposal IDs in execution events correspond to local_proposal_id in saved recommendation options.
 - simulator/comparison.py measures both modes; simulator/comparison_page.py renders the paired report. chaos.compare (also chaos.memory_replay --compare) evaluates seed 7 plus 20 fresh recorded seeds, with published chaos overlays, late deliveries and feed outages.
 - Recovery includes lost updates. Catch-up median/worst cover completed trip versions only; superseded and unfinished versions are separate counts. Extra correction pushes and total trip updates are both reported.
-- Baseline: 542 passed. Original vs new today-mode seed 7 operational truth and complete event streams have identical SHA-256 fingerprints. Cause accuracy changed from 95.7% to 89.7%; normal wait vs stuck is still inferred. Do not loosen the judge or tune on evaluation seeds.
+- Retry policy: a version is not repeated on a channel before max(retry_min, the channel's usual lag as the agent measured it today) unless a failed-delivery receipt arrived since; a resend to another channel happens once per trip version. Maya's id for the comparison comes from config/comparison.yaml (focus_passenger), never hard-coded.
+- Verified result (seed 7): passenger-minutes wrong 13,625 -> 6,152; critical 1,594 -> 570; lost updates still wrong 12 -> 0. 20 fresh days (seeds in reports/chaos/comparison-seeds.json): average 51% fewer, worst 13%, no day worse, truth identical on all.
+- Baseline before 4b-2: 542 passed; after: 558. Original vs new today-mode seed 7 operational truth and complete event streams have identical SHA-256 fingerprints. Cause accuracy changed from 95.7% to 89.7%; normal wait vs stuck is still inferred. Do not loosen the judge or tune on evaluation seeds.
 
 

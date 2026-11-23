@@ -64,9 +64,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start)
     recorder = Recorder(cfg, sc, start)
     from backend.agents.communication.detect import load_settings
-    from simulator.comparison import ComparisonRecorder
+    from simulator.comparison import ComparisonRecorder, focus_passenger
     from simulator.clock import at
-    comparison = ComparisonRecorder(load_settings())
+    comparison = ComparisonRecorder(load_settings(), focus_passenger(data))
     copilot = None
     event_cursor = 0
     if mode == "copilot":

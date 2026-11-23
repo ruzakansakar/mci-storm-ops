@@ -16,6 +16,7 @@ from functools import lru_cache
 
 import yaml
 
+from backend.channel_causes import canonical
 from backend.agents.communication.state_at import DAY0, KIND, MAIN, CommState, apply_events, build_state, compare, hhmm, new_state, show
 from backend.settings import ROOT
 
@@ -173,7 +174,6 @@ def scan(ctx, memory: Memory | None = None, write: bool = True, settings: dict |
     for key, m in sorted(st.open.items()):
         pid, ch, f = key
         cause, conf, ev = cause_of(st, key, m["since"], s)
-        from backend.channel_causes import canonical
         cause = canonical(cause)
         sev, why = severity_of(st, key, m["since"], memory.segments.get(pid), s)
         fl = flight_of(st, key)
