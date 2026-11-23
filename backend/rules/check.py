@@ -177,6 +177,9 @@ def check(proposal: dict, pending_proposals: list[dict] | None = None, world: di
                   ["no_double_assignment"], "network_operations_control")
 
     # ---- the verdict
+    from backend.rules.channel_fix import reasons as channel_fix_reasons
+    for reason in channel_fix_reasons(proposal, world):
+        block(reason, ["message_matches_truth", "missing_or_stale_data_blocks"], "customer_service_supervisor")
     if blocks:
         rule_ids = []
         for b in blocks:

@@ -16,6 +16,7 @@ from functools import lru_cache
 
 import yaml
 
+from backend.channel_causes import canonical
 from backend.agents.communication.state_at import DAY0, KIND, MAIN, CommState, apply_events, build_state, compare, hhmm, new_state, show
 from backend.settings import ROOT
 
@@ -72,12 +73,8 @@ def cause_of(st: CommState, key: tuple, since: datetime, s: dict) -> tuple[str, 
     shown = st.shown[(pid, ch)][f]
     if all(snap[f] != shown for _, _, snap in st.history.get(pid, [])):
         return "unknown", conf["unknown"], []                 # it shows something the truth never said today
-    hist = st.history.get(pid, [])
-    change = next(((i, h) for i, h in enumerate(hist) if h[0] == since), None)
-    if change and change[0] > 0:
-        before, after = hist[change[0] - 1][2]["itinerary"], change[1][2]["itinerary"]
-        if set(after) - set(before):                          # the change it is waiting for is a rebooking (a new seat)
-            return "seat_hold", conf["seat_hold"], []
+    # A changed itinerary is a trip update, not proof of a seat hold. This feed
+    # has no separate seat-confirmation field, so it cannot substantiate that cause.
     age = (st.t - since).total_seconds() / 60
     if age <= usual_lag(st, ch, s):
         return "waiting_for_update", conf["waiting_for_update"], []
@@ -177,6 +174,7 @@ def scan(ctx, memory: Memory | None = None, write: bool = True, settings: dict |
     for key, m in sorted(st.open.items()):
         pid, ch, f = key
         cause, conf, ev = cause_of(st, key, m["since"], s)
+        cause = canonical(cause)
         sev, why = severity_of(st, key, m["since"], memory.segments.get(pid), s)
         fl = flight_of(st, key)
         findings.append({"passenger_id": pid, "channel": ch, "field": f, "shown_value": show(st.shown[(pid, ch)][f]),

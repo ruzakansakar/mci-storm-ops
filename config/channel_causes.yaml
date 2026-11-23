@@ -1,0 +1,19 @@
+# Shared vocabulary. Legacy names remain in raw simulator events for story compatibility.
+waiting_for_update:
+  meaning: The channel is still waiting to copy a confirmed trip change.
+  legacy: sync_delay
+stuck:
+  meaning: The confirmed update has taken longer than the expected channel delay.
+  legacy: stale_copy
+failed_delivery:
+  meaning: A delivery receipt confirms that an update did not arrive.
+  legacy: message_failed
+bag_system:
+  meaning: The baggage copy has not caught up.
+  legacy: bag_system
+seat_hold:
+  meaning: Only a seat confirmation differs; the trip status and itinerary agree.
+  legacy: seat_hold
+unknown:
+  meaning: The published evidence cannot explain the difference.
+  legacy: unknown

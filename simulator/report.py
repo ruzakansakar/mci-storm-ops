@@ -179,13 +179,22 @@ def collect_communication(conn, run_id: str, focus: str) -> dict | None:
 
 def build_html(data: dict) -> str:
     blob = json.dumps(data, default=str).replace("</", "<\\/")
-    return PAGE.replace("__DATA__", blob).replace("__TITLE__", f"Run {data['run']['id']}")
+    result = PAGE.replace("__DATA__", blob).replace("__TITLE__", f"Run {data['run']['id']}")
+    if data.get("comparison"):
+        from simulator.comparison_page import section
+        result = result.replace("</main>", section(**data["comparison"]) + "</main>")
+    return result
 
 
 def write_report(run_id: str | None = None, latest: bool = False):
     with connect() as conn:
         rid = latest_run_id(conn) if latest or not run_id else run_id
         data = collect(conn, rid)
+        run = data["run"]
+        pair = dict(conn.execute("SELECT mode, metrics FROM metric_runs WHERE seed=%s AND scenario=%s ORDER BY id",
+                                 (run["seed"], run["scenario"])).fetchall())
+        if all(mode in pair and "comparison_series" in pair[mode] for mode in ("today", "copilot")):
+            data["comparison"] = {mode: pair[mode] for mode in ("today", "copilot")}
     REPORTS.mkdir(exist_ok=True)
     path = REPORTS / f"{rid}.html"
     path.write_text(build_html(data), encoding="utf-8")
