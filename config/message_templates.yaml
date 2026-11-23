@@ -1,0 +1,129 @@
+# Message templates for the Communication agent (Phase 4b-3). Plain language, filled ONLY with confirmed facts (the trip record,
+# flight operations, the Situation agent's picture) and approved decisions. No AI: the AI hook stays off.
+#
+# Every template has four parts, and every message must contain all four (checked in code, backend/rules/message_check.py):
+#   know        what we know          dont_know   what we don't know yet
+#   do_now      what you should do    next        when the next update comes
+# Placeholders in {braces} are filled by backend/agents/communication/messages.py; each one comes with a "claim" the fact check
+# verifies against the truth at send time. Each template below was reviewed for promises (reviewed_for_promises: true): none
+# mentions compensation, vouchers, refunds, hotels, meals or any guarantee, and none says whose fault anything was.
+#
+# Deliberately NOT used: "A Southwest agent will contact you about overnight arrangements." Nobody would actually do that yet
+# (Passenger Care, which handles hotels and rebooking help, is not built), so it would be a promise nobody approved.
+
+greeting:
+  app_named: "Hi {first_name}. "      # only for passengers the agent declares it is working on, and only in the app
+  plain: ""
+
+cause:                                 # how the cause is named (Situation's suspected type, only if it is confident enough)
+  weather: "weather"
+  other: "an operational issue"
+
+end:                                   # Situation's expected end, never as an exact promise
+  around: "We expect flights to move again around {end_time}; this may change."
+  not_before: "Flights are not expected to move again before {end_time}."
+  unknown: "We don't have a reliable estimate yet of when flights will move again."
+  around_sms: "Flights may move again around {end_time}; this may change."     # shorter, for SMS
+  ended: "Flights at Kansas City are moving again, but some are still delayed."  # Situation: the stop is over (recovery)
+  ended_sms: "Flights are moving again; some are still delayed."
+  unknown_sms: "We have no reliable estimate yet of when flights will move."
+
+next:
+  timed: "Next update by {next_time}, or sooner if anything changes."
+  if_changes: "We will message you again if anything changes."
+  timed_sms: "Next update by {next_time}."
+  if_changes_sms: "We will text you if anything changes."
+
+templates:
+  first_notice:                        # O01: the passenger's flight is affected by the incident (auto)
+    reviewed_for_promises: true
+    know: "Flights at Kansas City are disrupted because of {cause}. This affects your flight {flight} to {city}."
+    dont_know: "{end}"
+    do_now: "Your booking stays as it is for now. Please check this app or your texts before you go to the gate."
+    sms_do_now: "Your booking stays as it is for now. Check again before you go to the gate."
+
+  delay_update:                        # O07: a new departure time (auto)
+    reviewed_for_promises: true
+    know: "Your flight {flight} to {city} is delayed. New departure: around {dep_time}; this may change."
+    dont_know: "{end}"
+    do_now: "Please check again before you go to the gate."
+
+  diverted_update:                     # O13: the passenger's plane has landed somewhere else (auto)
+    reviewed_for_promises: true
+    know: "Your flight {flight} to {city} has been diverted to {diverted_city}."
+    dont_know: "We don't know yet when it will continue. {end}"
+    do_now: "Please stay with the crew and follow their instructions."
+
+  no_change:                           # O07: nothing new, but the passenger was promised an update by now (auto)
+    reviewed_for_promises: true
+    know: "No change yet: flights at Kansas City are still disrupted because of {cause}. Your flight {flight} to {city} is affected."
+    dont_know: "{end}"
+    do_now: "Your booking stays as it is for now. Please check again before you go to the gate."
+
+  still_delayed:                       # O07: no change, but the passenger was promised an update by now (auto)
+    reviewed_for_promises: true
+    know: "No change yet: your flight {flight} to {city} is still delayed, now expected around {dep_time}; this may change."
+    dont_know: "{end}"
+    do_now: "Please check again before you go to the gate."
+
+  cancellation_rebooking:              # O14: cancelled and rebooked (needs approval: customer_service_supervisor)
+    reviewed_for_promises: true
+    know: "Your flight {old_flight} to {city} is cancelled. You are now booked on {new_flight}, leaving Kansas City at {dep_time} on {dep_date}."
+    dont_know: "Nothing else about your trip has changed so far."
+    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it. If you need another option, please talk to a Southwest agent at the airport or call Southwest."
+    sms_do_now: "Your new booking is confirmed. For another option, call Southwest."
+
+  cancellation_only:                   # O14: cancelled, not rebooked yet (needs approval)
+    reviewed_for_promises: true
+    know: "Your flight {old_flight} to {city} is cancelled."
+    dont_know: "We don't know yet which flight you will be booked on."
+    do_now: "Please talk to a Southwest agent at the airport or call Southwest about your options."
+    sms_do_now: "Please call Southwest about your options."
+
+  rebooking:                           # O14: booked onto another flight (e.g. after a missed connection) (needs approval)
+    reviewed_for_promises: true
+    know: "Your trip has changed. You are now booked on {new_flight} to {city}, leaving Kansas City at {dep_time} on {dep_date}."
+    dont_know: "Nothing else about your trip has changed so far."
+    do_now: "Your new booking is confirmed, so you don't need to do anything to keep it. If you need another option, please talk to a Southwest agent at the airport or call Southwest."
+    sms_do_now: "Your new booking is confirmed. For another option, call Southwest."
+
+  overnight_notice:                    # O14: the trip now continues tomorrow (needs approval)
+    reviewed_for_promises: true
+    know: "Your trip now continues tomorrow. You are booked on {new_flight}, leaving Kansas City at {dep_time} on {dep_date}."
+    dont_know: "Nothing else about your trip has changed so far."
+    do_now: "Your booking is confirmed. If you have questions about tonight, please talk to a Southwest agent at the airport or call Southwest."
+    sms_do_now: "Your booking is confirmed. Questions? Call Southwest."
+
+  correction:                          # O04: an earlier channel told the passenger something wrong (needs approval)
+    reviewed_for_promises: true
+    know: "Correction: earlier your {channel_name} showed your trip as {wrong_status}. That was wrong. {correct}"
+    dont_know: "{end}"
+    do_now: "Please use this message, not the earlier one."
+
+  staff_note:                          # O08: the same facts, for gate agents and the call-center script (needs approval)
+    reviewed_for_promises: true
+    know: "Staff note: flights at Kansas City are disrupted because of {cause}. So far today: {n_cancelled} cancelled, {n_delayed} delayed, {n_diverted} diverted."
+    dont_know: "{end}"
+    do_now: "Tell passengers only what their booking shows; rebookings are in the reservation system. No hotel, meal or compensation decision has been approved, so do not offer one."
+    next: "Next staff note when the picture changes."
+
+correct:                               # the "correct information" sentence inside a correction, by trip status
+  delayed: "Your flight {flight} to {city} is delayed, now expected around {dep_time}; this may change."
+  cancelled: "Your flight {flight} to {city} is cancelled."
+  overnight: "You are booked on {new_flight}, leaving Kansas City at {dep_time} on {dep_date}."
+  diverted: "Your flight {flight} to {city} has been diverted to {diverted_city}."
+  confirmed: "Your flight {flight} to {city} is going ahead as booked."
+
+channel_names: {app: Southwest app, sms: text messages}
+status_words: {delayed: delayed, cancelled: cancelled, diverted: diverted, overnight: continuing tomorrow, confirmed: on schedule}
+
+# Words and phrases a message may NEVER contain unless an approved decision is linked (none exists yet: Passenger Care is not
+# built). Checked in code on every message before it is sent, and by a test on every message sent.
+forbidden:
+  promises: [compensation, compensate, voucher, refund, reimburse, hotel, meal, food, guarantee, guaranteed, we promise,
+             free, credit, owed, entitled, taxi, lodging, accommodation]
+  blame: [fault, our mistake, blame, within our control, beyond our control, controllable, uncontrollable, caused by southwest]
+  sensitive: [wheelchair, child alone, unaccompanied, minor, medical, disability, disabled, pregnant, special assistance]
+# Staff notes are for staff and must say "no hotel, meal or compensation decision has been approved": that sentence states the
+# absence of a promise, so it is allowed in staff notes only (exactly this sentence).
+staff_allowed_sentence: "No hotel, meal or compensation decision has been approved, so do not offer one."

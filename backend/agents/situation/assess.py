@@ -47,6 +47,7 @@ class Memory:
     last_p02: datetime | None = None
     asked: set = field(default_factory=set)         # ask_human keys already sent
     normal_since: datetime | None = None            # when it last wrote "normal" (a flap back within minutes is the same incident)
+    conflicts: dict = field(default_factory=dict)   # conflict key -> its life: open / unresolved / settled / resolved_by_human
     history: list = field(default_factory=list)     # what it wrote and proposed (for the replay printout)
 
 
@@ -392,11 +393,14 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
     out = []
     for prog in st.past_programs + ([st.program] if st.program else []):
         for when, ends, eids in prog.conflicts:
-            out.append({"key": f"faa-notices:{when.isoformat()}", "flight_ids": [], "fields": ["expected_end"],
+            out.append({"key": f"faa-notices:{when.isoformat()}", "flight_ids": [], "fields": ["expected_end"], "reported_at": when,
+                        "sides": [f"FAA notice: ends {hhmm(e)}" for e in ends],
                         "what": f"two FAA notices issued at {hhmm(when)} give different ends ({' and '.join(hhmm(e) for e in ends)})",
                         "values": [{"source": "faa_feed", "says": f"ends {hhmm(e)}", "event_id": i} for e, i in zip(ends, eids)]})
     for fid, eid, when in st.departed_during_stop:
-        out.append({"key": f"departed-during-stop:{fid}", "flight_ids": [fid], "fields": ["status"], "what": f"{fid} reported departed while the stop is on and the ramp closed",
+        out.append({"key": f"departed-during-stop:{fid}", "flight_ids": [fid], "fields": ["status"], "reported_at": when,
+                    "report_event": eid, "sides": [f"departed at {hhmm(when)} (flight ops)",
+                                                   "still at the gate (ground stop on, ramp closed)"], "what": f"{fid} reported departed while the stop is on and the ramp closed",
                     "values": [{"source": "flight_ops", "says": f"{fid} departed at {hhmm(when)}", "event_id": eid},
                                {"source": "faa_feed / weather_feed", "says": "ground stop active and ramp closed"}]})
     p = st.program
@@ -404,6 +408,7 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
         holding = sorted(f.id for f in st.flights.values() if f.status == "holding" and f.hold_since and f.hold_since <= p.ended)
         if holding:
             out.append({"key": f"holding-after-end:{p.ended.isoformat()}", "flight_ids": holding, "fields": ["status"],
+                        "reported_at": p.ended, "sides": [f"the stop ended at {hhmm(p.ended)} (FAA)", "flights still holding (flight ops)"],
                         "what": f"the FAA says the stop ended at {hhmm(p.ended)} but {len(holding)} flight(s) holding since before then "
                                 f"are still holding {int((st.t - p.ended).total_seconds() // 60)} min later",
                         "values": [{"source": "faa_feed", "says": f"stop ended {hhmm(p.ended)}"},
@@ -412,11 +417,78 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
         system = d["system_for_feed"].get(st_["source"])
         if system and health.get(system, {}).get("status") == "up":
             out.append({"key": f"health-up-feed-stopped:{st_['source']}:{st_['since']}", "flight_ids": [],
-                        "fields": ["system_status"],
+                        "fields": ["system_status"], "reported_at": st.t, "feed": st_["source"], "system": system,
+                        "sides": [f"{system} is up (system health)", f"{st_['source']} has gone silent"],
                         "what": f"system health says {system} is up, but its feed has sent nothing since {st_['since']}",
                         "values": [{"source": "system_health", "says": f"{system}: up"},
                                    {"source": st_["source"], "says": f"last heartbeat {st_['since']}"}]})
     return out
+
+
+OPEN = ("open", "unresolved")
+
+
+def _settle(st: State, e: dict, present: bool, health: dict, s: dict):
+    """The later evidence that settles a conflict, if there is any yet: (side, how, evidence). A rule, never a guess."""
+    kind = e["key"].split(":")[0]
+    since = datetime.fromisoformat(e["opened_at"])
+    if kind == "departed-during-stop":
+        rule = s["conflicts"]["settle"]["departed-during-stop"]
+        f = st.flights.get(e["flight_ids"][0])
+        for eid, when, typ in (f.events if f else []):
+            if when < since or eid == e.get("report_event"):
+                continue
+            if typ in rule["departure_real"]:
+                return (e["sides"][0], f"{f.id} was later seen {typ.replace('flight_', '')} at {hhmm(when)}: the departure was real",
+                        [{"event_id": eid, "at": when.isoformat(), "type": typ}])
+            if typ in rule["departure_false"]:
+                what = {"flight_departed": "departed again", "flight_cancelled": "cancelled",
+                        "tarmac_started": "seen leaving the gate"}.get(typ, "given a new delay at the gate")
+                return (e["sides"][1], f"{f.id} was {what} at {hhmm(when)}: the earlier departure report was false",
+                        [{"event_id": eid, "at": when.isoformat(), "type": typ}])
+        return None
+    if kind == "faa-notices":
+        for prog in st.past_programs + ([st.program] if st.program else []):
+            if prog.last_notice_at and prog.last_notice_at > since:
+                side = f"FAA notice: ends {hhmm(prog.announced_end)}" if prog.announced_end else "a later FAA notice"
+                return side, f"a later FAA notice at {hhmm(prog.last_notice_at)} replaced both", []
+        return None
+    if kind == "holding-after-end" and not present:
+        return e["sides"][1], "the flights that were still holding have landed, diverted or resumed (both were true)", []
+    if kind == "health-up-feed-stopped":
+        if health.get(e.get("system"), {}).get("status") not in (None, "up"):
+            return e["sides"][1], f"system health now reports {e['system']} down: the silence was real", []
+        if not present:
+            return e["sides"][0], f"{e.get('feed')} is sending again: system health was right", []
+    return None
+
+
+def _lifecycle(st: State, found: list, memory, health: dict, s: dict) -> list:
+    """A09 conflicts over time. Opened once; closed when later evidence settles it (with which side was right and the
+    evidence) or when a named human answers; marked "unresolved: needs a human" if nothing settles it in time."""
+    t, log, present = st.t, memory.conflicts, {c["key"] for c in found}
+    for c in found:
+        e = log.get(c["key"])
+        if e is None:
+            log[c["key"]] = {**{k: v for k, v in c.items() if k != "reported_at"}, "status": "open",
+                             "opened_at": (c.get("reported_at") or t).isoformat()}
+        elif e["status"] in OPEN:
+            e.update({k: v for k, v in c.items() if k in ("what", "values", "flight_ids")})
+    limit = timedelta(minutes=s["conflicts"]["unresolved_after_min"])
+    for key, e in log.items():
+        if e["status"] not in OPEN:
+            continue
+        human = st.human_answers.get(key)
+        if human:
+            e.update(status="resolved_by_human", side=human["answer"], closed_at=human["at"].isoformat(),
+                     settled_by=f"resolved by a human ({human['role']}) at {hhmm(human['at'])}")
+            continue
+        done = _settle(st, e, key in present, health, s)
+        if done:
+            e.update(status="settled", side=done[0], closed_at=t.isoformat(), settled_by=done[1], settle_evidence=done[2])
+        elif t - datetime.fromisoformat(e["opened_at"]) >= limit:
+            e.update(status="unresolved", needs="a human: no later evidence has settled it")
+    return [dict(e) for e in log.values()]
 
 
 def _summary(a: dict, st: State) -> str:
@@ -504,8 +576,8 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
         first = stale[0]
         a["status"] = f"cannot_assess: {first['source']} stale since {first['since']}"
         a["decision_ids"] = ["A08"]
-        a["conflicts"] = _conflicts(st, health, stale, s)
-        if a["conflicts"]:
+        a["conflicts"] = _lifecycle(st, _conflicts(st, health, stale, s), memory, health, s)
+        if any(c["status"] in OPEN for c in a["conflicts"]):
             a["decision_ids"].append("A09")
     else:
         spells, since = _spells(st, s)
@@ -528,8 +600,9 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
             a.update(end_earliest=end["earliest"], end_likely=end["likely"], end_latest=end["latest"], end_confidence=end["confidence"],
                      end_confidence_word=_word(end["confidence"], s))
             a["impact"] = _impact(st, end, cls["others"], s)
-            a["conflicts"] = _conflicts(st, health, stale, s)
-            a["decision_ids"] = ["A01", "A02", "A03", "A05", "A07"] + (["A09"] if a["conflicts"] else []) + \
+            a["conflicts"] = _lifecycle(st, _conflicts(st, health, stale, s), memory, health, s)
+            a["decision_ids"] = ["A01", "A02", "A03", "A05", "A07"] + \
+                                (["A09"] if any(c["status"] in OPEN for c in a["conflicts"]) else []) + \
                                 (["Q05"] if st.stranded_overnight else [])
             if st.unreadable:
                 a["evidence"].append({"event_id": None, "at": None, "type": "unreadable_inputs", "source": "several",
@@ -569,7 +642,8 @@ def _snapshot(a):
             "cancelled": d.get("cancelled", 0) + r.get("cancelled", 0),
             "diverted": d.get("ever_diverted", 0) + r.get("ever_diverted", 0),
             "others": imp.get("other_suspected_causes", []),
-            "conflicts": sorted(c["key"] for c in a["conflicts"]), "stale": sorted(x["source"] for x in a["stale_sources"])}
+            "conflicts": sorted(f"{c['key']}|{c['status']}" for c in a["conflicts"]),
+            "stale": sorted(x["source"] for x in a["stale_sources"])}
 
 
 def _changed(last, snap, s) -> bool:
@@ -665,11 +739,17 @@ def _propose(ctx, memory, a, st, result, s, health):
                 "; ".join((f"no heartbeat from {k[1]} for {k[3]} min" if k[0] == "feed" else
                            f"the system monitor reports {k[1]} down for {k[3]} min") for k in down)
                 + "; the assessment depends on it.")
-    if a["conflicts"]:
-        keys = tuple(sorted(c["key"] for c in a["conflicts"]))
+    still = [c for c in a["conflicts"] if c["status"] in OPEN]
+    if still:
+        keys = tuple(sorted(f"{c['key']}|{c['status']}" for c in still))
         if not (memory.open.get("A09") and set(keys) <= set(memory.open["A09"]["key"])):
-            propose("A09", keys, "resolve_source_conflict", "Sources disagree: which one is right?",
-                    "; ".join(c["what"] for c in a["conflicts"]), options=[v for c in a["conflicts"] for v in c["values"]])
+            unresolved = [c for c in still if c["status"] == "unresolved"]
+            propose("A09", keys, "resolve_source_conflict",
+                    "Sources still disagree and nothing has settled it: a human must decide" if unresolved else
+                    "Sources disagree: which one is right?",
+                    "; ".join(c["what"] for c in still),
+                    options=[{**v, "conflict_key": c["key"], "flight_ids": c["flight_ids"], "sides": c["sides"]}
+                             for c in still for v in c["values"]])
     _ask_t01(ctx, memory, a, st, result)
     if a["status"] not in ("abnormal", "recovery"):
         return

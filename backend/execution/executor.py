@@ -9,7 +9,8 @@ from backend.rules import load_rules
 from backend.contracts.loader import load_contracts
 
 
-def execute(proposal, world, deliver, record, pending=(), rules=None):
+def check_only(proposal, world, pending=(), rules=None):
+    """The rule check plus the contract check, without dispatching anything (also used again when an approval arrives)."""
     rules = rules or load_rules()
     verdict = check(proposal, list(pending), world, rules)
     contract = load_contracts().get(proposal.get("agent"))
@@ -18,6 +19,12 @@ def execute(proposal, world, deliver, record, pending=(), rules=None):
         reason = "the proposing agent's current contract does not enable this action"
         verdict = {**verdict, "result": "block", "reasons": verdict["reasons"] + [reason],
                    "rule_ids": verdict["rule_ids"] + ["agent_contract"], "needs_human": "customer_service_supervisor"}
+    return verdict
+
+
+def execute(proposal, world, deliver, record, pending=(), rules=None):
+    rules = rules or load_rules()
+    verdict = check_only(proposal, world, pending, rules)
     record("rule_check_passed" if verdict["result"] == "pass" else "rule_check_blocked",
            {"proposal": proposal, "verdict": verdict})
     automatic = autonomy_for(proposal.get("action"), rules,
@@ -28,5 +35,5 @@ def execute(proposal, world, deliver, record, pending=(), rules=None):
     if isinstance(receipt, dict) and receipt.get("accepted") is False:
         record("channel_fix_blocked", {"proposal": proposal, "receipt": receipt})
         return {"status": "pending", "verdict": verdict, "receipt": receipt}
-    record("channel_fix_applied", {"proposal": proposal, "receipt": receipt})
+    record("channel_fix_applied" if "messages" not in proposal else "message_sent", {"proposal": proposal, "receipt": receipt})
     return {"status": "applied", "verdict": verdict, "receipt": receipt}

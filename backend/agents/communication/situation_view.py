@@ -29,6 +29,7 @@ class SituationView:
     cannot_assess: str | None = None        # Situation's own words, when it says it cannot assess
     conflicts: dict = field(default_factory=dict)   # flight id -> {"since": when first seen, "version": version, "key": ...}
     cleared: list = field(default_factory=list)     # [{flight_id, since, cleared_at, version}]
+    holding: dict = field(default_factory=dict)     # flight id -> {"since", "passengers", "asked"}: corrections held for it
     disagree_since: datetime | None = None
     disagree_logged: bool = False
     timeline: list = field(default_factory=list)    # what it knew, each time it changed (for the debug page)
@@ -76,18 +77,28 @@ def read_situation(ctx, view: SituationView, settings: dict) -> SituationView:
             view.cannot_assess = status
         else:
             view.cannot_assess = None
-        flights = {}
+        flights, closed = {}, {}
         for c in pic["facts"].get("conflicts") or []:
-            for fid in c.get("flight_ids") or []:
-                flights.setdefault(fid, c.get("key"))
+            if c.get("status", "open") in ("open", "unresolved"):
+                for fid in c.get("flight_ids") or []:
+                    flights.setdefault(fid, c)
+            else:
+                closed[c.get("key")] = c
         for fid in list(view.conflicts):
             if fid not in flights:
                 gone = view.conflicts.pop(fid)
-                item = {"flight_id": fid, "since": gone["since"].isoformat(), "cleared_at": now.isoformat(), "version": pic["version"]}
+                how = closed.get(gone["key"]) or {}
+                item = {"flight_id": fid, "since": gone["since"].isoformat(), "cleared_at": now.isoformat(), "version": pic["version"],
+                        "how": how.get("settled_by") or "Situation no longer reports it", "status": how.get("status"),
+                        "side": how.get("side"), "held_from": view.holding.get(fid, {}).get("since").isoformat()
+                        if view.holding.get(fid) else None}
                 view.cleared.append(item)
+                view.holding.pop(fid, None)
                 ctx.record_event("conflict_hold_cleared", item)
-        for fid, key in flights.items():
-            view.conflicts.setdefault(fid, {"since": now, "version": pic["version"], "key": key})
+        for fid, c in flights.items():
+            since = datetime.fromisoformat(c["opened_at"]) if c.get("opened_at") else now
+            view.conflicts.setdefault(fid, {"since": since, "version": pic["version"], "key": c.get("key")})
+            view.conflicts[fid].update(fields=c.get("fields") or ["status"], sides=c.get("sides") or [], status=c.get("status", "open"))
 
     _disagreement(ctx, view, s)
     if changed:
@@ -95,6 +106,57 @@ def read_situation(ctx, view: SituationView, settings: dict) -> SituationView:
                               "status": (view.picture or {}).get("facts", {}).get("status"),
                               "conflict_flights": sorted(view.conflicts)})
     return view
+
+
+def held_fields(view: SituationView, flight_ids, settings: dict):
+    """a. Which trip details a Situation conflict holds for these flights: (fields, flights, reason) or None. Only the
+    conflicted details are held (settings conflicts.hold_fields); everything else keeps being fixed."""
+    held = sorted(f for f in flight_ids if f in view.conflicts)
+    if not held:
+        return None
+    mapping = settings["conflicts"]["hold_fields"]
+    fields = {t for fid in held for c in view.conflicts[fid].get("fields") or ["status"] for t in mapping.get(c, [])}
+    if not fields:
+        return None
+    first = held[0]
+    return fields, held, f"held: Situation reports conflicting data on {first} since {hhmm(view.conflicts[first]['since'])}"
+
+
+def note_hold(view: SituationView, fid: str, pid: str, now: datetime):
+    h = view.holding.setdefault(fid, {"since": now, "passengers": set(), "asked": None})
+    h["passengers"].add(pid)
+
+
+def escalate_holds(ctx, view: SituationView, settings: dict) -> list:
+    """A2: after ask_after_min of holding, ask network operations which side is true (A09); after urgent_after_min, again as
+    urgent. Counts only, never a name. Communication never picks a side itself."""
+    s, out = settings["conflicts"], []
+    for fid, h in sorted(view.holding.items()):
+        c = view.conflicts.get(fid)
+        if c is None:
+            continue
+        mins = (ctx.now - h["since"]).total_seconds() / 60
+        level = "urgent" if mins >= s["urgent_after_min"] else "normal" if mins >= s["ask_after_min"] else None
+        if level is None or h["asked"] == level or (h["asked"] == "urgent"):
+            continue
+        sides = c.get("sides") or ["one source", "another source"]
+        n = len(h["passengers"])
+        what = f"Flight {fid} has conflicting data ({sides[0]} vs {sides[1]}) since {hhmm(c['since'])}; {n} passenger" \
+               f"{'s are' if n != 1 else ' is'} affected; please confirm which is true."
+        title = ("URGENT: passengers are seeing information we can't confirm. " + what) if level == "urgent" else what
+        out_ = {"title": title, "why": f"corrections for {fid} held {int(mins)} min; Communication will not pick a side",
+                "data_as_of": ctx.now.isoformat(), "findings": [], "decision_ids": ["A09"], "urgent": level == "urgent",
+                "options": [{"conflict_key": c["key"], "flight_ids": [fid], "sides": sides}],
+                "sources": [{"fact": f"Situation version {view.version}", "source": "situation agent",
+                             "as_of": (view.picture or {}).get("time", ctx.now).isoformat()}]}
+        rid = ctx.propose("resolve_source_conflict", out_)
+        ctx.record_event("conflict_escalated", {"flight_id": fid, "level": level, "held_min": int(mins), "passengers": n,
+                                                "recommendation": rid, "as_of": ctx.now.isoformat()})
+        h["asked"] = level
+        out.append({"id": rid, "agent": "communication", "action": "resolve_source_conflict", "decision_ids": ["A09"],
+                    "data_as_of": ctx.now, "requested_level": "needs_approval", "urgent": level == "urgent",
+                    "options": out_["options"], "flight_id": fid})
+    return out
 
 
 def hold_reason(view: SituationView, flight_ids) -> tuple[str, list] | None:

@@ -176,7 +176,7 @@ D = [
     ("L04", "Deliver bags to the hotel or home?", "A passenger leaves without their bag", "before 12 h after arrival (bag_refund_hours_domestic)", CARE, "deliver_bags", 8, ["bag_refund_hours_domestic", "bag_refund_hours_international"], "missing"),
     ("L05", "File a mishandled bag report", "A bag is late or lost", "when the passenger reports it", CARE, "file_mishandled_bag_report", None, ["bag_refund_hours_domestic"], "missing"),
     ("L06", "Bag fee refund (12 h domestic)", "A checked bag is delivered more than 12 h after a domestic arrival", "with the refund timing (refund_timing_days)", CARE, "issue_compensation", 8, ["bag_refund_hours_domestic", "bag_refund_hours_international", "bag_refund_hours_international_long", "long_flight_hours", "bag_fee_usd", "refund_timing_days"], "missing"),
-    ("L07", "The bag system disagrees with the booking", "Bag routing differs from the passenger's itinerary (bag_system mismatch)", "before the bag is loaded", COM, "fix_channel_mismatch", None, ["message_matches_truth"], "channel_update_failed"),
+    ("L07", "The bag system disagrees with the booking", "Bag routing differs from the passenger's itinerary (bag_system mismatch)", "before the bag is loaded", COM, "draft_message", None, ["message_matches_truth"], "channel_update_failed"),
     ("L08", "Gate-checked strollers and wheelchairs", "A plane with gate-checked items arrives at a gate or stairs", "at deplaning", STA, "request_wheelchair_help", 5, WC, "flight_arrived"),
     # ---------------------------------------------------------------- M
     ("M01", "How many rooms to hold, and when?", "Passengers are likely to be stranded overnight", "before 19:00 (rooms run out)", CARE, "hold_hotel_rooms", 8, ["hotel_needed_if_overnight", "action_hold_hotel_rooms"], "passenger_stranded_overnight"),
@@ -261,7 +261,7 @@ D = [
     ("K11", "Rebook passengers stranded overnight onto tomorrow's flights", "next_day_flight_created", "before 22:00", CARE, "rebook_passenger", 5, ["seat_priority_order"] + KID, "next_day_flight_created"),
     ("M11", "Children flying alone stranded overnight: staff stays with them, no hotel alone", "passenger_stranded_overnight for a child flying alone", "before 21:00", CARE, "supervise_child_alone", 5, KID, "passenger_stranded_overnight"),
     ("O13", "Tell passengers on a diverted flight what happens next", "flight_diverted", "within 15 min of landing at the diversion airport", COM, "send_status_update", 7, ["message_matches_truth"], "flight_diverted"),
-    ("O14", "Tell passengers their flight is cancelled and what they are owed", "flight_cancelled", "within 10 min of the cancellation", COM, "send_status_update", 8, ["offer_needs_approved_decision", "message_matches_truth"], "flight_cancelled"),
+    ("O14", "Tell passengers their flight is cancelled and what they are owed", "flight_cancelled", "within 10 min of the cancellation", COM, "draft_message", 8, ["offer_needs_approved_decision", "message_matches_truth"], "flight_cancelled"),
     ("Q09", "Flights resuming from diversion airports: in what order?", "flight_resumed", "before the first diverted flight leaves", NET, "set_flight_protection_order", 6, ["fuel_legal_reserve"], "flight_resumed"),
     ("S07", "An agent's proposal broke its contract: what now?", "A contract_violation event", "immediately", ORC, "escalate_to_next_role", None, ["missing_or_stale_data_blocks"], "missing"),
     ("S08", "A block from the rule check: show it to the named human", "The rule check blocks a proposal", "before the proposal's own deadline", ORC, "escalate_to_next_role", None, ["override_only_by_named_human", "proposal_conflicts_block", "no_double_assignment"], "missing"),
@@ -345,11 +345,16 @@ def build():
             "decided_by": decided, "checked_by": ["orchestrator rule check"] + ladder + ids,
             "safety_rung": rung if rung is not None else "none", "rules": ids, "data_needed": data, "affects": affects,
             "in_story": ev != "missing" and ev in story, "simulator_event": ev, "status": "defined",
+            **({"also_raised_by": ALSO_RAISED_BY[did]} if did in ALSO_RAISED_BY else {}),
         })
     enforced = [e["id"] for e in rules["entries"] if e["enforced"]]
     used = {r for d in out for r in d["rules"]} | {c for d in out for c in d["checked_by"]}
     unused = [r for r in enforced if r not in used]
     return out, added, unused
+
+
+# A decision another agent may also raise (Phase 4b-3): Communication asks A09 when a conflict holds passenger corrections.
+ALSO_RAISED_BY = {"A09": ["communication"]}
 
 
 def story_events() -> set[str]:

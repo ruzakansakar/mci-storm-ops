@@ -5,6 +5,8 @@ import json
 from statistics import median
 
 FIELDS = ("itinerary", "status", "destination", "bag_routing")
+# what the channels did with co-pilot messages: deliveries, not world truth
+DELIVERY_EVENTS = {"message_delivered", "message_dropped", "staff_note_published"}
 
 
 def snapshot(row):
@@ -27,6 +29,7 @@ class ComparisonRecorder:
         self.times = []
         self.counts = []
         self.pax_minutes = Counter()             # passenger -> minutes with at least one wrong screen
+        self.cancellations = {}                  # passenger -> minutes their trip was cancelled or rebooked (for message timing)
 
     def tick(self, t, world, channels):
         critical = set()
@@ -53,6 +56,9 @@ class ComparisonRecorder:
         for pid, row in world.truth.items():
             snap = snapshot(row)
             old = self.previous.get(pid)
+            if old is not None and old != snap and (snap["status"] in ("cancelled", "overnight") and old["status"] != snap["status"]
+                                                    or [f for f in snap["itinerary"] if f not in old["itinerary"]]):
+                self.cancellations.setdefault(pid, []).append(t)
             if old is not None and old != snap:
                 if pid in self.pending:
                     self.superseded += 1
@@ -104,7 +110,12 @@ class ComparisonRecorder:
         link = Counter(e["type"] for e in world.events if e["type"] in ("situation_unavailable", "situation_available_again",
                                                                         "situation_cannot_assess", "agents_disagree",
                                                                         "conflict_hold_cleared"))
-        return {"holds_by_reason": dict(holds), "conflict_holds": conflict_holds, "situation_link_events": dict(link),
+        extra = {}
+        if copilot:
+            from simulator.message_metrics import conflict_metrics, message_metrics
+            extra = {**message_metrics(world, copilot, self.focus, self.cancellations, channels.screens),
+                     "conflict_detail": conflict_metrics(copilot)}
+        return {**extra, "holds_by_reason": dict(holds), "conflict_holds": conflict_holds, "situation_link_events": dict(link),
                 "copilot_situation": copilot.situation_summary() if copilot else None,
                 "pax_minutes_wrong": dict(self.pax_minutes),
                 "critical_passenger_minutes_wrong": self.critical_minutes,
@@ -140,6 +151,7 @@ def truth_fingerprint(result):
     w = result.world
     state = {name: getattr(w, name) for name in ("flights", "aircraft", "crews", "stations", "passengers", "bookings", "bags")}
     state["groups"] = sorted((list(k), v) for k, v in w.groups.items())
-    state["events"] = [e for e in w.events if e["actor"] == "simulator" and not e["type"].startswith("channel_")]
+    state["events"] = [e for e in w.events if e["actor"] == "simulator" and not e["type"].startswith("channel_")
+                       and e["type"] not in DELIVERY_EVENTS]
     state["audit"] = [a for a in w.audit_rows if a["actor"] == "simulator"]
     return hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()

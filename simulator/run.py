@@ -76,19 +76,23 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         from backend.execution.copilot import Copilot
         schedule = [{k: f[k] for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr")}
                     for f in data["flights"]]
-        passengers = [{"id": p["id"], "segment": p["segment"],
+        passengers = [{"id": p["id"], "segment": p["segment"], "full_name": p["full_name"],
                        "channel_types": [c for c in p["contact_channels"] if c in ("app", "sms", "email")]}
-                      for p in data["passengers"]]
+                      for p in data["passengers"]]      # full_name: AgentContext gives it only for passengers being worked on
         situation_schedule = [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "crew_id")}
                               for f in data["flights"]]
         from backend.seed.build import AS_OF, SOR
         system_health = [{"system": s_, "status": "up", "last_heartbeat": AS_OF, "note": "simulated stand-in for the official system"}
                          for s_ in sorted(set(SOR.values()))]                      # as backend/seed/load.py seeds it
+        from backend.execution.simulated_human import SimulatedHumans
+        humans = SimulatedHumans(random.Random(f"humans:{scenario}:{seed}"), lambda *a: _window(world, *a))
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
+                          stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
                           **(copilot_options or {}))
         from backend.contracts import load_contracts
         agent_types = {t for a in ("situation", "communication") for t in load_contracts()[a].event_types}
         channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
+        channels.msg_rng = random.Random(f"messages:{scenario}:{seed}")
     every = cfg["day"]["write_every_min"]
 
     # The reservation system publishes each tracked passenger's trip record: once at the start of the day, then every time it
@@ -101,12 +105,14 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             if e["t"] == t:
                 world.events.append({"t": t, "type": e["type"], "actor": "simulator", "actor_name": e["feed"],
                                      "station": e.get("station"), "payload": e["payload"], "incident": False,
-                                     "published_t": e.get("late_t")})
+                                     "published_t": e.get("late_t"), "overlay": True})
         changes = world.collect_truth_changes()
         for pid, _, new, _ in changes:
             world.events.append(_trip_record(t, pid, new))
         channels.observe(t, changes)
         channels.apply_due(t)
+        if copilot:
+            channels.apply_messages(t)
         for e in channels.drain_events():
             world.events.append({"t": e["t"], "type": e["type"], "actor": "simulator", "actor_name": e["actor_name"],
                                  "station": None, "payload": e["payload"], "incident": False})
@@ -117,10 +123,12 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
                           "payload": e["payload"]} for e in world.events[event_cursor:]
                          if e["type"] in agent_types]           # each agent's context cuts these to its own contract
             event_cursor = len(world.events)
-            outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_fix(t, p))
+            outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_messages(t, p) if p.get("messages")
+                                           else channels.deliver_fix(t, p))
             from backend.execution.copilot import serial
             for agent, kind, payload in outputs:
-                world.events.append({"t": t, "type": kind, "actor": "agent", "actor_name": agent,
+                world.events.append({"t": t, "type": kind,
+                                     "actor": "simulated_human" if agent.startswith("simulated_human") else "agent", "actor_name": agent,
                                      "station": None, "payload": serial(payload), "incident": False})
             for a in audits:
                 world.audit_rows.append({"t": t, "actor": "agent", "actor_name": a["agent"], "what": a["what"],
@@ -149,6 +157,31 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)
     return result
+
+
+def _window(world, key: str, sides: list, flight_ids: list, now) -> str:
+    """What a simulated person sees when they look out of the window: the side of a conflict that matches the real truth.
+    Only the simulated people (backend/execution/simulated_human.py) get this; no agent does."""
+    from simulator.clock import at
+    kind = key.split(":")[0]
+    if kind == "departed-during-stop" and flight_ids:
+        f = world.flights.get(flight_ids[0]) or {}
+        reported = next((e["t"] for e in world.events if e["type"] == "flight_departed" and e.get("overlay")
+                         and (e["payload"] or {}).get("flight_id") == flight_ids[0]), None)
+        real = f.get("actual_dep") is not None and (reported is None or f["actual_dep"] <= reported + 2)
+        return sides[0] if real else sides[1]
+    if kind == "faa-notices":
+        real = [e for e in world.events if e["type"].startswith("ground_") and not e.get("overlay") and at(e["t"]) <= now
+                and (e["payload"] or {}).get("expected_end")]
+        end = real[-1]["payload"]["expected_end"] if real else None
+        return next((x for x in sides if end and x.endswith(end)), sides[0])
+    if kind == "holding-after-end":
+        return sides[1]                                  # the flights really were still in the air
+    if kind == "health-up-feed-stopped":
+        it_down = any(e["type"] == "system_status_changed" and (e["payload"] or {}).get("status") != "up" and not e.get("overlay")
+                      and at(e["t"]) <= now for e in world.events)
+        return sides[1] if it_down else sides[0]
+    return sides[0]
 
 
 def _trip_record(t: int, pid: str, truth: dict) -> dict:

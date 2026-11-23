@@ -147,7 +147,7 @@ def scan(ctx, memory: Memory | None = None, write: bool = True, settings: dict |
     t = ctx.now
     if memory.schedule is None:
         memory.schedule = ctx.read("flights")
-        memory.segments = {r["id"]: r["segment"] for r in ctx.read("passengers")}
+        memory.segments = {r["id"]: r["segment"] for r in ctx.read("passengers", ["id", "segment"])}
         memory.screens = ctx.passenger_screens()      # screen types only: app/SMS exist only for passengers who have them
     stale = _stale(ctx, s)
     frozen = {"*"} if any(x["feed"] == s["data"]["truth_feed"] for x in stale) else {x["feed"] for x in stale}

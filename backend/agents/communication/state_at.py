@@ -55,6 +55,10 @@ class Flight:
     cancelled_at: datetime | None = None
     done: bool = False                   # departed (or arrived)
     events: list = field(default_factory=list)
+    origin: str | None = None
+    destination: str | None = None
+    diverted_to: str | None = None       # 4b-3: where it landed instead (flight_diverted)
+    arrived: bool = False                # 4b-3: flight_arrived seen
 
 
 @dataclass
@@ -74,6 +78,7 @@ class CommState:
     seen: set = field(default_factory=set)             # event ids already applied
     dirty: set = field(default_factory=set)            # (pid, ch) to compare at the end of this minute
     frozen: set = field(default_factory=set)           # channels (or "*" = all) not compared now: their feed is stale
+    message_receipts: list = field(default_factory=list)   # 4b-3: (time, delivered/dropped, pid, channel, message id, reason)
 
     def copy(self) -> "CommState":
         return copy.deepcopy(self)
@@ -86,7 +91,8 @@ def new_state(schedule: list[dict], channels: list[str], screens: dict | None = 
     for f in schedule:
         if f.get("sched_dep") is None:
             continue
-        st.flights[f["id"]] = Flight(f["id"], f["direction"], f["sched_dep"], f["sched_dep"])
+        st.flights[f["id"]] = Flight(f["id"], f["direction"], f["sched_dep"], f["sched_dep"], origin=f.get("origin"),
+                                     destination=f.get("destination"))
     return st
 
 
@@ -139,9 +145,23 @@ def _apply(st: CommState, e: dict) -> None:
         st.dirty.add((pid, ch))
     elif typ == "channel_update_failed":
         pid, ch, kind = p.get("passenger_id"), p.get("channel"), p.get("kind")
+        if kind == "message":                              # a message receipt: not about what a screen shows
+            st.message_receipts.append((when, "message_failed", pid, ch, p.get("message_id"), None))
+            return
         st.receipts.setdefault((pid, ch, kind), []).append((when, eid, p.get("queued_at")))
         st.all_receipts.append((when, ch, pid, eid))
         st.dirty.add((pid, ch))
+    elif typ == "next_day_flight_created":                 # a flight for tomorrow (rebooked passengers may be on it)
+        fid, route = p.get("flight_id"), p.get("route") or ""
+        if fid and fid not in st.flights and "-" in route and isinstance(p.get("departs"), str):
+            try:
+                dep = clock(p["departs"])
+            except ValueError:
+                return
+            origin, dest = route.split("-", 1)
+            st.flights[fid] = Flight(fid, "departure", dep, dep, origin=origin, destination=dest)
+    elif typ in ("message_delivered", "message_dropped"):
+        st.message_receipts.append((when, typ, p.get("passenger_id"), p.get("channel"), p.get("message_id"), p.get("reason")))
     else:
         f = st.flights.get(p.get("flight_id"))
         if f is None:
@@ -156,6 +176,10 @@ def _apply(st: CommState, e: dict) -> None:
                 pass
         elif typ in ("flight_departed", "flight_arrived"):
             f.done = True
+        elif typ == "flight_diverted":
+            f.diverted_to = p.get("diverted_to")
+        if typ == "flight_arrived":
+            f.arrived = True
 
 
 def compare(st: CommState, minute: datetime) -> None:

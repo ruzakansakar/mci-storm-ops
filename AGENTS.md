@@ -52,8 +52,8 @@ WORKING RULES
 - The project owner is not a programmer: final replies are plain English, no jargon, in the required format.
 
 BUILD PHASES
-Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix.
-Next: 4b-3 messages, then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
+Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear.
+Next: the remaining agents one at a time (Network Recovery, Passenger Care, Station & Staff), then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
 
 PHASE 4b-2 IMPLEMENTATION
 - backend/agents/communication/fix.py proposes grouped confirmed corrections; critical cases skip settling; stale feeds and open conflicts hold. Policy thresholds are in the Communication settings.
@@ -79,3 +79,11 @@ PHASE 4c IMPLEMENTATION (shared state + channel data fix)
 - Today mode is locked byte-for-byte by tests/test_shared_state.py (events + audit hashes).
 - Results: seed 7 passenger-minutes wrong 11,744 today vs 6,190 with co-pilot (before the channel fix: 13,625 vs 6,152). Same 20 days: average 48% fewer (was 51%), worst 11%, none worse. 20 extra conflict/outage days (reports/chaos/comparison-extra*.json/html): average 49% fewer, worst 30%, none worse, 115 conflict holds on 8 days.
 - Tests: 558 before 4c; 573 after.
+
+PHASE 4b-3 IMPLEMENTATION (messages + conflict-hold fix)
+- Situation (assess.py _lifecycle/_settle, settings conflicts): conflicts are opened once, then settled by later evidence (with side + evidence), resolved by a human (human_decision_recorded on the new "decisions" feed; trigger event), or marked unresolved after unresolved_after_min. Conflict entries carry status, sides, opened_at, side, settled_by; Communication may read those (shared_reads conflict_fields). Seed 7 Situation versions and the 100 training-day summary are unchanged (no flight conflicts there).
+- Communication holds only the conflicted trip details (settings conflicts.hold_fields; a fix proposal lists held_fields and the rule check allows leaving a detail out only under an open conflict). After ask_after_min it raises A09 (resolve_source_conflict, network_operations_control; A09 also_raised_by communication in decisions.yaml + build script), urgent after urgent_after_min. Never picks a side.
+- backend/execution/simulated_human.py + config/simulated_humans.yaml: co-pilot mode only; answers what its role handles after a response time; never sees blocked proposals; conflicts answered from the simulator truth (simulator/run.py _window); events actor "simulated_human:<role>". Situation's A02/A03 etc. are deliberately not answered.
+- Messages: backend/agents/communication/messages.py (plan_messages, draft, claims), config/message_templates.yaml, backend/rules/message_check.py (in the rule check). O04 and O14 now use draft_message (needs approval) in decisions.yaml and the build script. Names: first name, app only, working_on scope (BufferedContext enforces like AgentContext). Messages travel through Channels.deliver_messages (own random stream; dropped if the trip facts change before arrival). Settings: messages.* in the Communication settings.
+- Metrics: simulator/message_metrics.py (inform time, per passenger, blocked, dropped, withdrawn, approval waits, promises found, next-update promises kept). Pages: Maya's message timeline, staff notes, summary in the comparison section.
+- Results: seed 7 wrong-screen passenger-minutes 11,744 today vs 6,180 co-pilot; 828 messages, 0 promises found, 0 blocked, every cancelled or rebooked passenger told (median 19 min), Maya's cancellation approved after 15 min and delivered at 15:14. Conflict days: hold length 315-805 min -> 0-12 min; those passengers' wrong-screen minutes 2,622 today / 2,419 co-pilot before / 1,764 after.

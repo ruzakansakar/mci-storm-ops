@@ -180,6 +180,9 @@ def check(proposal: dict, pending_proposals: list[dict] | None = None, world: di
     from backend.rules.channel_fix import reasons as channel_fix_reasons
     for reason in channel_fix_reasons(proposal, world):
         block(reason, ["message_matches_truth", "missing_or_stale_data_blocks"], "customer_service_supervisor")
+    from backend.rules.message_check import reasons as message_reasons            # the message fact check (Phase 4b-3)
+    for reason in message_reasons(proposal, world):
+        block(reason, ["message_matches_truth", "offer_needs_approved_decision"], "customer_service_supervisor")
     if blocks:
         rule_ids = []
         for b in blocks:

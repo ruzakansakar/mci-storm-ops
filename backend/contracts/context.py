@@ -437,7 +437,7 @@ class AgentContext:
         for d in ids or []:
             if d not in catalog:
                 self._violate("decision", f"'{d}' is not a decision in config/decisions.yaml")
-            if catalog[d]["proposed_by"] != self.agent:
+            if catalog[d]["proposed_by"] != self.agent and self.agent not in (catalog[d].get("also_raised_by") or []):
                 self._violate("decision", f"decision {d} is raised by {catalog[d]['proposed_by']}, not {self.agent}")
 
     def propose(self, action: str | None, output: dict, safety_rung: int | None = None, supersedes: int | None = None) -> int:

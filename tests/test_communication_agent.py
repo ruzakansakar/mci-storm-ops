@@ -114,17 +114,26 @@ def test_over_the_day_no_mismatch_is_called_on_a_silent_feed(day7):
 
 # ------------------------------------------------------------------ protection 4: privacy
 
-def test_no_names_contacts_or_booking_refs_are_reachable_in_4b1(db):
+def test_names_only_for_passengers_it_works_on_never_contacts_or_booking_refs(db):
+    """4b-1 allowed no names at all. From 4b-3 (messages) the contract adds full_name, but AgentContext gives it ONLY for the
+    passengers the agent declares it is working on; booking refs, contact details and channel texts stay refused for everyone."""
     c = load_contracts()["communication"]
-    assert set(c.reads["passengers"]) == {"id", "segment"} and "channel_views" not in c.reads and "bookings" not in c.reads
+    assert set(c.reads["passengers"]) == {"id", "segment", "full_name"} and "channel_views" not in c.reads and "bookings" not in c.reads
     ctx = AgentContext("communication", db, T("12:00"), run_id="comm-test")
+    with pytest.raises(ContractViolation, match="working on"):
+        ctx.read("passengers", ["id", "full_name"], where={"id": "PAX0001"})          # not declared yet
     ctx.working_on(["PAX0001"])
-    for col in ("full_name", "booking_ref", "contact_channels"):
+    assert ctx.read("passengers", ["id", "full_name"], where={"id": "PAX0001"})[0]["full_name"] == "Maya Torres"
+    with pytest.raises(ContractViolation):
+        ctx.read("passengers", ["id", "full_name"], where={"id": "PAX0002"})          # someone it is not working on
+    for col in ("booking_ref", "contact_channels"):
         with pytest.raises(ContractViolation):
             ctx.read("passengers", ["id", col], where={"id": "PAX0001"})
     with pytest.raises(ContractViolation):
         ctx.read("channel_views", ["message"])
-    assert ctx.read("passengers")[0].keys() == {"id", "segment"}
+    with pytest.raises(ContractViolation):
+        ctx.read("passengers")                                                         # all columns = names for everyone
+    assert ctx.read("passengers", ["id", "segment"])[0].keys() == {"id", "segment"}
 
 
 def test_a_whole_day_reads_no_name_or_contact(replay7):

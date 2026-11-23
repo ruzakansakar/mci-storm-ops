@@ -143,6 +143,7 @@ class State:
     newly_delayed: list = field(default_factory=list)          # (time, flight id) departures that became delayed
     last_event_at: dict = field(default_factory=dict)          # feed -> time of its last event
     unreadable: list = field(default_factory=list)             # (event id, type, why) set aside
+    human_answers: dict = field(default_factory=dict)          # conflict key -> {answer, role, at}: a named human's A09 answer
     duplicates: int = 0
     incident_seen: bool = False                                # something abnormal was signalled earlier today
     messy: list = field(default_factory=list)                  # (time, feed, "duplicate" | "unreadable") when messy data came in
@@ -301,6 +302,9 @@ def _apply(st: State, e: dict):
     elif typ == "passenger_stranded_overnight":
         st.stranded_overnight += 1
         st.stranded_local += 1 if p.get("lives_locally") else 0
+    elif typ == "human_decision_recorded":
+        if p.get("decision_id") == "A09" and p.get("conflict_key"):
+            st.human_answers[p["conflict_key"]] = {"answer": p.get("answer_side"), "role": p.get("decided_by_role"), "at": when}
     elif typ == "next_day_flight_created":
         st.next_day_flights += 1
     else:

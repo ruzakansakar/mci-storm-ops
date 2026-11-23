@@ -78,6 +78,39 @@ def situation_strip(copilot):
             '</table></details><p><b>Fixes held</b>, by reason: ' + holds + '</p>' + (f'<ul>{conflicts}</ul>' if conflicts else ''))
 
 
+def messages_section(copilot):
+    """Phase 4b-3: what the co-pilot told passengers and staff (today mode sends none)."""
+    if "messages_delivered" not in copilot:
+        return ""
+    maya = "".join(f"<tr><td>{hm(m['t'])}</td><td>{esc(m['channel'])}</td><td>{esc(m['type'].replace('_', ' '))}</td>"
+                   f"<td>{esc(m['text'])}</td><td>{esc(m['decided'])}</td></tr>" for m in copilot.get("maya_messages") or [])
+    notes = "".join(f"<tr><td>{hm(n['t'])}</td><td>{esc(n['text'])}</td></tr>" for n in copilot.get("staff_notes") or [])
+    w, ci, nu = copilot["approval_waits_min"], copilot["cancellation_inform_min"], copilot["next_update_promises"]
+    rows = [("Messages delivered", copilot["messages_delivered"]),
+            ("By type", ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(copilot["messages_by_type"].items()))),
+            ("Messages per passenger with an app or SMS: average / most", f"{copilot['messages_per_passenger_avg']} / "
+                                                                         f"{copilot['messages_per_passenger_max']}"),
+            ("Minutes from a cancellation or rebooking to a correct message reaching the passenger: median / worst",
+             f"{ci['median']} / {ci['max']} ({ci['count']} passengers; never told: {ci['never']})"),
+            ("Approval waits (minutes): median / longest", f"{w['median']} / {w['max']} ({w['count']} approvals)"),
+            ("Blocked by the message fact check", copilot["messages_blocked"]),
+            ("Not delivered because the trip changed first (then replaced)", copilot["messages_dropped_truth_changed"]),
+            ("Withdrawn while waiting for approval (truth changed; redrafted)", copilot["messages_withdrawn"]),
+            ("Delivery failed / resent on the other channel", f"{copilot['messages_failed_delivery']} / {copilot['messages_resent']}"),
+            ("Corrections sent", copilot["corrections_sent"]),
+            ("'Next update by' promises: kept / no longer needed / late or missed",
+             f"{nu['kept']} / {nu['no_longer_needed']} / {nu['broken']}"),
+            ("Promises of money, hotels, meals or guarantees found in sent messages", copilot["promises_found"])]
+    table = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in rows)
+    return ('<h3>Messages from the co-pilot</h3><p>Only confirmed facts, the Situation agent picture and approved decisions. Restating the '
+            'truth is automatic; cancellations, rebookings, overnight notices, corrections, staff notes and any message to more than '
+            '50 passengers wait for the (simulated) customer service supervisor.</p><table>' + table + '</table>'
+            '<h3>Maya Torres: every message she received (with co-pilot)</h3><table><tr><th>Time</th><th>Channel</th><th>Type</th>'
+            '<th>Exact text</th><th>Decided</th></tr>' + (maya or '<tr><td colspan="5">none</td></tr>') + '</table>'
+            '<details><summary>The staff note (gate agents and call center) as it changed</summary><table><tr><th>Time</th>'
+            '<th>Note</th></tr>' + (notes or '<tr><td colspan="2">none</td></tr>') + '</table></details>')
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -108,7 +141,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \

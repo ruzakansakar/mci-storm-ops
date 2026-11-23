@@ -22,7 +22,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
 | 4b-2 | Communication agent, part 2: fix screens + today vs with co-pilot | **done** |
 | 4c | Shared state: Communication reads the Situation agent's picture; app/SMS screens only for passengers who have them | **done** |
-| 4b-3 | Communication message writing | next |
+| 4b-3 | Communication messages + conflict holds that clear (evidence or a person) | **done** |
 | Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
 | Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
@@ -461,6 +461,55 @@ them on file (app+SMS 197, SMS only 65, app+email 47, email only 11). Maya Torre
 **Result.** Seed 7: 11,744 passenger-minutes on a wrong screen today vs 6,190 with co-pilot (47% fewer). On the same 20 random days
 as before: 48% fewer on average, none worse. On 20 extra days with source conflicts and feed outages
 (`reports/chaos/comparison-extra.html`): 49% fewer on average, none worse; 115 corrections held for Situation conflicts on 8 days.
+
+## Messages to passengers and staff, and conflicts that clear (Phase 4b-3)
+
+**Conflicts clear.** The Situation agent now closes a conflict when later evidence settles it, and says which side was right:
+
+- A flight "departed while the ramp was closed" is shown false by a later departure, a new delay at the gate or a cancellation.
+- It is shown real by the flight being seen in the air or landing.
+
+If nothing settles a conflict within 30 minutes, it is marked "unresolved: needs a human". A person's answer closes it at once,
+recorded as "resolved by a human (role) at HH:MM".
+
+Communication now holds only the detail in dispute (for example the flight's status) and keeps fixing everything else. After 15
+minutes of holding, it asks network operations which side is true, with counts only and never names. After 45 minutes it asks
+again as urgent. It never picks a side itself.
+
+**Simulated people.** The simulation has no real humans, so `backend/execution/simulated_human.py` stands in for them, in
+co-pilot mode only:
+
+- The customer service supervisor and network operations each answer after 5 to 20 minutes, or 2 to 8 when urgent
+  (`config/simulated_humans.yaml`).
+- They answer a conflict with the real truth. A person can look out of the window; an agent can't.
+- They never see anything the rule check blocked.
+- Every answer is an event from "simulated_human:<role>".
+
+**Messages.** Templates only (`config/message_templates.yaml`), with no AI. Each message carries the facts it states, and a
+message fact check (`backend/rules/message_check.py`) verifies every flight, time, date, city and status against the truth at
+send time. It also blocks:
+
+- promises (compensation, vouchers, refunds, hotels, meals, guarantees) unless an approved decision is linked (none exists yet);
+- blame, and sensitive details (wheelchair, child alone, medical);
+- other passengers' details, names outside the app, SMS over 320 characters, and text that isn't plain English.
+
+Expected end times are never exact: "around 13:00; this may change", or "we don't have a reliable estimate yet". The cause is
+named "weather" only when Situation is confident; otherwise it is "an operational issue". Every message says what we know,
+what we don't know yet, what to do now, and when the next update comes.
+
+Who decides:
+
+- Restating the truth is automatic: first notice, delay, diversion, "no change yet".
+- The supervisor approves cancellations, rebookings, overnight notices, corrections and staff notes.
+- One approval covers a batch to more than 50 passengers.
+
+Delivery and anti-spam:
+
+- At most 4 messages per passenger per hour. Messages go only on channels the passenger has, and a failed one is resent once
+  on the other.
+- A message whose facts change before it arrives is dropped and replaced. One waiting for approval is withdrawn and redrafted.
+- The deliberately unused sentence "A Southwest agent will contact you about overnight arrangements": nobody would do it yet,
+  because Passenger Care is not built.
 
 ## Rules for conflicting files
 
