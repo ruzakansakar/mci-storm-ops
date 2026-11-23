@@ -61,7 +61,8 @@ writes:
               decision_ids, supersedes]
   events:
     mode: insert
-    types: [situation_assessed, cause_suspected, expected_end_updated, human_decision_needed, agent_error]
+    types: [situation_assessed, cause_suspected, expected_end_updated, human_decision_needed, agent_error,
+            agent_heartbeat]               # agent_heartbeat: every run, even with no new version (shared-state rule 6)
   audit_log:
     mode: insert
 

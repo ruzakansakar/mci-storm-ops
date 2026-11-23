@@ -3,18 +3,30 @@
 Used by the live minute loop and in-memory comparisons alike. Proposal, phase,
 schema, decision, write permissions and privacy checks remain AgentContext's.
 The simulator supplies published events, not world objects, to this boundary.
+
+Several agents in one minute loop share one SharedStore: the published source events, and the shared records (e.g. Situation's
+assessments) and heartbeats agents wrote. Agents never call each other; they only meet in the store, through their contexts,
+under the shared-state rules (backend/contracts/shared_state.py).
 """
 from copy import deepcopy
 
 from backend.contracts.context import AgentContext
 from backend.contracts.loader import PII_COLUMNS
+from backend.contracts.shared_state import HEARTBEAT, SHARED, visible
+
+
+class SharedStore:
+    def __init__(self):
+        self.events = []                                       # published source events, each with a run-local id
+        self.records = {table: [] for table in SHARED}         # shared, append-only records agents wrote
+        self.heartbeats = {}                                   # producer agent -> [times it ran]
 
 
 class BufferedContext(AgentContext):
-    def __init__(self, now, schedule, passengers, feeds=None):
-        super().__init__("communication", None, now, run_id="communication", feeds=feeds)
-        self.rows = {"flights": deepcopy(schedule), "passengers": deepcopy(passengers)}
-        self.events = []
+    def __init__(self, now, schedule=None, passengers=None, feeds=None, agent="communication", store=None, rows=None):
+        super().__init__(agent, None, now, run_id=agent, feeds=feeds)
+        self.rows = rows if rows is not None else {"flights": deepcopy(schedule), "passengers": deepcopy(passengers)}
+        self.store = store or SharedStore()
         self.outputs = []
         self.audit = []
         self.saved = {}
@@ -27,6 +39,23 @@ class BufferedContext(AgentContext):
         self.outputs.append(("contract_violation", {"kind": kind, "detail": detail}))
         self._audit_row("contract violation refused", "agent", self.agent, None, {"kind": kind})
         raise err
+
+    @property
+    def events(self):
+        return self.store.events
+
+    @events.setter
+    def events(self, value):
+        self.store.events = value
+
+    # shared state: the same rules as AgentContext, over the store instead of the database
+    def _shared_latest(self, table, meta, spec):
+        return visible(self.store.records[table], table, self.now)
+
+    def producer_heartbeat(self, producer):
+        if not any(v.get("producer") == producer for v in (self.contract.shared_reads or {}).values()):
+            self._violate("read", f"this agent reads nothing from {producer}")
+        return max((t for t in self.store.heartbeats.get(producer, []) if t <= self.now), default=None)
 
     def passenger_screens(self):
         from backend.screens import screens_for
@@ -51,7 +80,7 @@ class BufferedContext(AgentContext):
             if col not in allowed:
                 self._violate("read", f"column '{table}.{col}' is not in this agent's reads")
         if any(c in PII_COLUMNS.get(table, ()) for c in columns):
-            self._violate("read", "names and contact details are unavailable to buffered communication")
+            self._violate("read", "names and contact details are unavailable here")
         self.read_columns.update((table, c) for c in columns)
         if table == "events":
             rows = []
@@ -86,8 +115,12 @@ class BufferedContext(AgentContext):
         else:
             self.saved[(table, row_id)].update(deepcopy(values))
         self._audit_row(f"{self.agent} wrote {table}", table, row_id, None, values)
+        if table in self.store.records:
+            self.store.records[table].append(deepcopy(values))           # visible to readers from its own time on
         if table == "events":
             self.outputs.append((values["type"], deepcopy(values.get("payload"))))
+            if values["type"] == HEARTBEAT:
+                self.store.heartbeats.setdefault(self.agent, []).append(self.now)
         return row_id
 
     def write_many(self, table, rows, mode="insert", row_ids=None):

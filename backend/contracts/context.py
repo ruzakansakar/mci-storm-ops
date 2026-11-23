@@ -43,7 +43,7 @@ class StaleDataError(ContractViolation):
 class AgentContext:
     def __init__(self, agent: str, cur, now: datetime, run_id: str | None = None, incident_id: int | None = None,
                  contracts: dict[str, Contract] | None = None, rules: dict | None = None, source_run_id: str | None = None,
-                 feeds=None):
+                 feeds=None, producer_runs: dict | None = None):
         self.contracts = contracts or load_contracts()
         if agent not in self.contracts:
             raise ContractViolation(agent, "unknown agent", "there is no contract for this agent")
@@ -62,6 +62,9 @@ class AgentContext:
             from backend.contracts.feeds import Feeds
             feeds = Feeds()
         self.feeds = feeds
+        # Which run of each producer agent it reads shared records from (e.g. {"situation": agent_run_id}). Not given: the latest
+        # run of that producer on the same source run. The agent never sees these ids.
+        self.producer_runs = dict(producer_runs or {})
 
     # ------------------------------------------------------------------ the record of a breach
     def _violate(self, kind: str, detail: str, error=ContractViolation):
@@ -106,6 +109,71 @@ class AgentContext:
         self._projection("passenger_screens")
         self.cur.execute("SELECT id, contact_channels FROM passengers ORDER BY id")
         return {pid: screens_for(contacts) for pid, contacts in self.cur.fetchall()}
+
+    # ------------------------------------------------------------------ shared state (backend/contracts/shared_state.py)
+
+    def _shared_spec(self, table: str) -> dict:
+        spec = (self.contract.shared_reads or {}).get(table)
+        if spec is None:
+            self._violate("read", f"shared table '{table}' is not in this agent's shared_reads")
+        return spec
+
+    def read_shared(self, table: str, fields: list[str] | None = None) -> dict | None:
+        """The producer's latest version with time <= now, cut to this contract's fields (suspicions kept as suspicions).
+        Every read is written to the audit log with the version read."""
+        from backend.contracts.shared_state import SHARED, project
+        spec = self._shared_spec(table)
+        for f in fields or []:
+            if f not in spec["fields"]:
+                self._violate("read", f"{table}.{f} is not in this agent's shared_reads")
+        if fields:
+            spec = {**spec, "fields": list(fields)}
+        meta = SHARED[table]
+        row = self._shared_latest(table, meta, spec)
+        view = project(row, table, spec)
+        self._audit_row(f"read shared {table}", table, view["version"] if view else None, None,
+                        {"producer": meta["producer"], "version": view["version"] if view else None,
+                         "time": view["time"].isoformat() if view else None, "read_at": self.now.isoformat()})
+        return view
+
+    def _producer_run(self, producer: str) -> str | None:
+        from backend.contracts.shared_state import SHARED
+        if producer not in self.producer_runs:
+            table = next(t for t, m in SHARED.items() if m["producer"] == producer)
+            self.cur.execute(sql.SQL("SELECT agent_run_id FROM {} WHERE run_id IS NOT DISTINCT FROM %s "
+                                     "ORDER BY created_at DESC, id DESC LIMIT 1").format(sql.Identifier(table)), (self.source_run_id,))
+            row = self.cur.fetchone()
+            self.producer_runs[producer] = row[0] if row else None
+        return self.producer_runs[producer]
+
+    def _shared_latest(self, table: str, meta: dict, spec: dict) -> dict | None:
+        cols = sorted(set(spec["fields"]) | {meta["version"], meta["time"]} |
+                      {meta["suspected"][f] for f in spec["fields"] if f in meta["suspected"]} & set(spec["fields"]))
+        run = self._producer_run(meta["producer"])
+        if run is None:
+            return None
+        self.cur.execute(sql.SQL("SELECT {} FROM {} WHERE agent_run_id = %s AND {} <= %s ORDER BY {} DESC LIMIT 1").format(
+            sql.SQL(", ").join(map(sql.Identifier, cols)), sql.Identifier(table), sql.Identifier(meta["time"]),
+            sql.Identifier(meta["version"])), (run, self.now))
+        r = self.cur.fetchone()
+        return dict(zip(cols, r)) if r else None
+
+    def producer_heartbeat(self, producer: str) -> datetime | None:
+        """When the producer last RAN, at or before now (rule 6: freshness is about the producer, not its last version)."""
+        from backend.contracts.shared_state import HEARTBEAT
+        if not any(v.get("producer") == producer for v in (self.contract.shared_reads or {}).values()):
+            self._violate("read", f"this agent reads nothing from {producer}")
+        run = self._producer_run(producer)
+        if run is None:
+            return None
+        self.cur.execute("SELECT max(occurred_at) FROM events WHERE run_id = %s AND type = %s AND occurred_at <= %s",
+                         (run, HEARTBEAT, self.now))
+        return self.cur.fetchone()[0]
+
+    def heartbeat(self, payload: dict | None = None) -> int:
+        """A producer says 'I ran at now' (every run, even with no new version)."""
+        from backend.contracts.shared_state import HEARTBEAT
+        return self.record_event(HEARTBEAT, {"agent": self.agent, **(payload or {})})
 
     def feed_age_sec(self, feed: str) -> float:
         return (self.now - self.feed_last(feed)).total_seconds()

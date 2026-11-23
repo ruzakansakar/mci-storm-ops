@@ -78,7 +78,9 @@ def test_conflict_holds_and_messages_still_disabled():
     ctx = fixture_context()
     mem = Memory()
     result = scan(ctx, mem, write=False)
-    assert not propose_fixes(ctx, result, FixMemory(), open_conflicts={"F1"})
+    from backend.agents.communication.situation_view import SituationView
+    view = SituationView(version=1, conflicts={"F1": {"since": ctx.now, "version": 1, "key": "departed-during-stop:F1"}})
+    assert not propose_fixes(ctx, result, FixMemory(), view)            # Situation reports conflicting data on F1
     out = {"title": "x", "why": "x", "data_as_of": ctx.now.isoformat(), "options": [], "findings": [],
            "decision_ids": ["O03"], "sources": [{"source": "reservations", "as_of": ctx.now.isoformat()}]}
     for action in ("draft_message", "send_status_update", "send_mass_message"):
@@ -267,3 +269,19 @@ def test_both_modes_survive_in_the_database_and_today_is_untouched():
     finally:
         with contextlib.redirect_stdout(io.StringIO()):
             reset_db()
+
+
+def test_nobody_gets_a_screen_a_fix_or_a_detection_they_do_not_have(pair):
+    from backend.screens import screens_for
+    from backend.seed.build import build
+    has = {p["id"]: set(screens_for(p["contact_channels"])) for p in build()["passengers"]}
+    assert has["PAX0001"] == {"app", "sms", "gate_screen", "call_center"}           # Maya: app + SMS (story override)
+    assert any("app" not in s for s in has.values()) and any("sms" not in s for s in has.values())
+    for r in pair:
+        assert {(p, c) for p, c in r.channels.shown} == {(p, c) for p, s in has.items() for c in s}
+        for e in r.world.events:
+            p = e["payload"] or {}
+            if e["type"].startswith("channel_") and "channel" in p and "passenger_id" in p:
+                assert p["channel"] in has[p["passenger_id"]], e
+            if e["type"] == "channel_fix_applied":
+                assert p["proposal"]["channel"] in has[p["proposal"]["passenger_id"]]

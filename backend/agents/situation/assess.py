@@ -392,18 +392,18 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
     out = []
     for prog in st.past_programs + ([st.program] if st.program else []):
         for when, ends, eids in prog.conflicts:
-            out.append({"key": f"faa-notices:{when.isoformat()}",
+            out.append({"key": f"faa-notices:{when.isoformat()}", "flight_ids": [], "fields": ["expected_end"],
                         "what": f"two FAA notices issued at {hhmm(when)} give different ends ({' and '.join(hhmm(e) for e in ends)})",
                         "values": [{"source": "faa_feed", "says": f"ends {hhmm(e)}", "event_id": i} for e, i in zip(ends, eids)]})
     for fid, eid, when in st.departed_during_stop:
-        out.append({"key": f"departed-during-stop:{fid}", "what": f"{fid} reported departed while the stop is on and the ramp closed",
+        out.append({"key": f"departed-during-stop:{fid}", "flight_ids": [fid], "fields": ["status"], "what": f"{fid} reported departed while the stop is on and the ramp closed",
                     "values": [{"source": "flight_ops", "says": f"{fid} departed at {hhmm(when)}", "event_id": eid},
                                {"source": "faa_feed / weather_feed", "says": "ground stop active and ramp closed"}]})
     p = st.program
     if p and p.ended and st.t - p.ended >= timedelta(minutes=d["holding_after_stop_end_min"]):
         holding = sorted(f.id for f in st.flights.values() if f.status == "holding" and f.hold_since and f.hold_since <= p.ended)
         if holding:
-            out.append({"key": f"holding-after-end:{p.ended.isoformat()}",
+            out.append({"key": f"holding-after-end:{p.ended.isoformat()}", "flight_ids": holding, "fields": ["status"],
                         "what": f"the FAA says the stop ended at {hhmm(p.ended)} but {len(holding)} flight(s) holding since before then "
                                 f"are still holding {int((st.t - p.ended).total_seconds() // 60)} min later",
                         "values": [{"source": "faa_feed", "says": f"stop ended {hhmm(p.ended)}"},
@@ -411,7 +411,8 @@ def _conflicts(st: State, health: dict, stale: list[dict], s: dict) -> list[dict
     for st_ in stale:
         system = d["system_for_feed"].get(st_["source"])
         if system and health.get(system, {}).get("status") == "up":
-            out.append({"key": f"health-up-feed-stopped:{st_['source']}:{st_['since']}",
+            out.append({"key": f"health-up-feed-stopped:{st_['source']}:{st_['since']}", "flight_ids": [],
+                        "fields": ["system_status"],
                         "what": f"system health says {system} is up, but its feed has sent nothing since {st_['since']}",
                         "values": [{"source": "system_health", "says": f"{system}: up"},
                                    {"source": st_["source"], "says": f"last heartbeat {st_['since']}"}]})
@@ -555,6 +556,8 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
         _write(ctx, memory, a, snap, result)
     if memory.last_id is not None:
         _propose(ctx, memory, a, st, result, s, health)
+    # shared-state rule 6: "I ran at T", every run, even when nothing changed (readers measure freshness from this)
+    ctx.heartbeat({"latest_version": memory.version or None, "status": memory.last["status"] if memory.last else None})
     return result
 
 

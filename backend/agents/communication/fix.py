@@ -1,8 +1,9 @@
 """Propose confirmed screen corrections through the contract boundary.
 
 No delivery implementation, world state, names, contact addresses or generated
-message content enters this policy. Phase 4c can supply additional conflict IDs
-through open_conflicts; until then contradictory published flight signals hold.
+message content enters this policy. Source conflicts come from the Situation agent
+(Phase 4c shared state, backend/agents/communication/situation_view.py): no fix on a
+flight where Situation reports conflicting data, until a later version clears it.
 """
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -20,30 +21,6 @@ class FixMemory:
     resent: set = field(default_factory=set)          # (passenger, other channel, trip version) already resent once
 
 
-def conflicts_from_events(events):
-    """Conservative local A09 check; no Situation/shared-state reads.
-
-    Cancellation followed by departure/arrival is contradictory until an
-    explicit source-conflict resolution. The caller may add conflicts in 4c.
-    """
-    states, conflicts = defaultdict(set), set()
-    for e in sorted(events, key=lambda e: (e["occurred_at"], e["id"])):
-        p, kind = e.get("payload") or {}, e["type"]
-        fid = p.get("flight_id")
-        if not fid:
-            continue
-        if kind == "source_conflict_opened":
-            conflicts.add(fid)
-        elif kind == "source_conflict_resolved":
-            conflicts.discard(fid)
-            states[fid].clear()
-        elif kind in ("flight_cancelled", "flight_departed", "flight_arrived"):
-            states[fid].add(kind)
-            if "flight_cancelled" in states[fid] and len(states[fid]) > 1:
-                conflicts.add(fid)
-    return conflicts
-
-
 def _last_failure(findings):
     """When the newest delivery receipt (failed delivery) among these findings arrived, if any."""
     times = [datetime.fromisoformat(e["at"]) for x in findings for e in x.get("evidence", ())
@@ -51,7 +28,7 @@ def _last_failure(findings):
     return max(times, default=None)
 
 
-def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=None):
+def propose_fixes(ctx, result, memory, situation=None, settings=None):
     full = settings or load_settings()
     s = full["fix"]
     st, now = result["state"], ctx.now
@@ -61,7 +38,8 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
             ctx.record_event("channel_fix_held", {"reason": "truth feed stale", "as_of": now.isoformat()})
             memory.held.add(key)
         return []
-    conflicts = set(open_conflicts) | conflicts_from_events(events)
+    from backend.agents.communication.situation_view import SituationView, hold_reason
+    situation = situation or SituationView()
     grouped = defaultdict(list)
     for finding in result["findings"]:
         grouped[(finding["passenger_id"], finding["channel"])].append(finding)
@@ -78,13 +56,15 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
         truth = st.truth[pid]
         severity = max((x["severity"] for x in findings), key=LEVELS.index)
         flight_ids = set(truth["itinerary"]) | set(st.shown[(pid, ch)]["itinerary"])
-        reason = None
+        reason, extra = None, {}
+        conflict = hold_reason(situation, flight_ids)
         if ctx.feed_age_sec("reservations") > ctx.contract.max_data_age_sec:
             reason = "truth feed stale"
         elif ctx.feed_age_sec("flight_ops") > ctx.contract.max_data_age_sec:
             reason = "flight operations feed stale"
-        elif flight_ids & conflicts:
-            reason = "open source conflict (A09)"
+        elif conflict:
+            reason = conflict[0]
+            extra = {"kind": "situation_conflict", "flight_ids": conflict[1], "situation_version": situation.version}
         elif severity != "critical" and (now - truth["at"]).total_seconds() < s["settle_min"] * 60:
             reason = "trip record still settling"
         elif ctx.feed_age_sec(ch) > ctx.contract.max_data_age_sec:
@@ -93,7 +73,7 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
             key = (pid, ch, reason, truth["at"])
             if key not in memory.held:
                 ctx.record_event("channel_fix_held", {"passenger_id": pid, "channel": ch, "reason": reason,
-                                                      "as_of": now.isoformat()})
+                                                      "as_of": now.isoformat(), **extra})
                 memory.held.add(key)
             continue
         failed = any(x["suspected_cause"] == "failed_delivery" for x in findings)
@@ -129,6 +109,7 @@ def propose_fixes(ctx, result, memory, events=(), open_conflicts=(), settings=No
             option = {"agent": "communication", "action": action, "passenger_id": pid, "channel": target,
                       "original_channel": ch, "confirmed": confirmed, "truth_as_of": truth["at"].isoformat(),
                       "data_as_of": now.isoformat(), "decision_ids": ["O03", "O11"], "severity": severity,
+                      "situation_version": situation.version,
                       "flight_id": findings[0].get("flight_id"), "requested_level": "auto",
                       "reason": "delivery failed" if failed else "channel stuck" if stuck else "screen differs from confirmed trip",
                       "sources": findings[0]["sources"]}

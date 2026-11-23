@@ -89,6 +89,7 @@ class Contract:
         self.phase: str | None = data.get("phase")
         self.enabled_in: dict = {c["action"]: c["enabled_in"] for c in data.get("capabilities") or [] if c.get("action")}
         self.projections: dict = dict(data.get("projections") or {})            # name -> phase it is available from
+        self.shared_reads: dict = dict(data.get("shared_reads") or {})          # shared table -> {producer, fields, ...}
 
     def projection_ok(self, name: str) -> bool:
         if name not in self.projections:
@@ -139,6 +140,12 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
             raise ContractError(f"{name}: unknown projection '{proj}'")
         if phase not in PHASES:
             raise ContractError(f"{name}: projection '{proj}' names unknown phase '{phase}'")
+
+    from backend.contracts.shared_state import SharedStateError, validate_shared_reads
+    try:
+        validate_shared_reads(name, data.get("shared_reads"), tables)
+    except SharedStateError as err:
+        raise ContractError(str(err)) from None
 
     writes = data["writes"]
     if not isinstance(writes, dict) or not writes:

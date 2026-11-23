@@ -69,3 +69,45 @@ guardrails:
     enforced_in: AgentContext
     checked_by: backend.contracts.context:AgentContext.write
     how: Every write an agent makes (proposals, events, rule-check results) also writes an audit_log row, and so does every contract violation and override.
+
+# SHARED STATE (Phase 4c): how agents share information. Written once; every agent follows them. Enforced in code, not in agents.
+# checked_by: the exact function (module:name), tested in tests/test_shared_state.py.
+shared_state:
+  - id: SS1_no_direct_calls
+    rule: Agents never call each other. They share information only through shared tables and events.
+    checked_by: backend.contracts.buffered:SharedStore
+    how: >-
+      An agent's only door is its AgentContext. In the minute loop each agent gets its own context; they meet only in the shared
+      store (the database outside the loop). No agent module imports another agent's code (tested).
+  - id: SS2_append_only_versioned
+    rule: Every shared record is append-only and versioned, and carries its producer agent, its time and its sources.
+    checked_by: backend.contracts.shared_state:SHARED
+    how: >-
+      SHARED names each shared table's producer, version, time and source columns. The database refuses UPDATE/DELETE on
+      situation_assessments (trigger), and only its producer may insert (OWN_TABLES).
+  - id: SS3_no_future
+    rule: A reader only sees records with time <= its current time T.
+    checked_by: backend.contracts.shared_state:visible
+    how: AgentContext.read_shared returns the latest version whose time is <= now, even within the same minute.
+  - id: SS4_contract_fields_only
+    rule: A reader's contract lists exactly which producer fields it may read. Everything else is refused.
+    checked_by: backend.contracts.shared_state:validate_shared_reads
+    how: >-
+      shared_reads in the reader's contract lists the fields; the loader refuses unknown fields and fields that are never shared
+      (NEVER_SHARED: flight_controllability, evidence); AgentContext.read_shared refuses any other field at run time.
+  - id: SS5_suspicion_is_not_fact
+    rule: A reader never treats another agent's suspicion as fact. Suspected causes and estimates stay suspected, with their confidence.
+    checked_by: backend.contracts.shared_state:project
+    how: Suspected cause, type and expected ends reach the reader only under "suspected", each with its confidence; facts are separate.
+  - id: SS6_producer_freshness
+    rule: >-
+      Freshness is about the producer, not the record. An old version is not stale (it is only rewritten when something changes);
+      a producer that stopped running is.
+    checked_by: backend.contracts.context:AgentContext.producer_heartbeat
+    how: >-
+      The producer writes an agent_heartbeat event every run (AgentContext.heartbeat). Readers measure staleness from the latest
+      heartbeat <= now, with their own setting (Communication: situation.unavailable_after_min).
+  - id: SS7_disagreements_logged
+    rule: When two agents disagree, both views are logged and a human is asked. Resolving it is the orchestrator's job (later).
+    checked_by: backend.contracts.shared_state:disagreement
+    how: An agents_disagree event holds both views unchanged; the reader escalates through its own escalation action.
