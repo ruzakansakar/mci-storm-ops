@@ -11,6 +11,7 @@ import heapq
 from collections import Counter, deque
 
 from simulator.config import CHANNELS
+from backend.channel_causes import canonical
 
 MAIN_FIELDS = ("itinerary", "status", "destination")
 FIELD_KIND = {"itinerary": "main", "status": "main", "destination": "main", "bag_routing": "bag"}
@@ -34,6 +35,12 @@ class Channels:
         self.dirty_pairs = set()
         self.events = []                                       # events to log (channel updates and failures)
         self.touched = set()                                   # (pid, channel) whose shown copy changed since the last save
+        self.versions = {pid: start for pid in initial_truth}
+        self.delivered_versions = {}
+        self.fix_rng = None
+        self.sent_main = Counter()
+        self.flight_displays = {}
+        self.call_center_notes = {}
 
     # ---------------------------------------------------------------- truth changed
 
@@ -49,6 +56,7 @@ class Channels:
             self.recent.append(t)
         for pid, old, new, rebooked in changes:
             self.truth[pid] = new
+            self.versions[pid] = t
             load = self.load(t)
             for ch in CHANNELS:
                 if any(old[f] != new[f] for f in MAIN_FIELDS):
@@ -58,19 +66,21 @@ class Channels:
                     self._enqueue(t, pid, ch, "bag", new, load)
                 self.dirty_pairs.add((pid, ch))
 
-    def _enqueue(self, t, pid, ch, kind, snapshot, load, seat_hold=False):
+    def _enqueue(self, t, pid, ch, kind, snapshot, load, seat_hold=False, fix_id=None):
         c, lab = self.cfg["channels"][ch], self.cfg["labels"]
+        rng = self.fix_rng if fix_id is not None else self.rng
         extra = min(self.cfg["load"]["extra_cap_min"], c["per_100_changes_min"] * load / 100)
-        lag = c["base_min"] + extra + self.rng.uniform(0, c["jitter_min"])
+        lag = c["base_min"] + extra + rng.uniform(0, c["jitter_min"])
         if seat_hold:
             lag += lab["seat_hold_extra_min"]
         if kind == "bag":
             lag += lab["bag_system_extra_min"]
         lag = max(1, round(lag))
-        fails = self.rng.random() < c["fail_chance"]
+        fails = rng.random() < c["fail_chance"]
         key = (pid, ch, kind)
-        due = max(t + lag, self.last_due.get(key, 0))               # copies on one channel arrive in order
-        self.last_due[key] = due
+        due = t + lag if fix_id is not None else max(t + lag, self.last_due.get(key, 0))
+        if fix_id is None:
+            self.last_due[key] = due
         if kind == "bag":
             cause = "bag_system"
         elif seat_hold:
@@ -80,10 +90,35 @@ class Channels:
         else:
             cause = "sync_delay"
         update = {"key": key, "due": due, "queued": t, "lag": due - t, "snapshot": dict(snapshot),
-                  "cause": cause, "fails": fails}
+                  "cause": cause, "fails": fails, "version": self.versions[pid], "fix_id": fix_id}
         self.seq += 1
         heapq.heappush(self.queue, (due, self.seq, update))
         self.waiting.setdefault(key, []).append(update)
+        if kind == "main":
+            self.sent_main[(pid, ch)] += 1
+        return update
+
+    def deliver_fix(self, t, proposal):
+        """A new delivery request uses the same delay/failure calculation.
+
+        A confirmed correction does not repeat a reservation seat hold. Delivery
+        requests can race; revision checks prevent older copies undoing a fix.
+        The original random stream and original queued deliveries are untouched.
+        """
+        pid, ch = proposal["passenger_id"], proposal["channel"]
+        snap = dict(proposal["confirmed"])
+        snap["itinerary"] = tuple(snap["itinerary"])
+        snap["bag_routing"] = tuple(snap["bag_routing"])
+        if any(snap[f] != self.truth[pid][f] for f in FIELDS):
+            return {"accepted": False, "reason": "authoritative trip changed before dispatch"}
+        # Existing system text is reused verbatim; the agent drafts nothing.
+        snap["message"] = self.truth[pid]["message"]
+        for kind in ("main", "bag"):
+            update = self._enqueue(t, pid, ch, kind, snap, self.load(t), fix_id=proposal["id"])
+            update["flight_id"] = proposal.get("flight_id")
+        return {"accepted": True, "queued_at": t, "endpoint": "flight_display" if ch == "gate_screen" else
+                "passenger_call_center_notes" if ch == "call_center" else "push",
+                "flight_id": proposal.get("flight_id"), "channel": ch}
 
     # ---------------------------------------------------------------- copies arrive
 
@@ -93,12 +128,20 @@ class Channels:
             _, _, u = heapq.heappop(self.queue)
             pid, ch, kind = u["key"]
             self.waiting[u["key"]].remove(u)
+            if self.fix_rng is not None and u["version"] < self.delivered_versions.get(u["key"], -1):
+                self.dirty_pairs.add((pid, ch))
+                continue
+            metadata = {}
+            if u["fix_id"] is not None:
+                from simulator.clock import at
+                metadata = {"fix_id": u["fix_id"], "failed_at": at(t).isoformat(), "version_at": at(u["version"]).isoformat()}
             if u["fails"]:
                 self.failed[u["key"]] = u
                 self.events.append({"t": t, "type": "channel_update_failed", "actor_name": f"channel:{ch}",
                                     "payload": {"passenger_id": pid, "channel": ch, "kind": kind, "queued_at": u["queued"],
-                                                "lost_message": u["snapshot"]["message"]}})
+                                                "lost_message": u["snapshot"]["message"], **metadata}})
             else:
+                self.delivered_versions[u["key"]] = u["version"]
                 self.failed.pop(u["key"], None)
                 snap, cur = u["snapshot"], self.shown[(pid, ch)]
                 if kind == "main":
@@ -107,12 +150,17 @@ class Channels:
                 else:
                     cur.update(bag_routing=snap["bag_routing"])
                 cur["updated_at"] = t
+                if u["fix_id"] is not None and kind == "main":
+                    if ch == "gate_screen":
+                        self.flight_displays.setdefault(u["flight_id"], {})[pid] = dict(cur)
+                    elif ch == "call_center":
+                        self.call_center_notes[pid] = dict(cur)
                 self.touched.add((pid, ch))
                 self.events.append({"t": t, "type": "channel_view_updated", "actor_name": f"channel:{ch}",
                                     "payload": {"passenger_id": pid, "channel": ch, "kind": kind, "lag_min": u["lag"],
                                                 "cause_if_late": u["cause"], "shown_itinerary": list(snap["itinerary"]),
                                                 "shown_status": snap["status"], "shown_destination": snap["destination"],
-                                                "shown_bag_routing": list(snap["bag_routing"]), "message": snap["message"]}})
+                                                "shown_bag_routing": list(snap["bag_routing"]), "message": snap["message"], **metadata}})
             self.dirty_pairs.add((pid, ch))
 
     # ---------------------------------------------------------------- measuring
@@ -120,10 +168,15 @@ class Channels:
     def cause_of(self, pid, ch, field) -> str:
         key = (pid, ch, FIELD_KIND[field])
         if key in self.failed:
-            return "message_failed"
+            return "failed_delivery"
         if self.waiting.get(key):
-            return self.waiting[key][0]["cause"]
-        return "stale_copy"
+            update = self.waiting[key][0]
+            cause = update["cause"]
+            if cause == "seat_hold":
+                # A wrong itinerary/status is a delayed copy, not a seat-only difference.
+                cause = "stale_copy" if update["lag"] > self.cfg["labels"]["stale_after_min"] else "sync_delay"
+            return canonical(cause)
+        return "stuck"
 
     def refresh(self):
         """Recompute which fields are wrong, for passengers/channels that changed since the last call."""

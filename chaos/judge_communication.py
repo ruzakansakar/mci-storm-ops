@@ -26,8 +26,8 @@ from backend.settings import ROOT
 from simulator.clock import at
 
 OUT = ROOT / "reports" / "chaos"
-CAUSE_LABEL = {"waiting_for_update": "sync_delay", "stuck": "stale_copy", "failed_delivery": "message_failed",
-               "bag_system": "bag_system", "seat_hold": "seat_hold", "unknown": None}
+from backend.channel_causes import vocabulary
+CAUSE_LABEL = {name: name if name != "unknown" else None for name in vocabulary()}
 TARGETS = {"recall": 0.98, "precision": 0.98, "delay_min": 1, "critical": 1.0}
 VULNERABLE = ("child_alone", "wheelchair")
 RANDOM_DAYS = 20

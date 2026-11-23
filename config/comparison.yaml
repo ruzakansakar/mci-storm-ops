@@ -1,0 +1,3 @@
+random_days: 20                  # assumption: requested evaluation sample size
+seed_min: 10000000               # assumption: reserve a fresh evaluation-only seed range
+seed_max: 99999999               # assumption: never tune against this evaluation batch

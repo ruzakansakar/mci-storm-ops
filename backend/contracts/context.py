@@ -89,6 +89,14 @@ class AgentContext:
         """When this simulated source last sent a heartbeat (every simulated minute unless it was stopped)."""
         return self.feeds.last_heartbeat(feed, self.now)
 
+    def contact_channel_types(self, passenger_id: str) -> list[str]:
+        """4b-2 projection: channel type names only; never names or addresses."""
+        if self.agent != "communication" or not self.contract.enabled("resend_on_other_channel"):
+            self._violate("read", "channel type projection is available only for communication corrections")
+        self.cur.execute("SELECT DISTINCT c FROM passengers CROSS JOIN LATERAL unnest(contact_channels) c "
+                         "WHERE id=%s AND c IN ('app', 'sms', 'email') ORDER BY c", (passenger_id,))
+        return [row[0] for row in self.cur.fetchall()]
+
     def feed_age_sec(self, feed: str) -> float:
         return (self.now - self.feed_last(feed)).total_seconds()
 

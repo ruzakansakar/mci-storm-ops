@@ -192,7 +192,13 @@ def test_every_finding_has_sources_with_times_and_decision_ids(replay7):
 # ------------------------------------------------------------------ AgentContext: phases, own rows only
 
 def test_actions_of_later_phases_are_refused(db):
-    ctx = AgentContext("communication", db, T("12:00"), run_id="comm-test")
+    from copy import deepcopy
+    from backend.contracts.loader import Contract
+    contracts = dict(load_contracts())
+    original_phase = deepcopy(contracts["communication"].data)
+    original_phase["phase"] = "4b-1"
+    contracts["communication"] = Contract(original_phase)
+    ctx = AgentContext("communication", db, T("12:00"), run_id="comm-test", contracts=contracts)
     out = {"title": "x", "why": "x", "data_as_of": T("12:00").isoformat(), "options": [], "findings": [], "decision_ids": ["O03"],
            "sources": [{"source": "reservations", "as_of": T("12:00").isoformat()}]}
     for action in ("fix_channel_mismatch", "resend_on_other_channel", "draft_message", "send_mass_message"):

@@ -16,15 +16,17 @@ def _t(v):
 
 
 class Writer:
-    def __init__(self, conn, run_id: str, seed: int):
+    def __init__(self, conn, run_id: str, seed: int, persist_truth=True):
         self.conn, self.run_id, self.seed = conn, run_id, seed
         self.incident_event_ids = []
+        self.persist_truth = persist_truth
 
     # ------------------------------------------------------------ one batch
     def flush(self, world, channels):
         ev, au = world.drain()
         with self.conn.cursor() as cur:
-            self._new_flights(cur, world)
+            if self.persist_truth:
+                self._new_flights(cur, world)
             rows = []
             # Event ids come from the database's own counter, reserved for this batch. So the counter is always right after
             # every batch, even if a run crashes halfway, and anyone else inserting events (an agent) never collides.
@@ -46,13 +48,35 @@ class Writer:
                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     [(at(a["t"]), a["actor"], a["actor_name"], a["what"], a["entity_type"], a["entity_id"],
                       Jsonb(a["before"]), Jsonb(a["after"]), self.run_id) for a in au])
-            self._state(cur, world)
+            if self.persist_truth:
+                self._state(cur, world)
             self._views(cur, channels)
         self.conn.commit()
 
     def published_at(self, e):
         """When the source delivered this event, if late (None = as it happened). Chaos tests deliver some events late."""
-        return None
+        return at(e["published_t"]) if e.get("published_t") is not None else None
+
+    def save_proposals(self, context):
+        """Persist buffered, contract-validated proposals in one batch.
+
+        Execution event IDs are run-local proposal IDs; options preserve that
+        key so they can be joined to the database's independently assigned ID.
+        """
+        from backend.execution.copilot import serial
+        rows = []
+        for (table, local_id), r in context.saved.items():
+            if table != "recommendations":
+                continue
+            options = [{**o, "local_proposal_id": local_id} for o in r["options"]]
+            rows.append((r["agent"], r["title"], r["why"], Jsonb(serial(options)), r["autonomy"], r["approver_role"],
+                         r["safety_rung"], r["decision_ids"], r["data_as_of"], r["status"], self.run_id, r["created_at"],
+                         r.get("rule_check_ok"), r.get("rule_check_notes"), r.get("rule_ids")))
+        if rows:
+            with self.conn.cursor() as cur:
+                cur.executemany("INSERT INTO recommendations (agent,title,why,options,autonomy,approver_role,safety_rung,"
+                                "decision_ids,data_as_of,status,run_id,created_at,rule_check_ok,rule_check_notes,rule_ids) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
 
     def _new_flights(self, cur, world):
         """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""

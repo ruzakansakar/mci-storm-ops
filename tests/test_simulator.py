@@ -15,7 +15,7 @@ from simulator.run import NotBuiltYet, run, simulate
 from tests.conftest import one
 
 ROOT = Path(__file__).resolve().parents[1]
-CAUSES = {"stale_copy", "sync_delay", "seat_hold", "message_failed", "bag_system"}
+CAUSES = {"stuck", "waiting_for_update", "seat_hold", "failed_delivery", "bag_system"}
 
 
 @pytest.fixture(scope="session")
@@ -339,7 +339,7 @@ def test_screens_disagree_during_stop_and_agree_after(data):
     during = [n for t, n in zip(ts["t"], ts["pax_disagreeing"]) if hhmm("11:30") <= t <= hhmm("14:00")]
     assert max(during) > 0
     rows = count_disagreements(r.world.truth, r.channels.shown, r.channels.cause_of)
-    assert all(row["cause"] == "message_failed" for row in rows)       # only lost messages are still wrong at the end
+    assert all(row["cause"] == "failed_delivery" for row in rows)       # only lost messages are still wrong at the end
     assert r.metrics["minutes_until_all_channels_agree_after_stop"] is not None
 
 
@@ -413,9 +413,9 @@ def test_simulator_reads_its_legal_numbers_from_the_rules_folder():
 
 # ------------------------------------------------------------------ the simulator does not decide
 
-def test_copilot_mode_not_built_yet():
-    with pytest.raises(NotBuiltYet, match="not built yet"):
-        run(7, "random", mode="copilot")
+def test_copilot_mode_is_available_without_database_writes(data):
+    result = simulate(7, "random", mode="copilot", data=data, until=hhmm("05:01"))
+    assert result.run_id == "random-s7-copilot"
 
 
 def test_simulator_never_touches_rules():

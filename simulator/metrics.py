@@ -25,7 +25,7 @@ class Recorder:
         self.sum_pax += n
         self.peak_pax = max(self.peak_pax, n)
         self.cause_minutes.update(causes)
-        self.failed_now = causes.get("message_failed", 0)
+        self.failed_now = causes.get("failed_delivery", 0)
         self.fixable_now = sum(causes.values()) - self.failed_now
         if self.fixable_now:
             self.last_fixable_t = t

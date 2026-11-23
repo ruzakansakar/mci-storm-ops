@@ -20,10 +20,11 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4a | Situation agent | **done** |
 | 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
-| 4b-2, 4b-3 | Communication agent: fix channels, then messages | |
-| 4b | Orchestrator | |
-| 5 | Guardrail + Network Recovery (milestone 1) | |
-| 6 | Communication, consistency check, Passenger Care, Station & Staff (milestone 2) | |
+| 4b-2 | Communication fixes + paired co-pilot simulation | implemented; verification recorded below |
+| 4c | Shared state: Communication reads Situation assessments | next |
+| 4b-3 | Communication message writing | after shared state |
+| Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
+| Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
 | 8 | Front end (milestone 3) | |
 | 9 | AI pieces | |
@@ -130,7 +131,8 @@ python -m simulator.report --latest                       # writes reports/<run_
 python -m simulator.report --run-id a31_storm-s7-today
 ```
 
-`--mode copilot` exists but only prints "not built yet (Phase 4+)". A full day takes about 10 seconds on Neon.
+`--mode copilot` corrects screens automatically after the rule check. Run today first, then copilot: the second run preserves
+today's events and numbers and saves its own alongside them. Re-running today starts a fresh pair and rebuilds the database.
 All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumption`).
 
 **How it works, in plain English**
@@ -369,6 +371,58 @@ python -m simulator.report --latest       # the debug page has a "Communication 
 - **Scoring.** `chaos/judge_communication.py` reads the simulator's answer key (which screens were really wrong, when, and why) and
   measures recall, precision, detection delay, cause accuracy, critical cases, stale-feed handling and name reads.
   Summary: `reports/chaos/communication.html`; the chaos index gets a Communication column.
+
+## How the co-pilot fixes screens (Phase 4b-2)
+
+Each minute, Communication reads the published trip records and delivery receipts through its contract. It groups wrong
+fields into one correction per passenger and channel. Critical cases go first, then nearer departures, then older mistakes.
+Other changes wait two minutes to settle. A stale truth feed, stale flight-operations feed, or an open source conflict holds
+the correction and records why. Until shared state arrives in 4c, contradictory cancellation/departure signals and explicit
+source-conflict notices provide the local conflict check; the policy also has an explicit hook for additional open conflicts.
+
+The executor runs the existing rule checker. Only automatic actions that pass are delivered. A correction contains exactly
+the confirmed itinerary, status, destination and baggage routing. It cannot add a promise, compensation, hotel or new time.
+The existing system text is reused; no message writing or AI is enabled. Alternative deliveries use channel types only,
+projected from the passenger's available channels. Names, addresses and booking references remain unavailable.
+
+Corrections use the same channel delay, load, jitter and failure calculation as ordinary copies. A separate random stream
+keeps the original day's weather, flights, bookings and normal delivery draws unchanged. A new correction request may arrive
+before a pending ordinary copy; revision checks prevent older copies undoing a newer correction. Already confirmed seats do
+not go through another reservation seat hold. These transport semantics are explicit: there is no instant-delivery shortcut.
+Trip and baggage components retain their separate transport delays. Gate updates are routed to the flight-display endpoint;
+call-center updates to that passenger's notes; app/SMS corrections are pushes.
+
+At most three correction requests per passenger per channel in any rolling 30 minutes are allowed, including resends. The
+same version is not repeated for 15 minutes. A failed delivery, or a screen wrong for 30 minutes, can trigger the same confirmed
+record on another supported channel the passenger has. All thresholds are assumptions in the Communication settings.
+
+Both runs store comparison numbers in `metric_runs`. The report overlays their wrong-screen counts, shows every measure side
+by side and includes Maya's minute-by-minute views for both modes. Recovery includes lost updates. Median/worst catch-up times
+cover versions that actually reached all four screens; replaced versions and versions still wrong at day end are counted
+separately rather than silently treated as successes. Push totals count extra corrections/resends, not ordinary system copies.
+
+The shared cause vocabulary is in `config/channel_causes.yaml`. Raw simulator event labels remain compatible with the old
+story; reported causes use the common names. An itinerary change is no longer mistaken for a seat-only hold. On seed 7 the
+cause-label score changed from 95.7% to 89.7%; normal-wait versus stuck remains an inference, and the judge was not relaxed.
+
+Run these commands in order. Never run tests while a simulation or replay is writing to the database:
+
+```powershell
+python -m pytest -q
+python -m scripts.reset_db
+python -m simulator.run --seed 7 --scenario a31_storm
+python -m simulator.run --seed 7 --scenario a31_storm --mode copilot
+python -m backend.agents.situation.run --run-id a31_storm-s7-today --replay
+python -m backend.agents.communication.run --run-id a31_storm-s7-today --replay
+python -m simulator.report --latest
+python -m chaos.memory_replay --compare
+```
+
+Open `reports/a31_storm-s7-copilot.html` for the seed 7 comparison, and `reports/chaos/comparison.html` for seed 7 plus 20 fresh
+random days. The chosen seeds are saved in `reports/chaos/comparison-seeds.json`; replay them with
+`python -m chaos.compare --seeds <comma-separated-seeds>`. Paired days assert identical operational truth and non-channel
+events. Random-day comparisons include published chaos overlays, late deliveries and feed outages. They are evaluation only;
+settings are never calibrated on them. `python -m chaos.judge_communication --seed7-only` re-scores detection in memory.
 
 ## Rules for conflicting files
 

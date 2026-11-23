@@ -1,0 +1,113 @@
+"""Independent observations of channel outcomes; never an input to an agent."""
+from collections import Counter
+import hashlib
+import json
+from statistics import median
+
+FIELDS = ("itinerary", "status", "destination", "bag_routing")
+
+
+def snapshot(row):
+    return {k: list(row[k]) if isinstance(row[k], tuple) else row[k] for k in FIELDS}
+
+
+class ComparisonRecorder:
+    def __init__(self, settings):
+        self.settings = settings
+        self.previous = {}
+        self.pending = {}
+        self.latencies = []
+        self.superseded = 0
+        self.critical_minutes = 0
+        self.last_wrong = None
+        self.first_agree = None
+        self.maya = []
+        self.maya_versions = []
+        self.times = []
+        self.counts = []
+
+    def tick(self, t, world, channels):
+        critical = set()
+        for pid, ch, field in channels.dis:
+            if field == "bag_routing":
+                continue
+            truth, shown = world.truth[pid], channels.shown[(pid, ch)]
+            cancelled = truth["status"] == "cancelled" or any(world.flights[f]["status"] == "cancelled"
+                                                                           for f in shown["itinerary"] if f in world.flights)
+            vulnerable = world.passengers[pid]["segment"] in self.settings["severity"]["vulnerable_segments"]
+            near = any(world.flights[f]["status"] not in ("departed", "arrived", "cancelled")
+                       and world.flights[f]["est_dep"] - t <= self.settings["severity"]["vulnerable_within_min"]
+                       for f in tuple(truth["itinerary"]) + tuple(shown["itinerary"]) if f in world.flights)
+            if (cancelled and shown["status"] != "cancelled") or (vulnerable and near):
+                critical.add(pid)
+        self.critical_minutes += len(critical)
+        if channels.dis:
+            self.last_wrong = t
+        elif t >= world.sc.end and self.first_agree is None:
+            self.first_agree = t
+        self.times.append(t)
+        self.counts.append(channels.passengers_disagreeing())
+        for pid, row in world.truth.items():
+            snap = snapshot(row)
+            old = self.previous.get(pid)
+            if old is not None and old != snap:
+                if pid in self.pending:
+                    self.superseded += 1
+                self.pending[pid] = (t, snap)
+                if pid == "PAX0001":
+                    self.maya_versions.append({"changed_at": t, "truth": snap, "catch_up": {}})
+            self.previous[pid] = snap
+            if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in self.settings["channels"]):
+                self.latencies.append(t - self.pending.pop(pid)[0])
+        if "PAX0001" in world.truth:
+            self.maya.append({"t": t, "truth": snapshot(world.truth["PAX0001"]),
+                              "channels": {ch: snapshot(channels.shown[("PAX0001", ch)]) for ch in self.settings["channels"]}})
+            if self.maya_versions:
+                version = self.maya_versions[-1]
+                for ch in self.settings["channels"]:
+                    if ch not in version["catch_up"] and all(channels.shown[("PAX0001", ch)][f] == world.truth["PAX0001"][f]
+                                                            for f in FIELDS[:3]):
+                        version["catch_up"][ch] = t
+
+    def finish(self, world, channels, stop_end, copilot=None):
+        proposals = copilot.proposals if copilot else []
+        applied = [p for p, r in zip(proposals, copilot.executions) if r["status"] == "applied"] if copilot else []
+        per_pax = Counter(p["passenger_id"] for p in applied)
+        per_ch = Counter(p["channel"] for p in applied)
+        total_pax, total_ch = Counter(), Counter()
+        for (pid, ch), count in channels.sent_main.items():
+            total_pax[pid] += count
+            total_ch[ch] += count
+        failures = [e for e in world.events if e["type"] == "channel_update_failed" and e["payload"].get("fix_id") is not None]
+        resent = {e["payload"]["fix_id"] for e in failures if any(p["action"] == "resend_on_other_channel" and p["passenger_id"] == e["payload"]["passenger_id"]
+                         and p["original_channel"] == e["payload"]["channel"]
+                         and p["truth_as_of"] == e["payload"]["version_at"]
+                         and p["data_as_of"] >= e["payload"]["failed_at"] for p in applied)}
+        return {"critical_passenger_minutes_wrong": self.critical_minutes,
+                "all_screens_agree_after_stop_min": None if self.first_agree is None else self.first_agree - stop_end,
+                "all_screens_stay_correct_after_stop_min": None if channels.dis else max(0, (self.last_wrong or stop_end - 1) + 1 - stop_end),
+                "lost_updates_wrong_end": len({(p, ch, "bag" if f == "bag_routing" else "main") for p, ch, f in channels.dis
+                                                if (p, ch, "bag" if f == "bag_routing" else "main") in channels.failed}),
+                "catch_up_median_min": median(self.latencies) if self.latencies else None,
+                "catch_up_worst_min": max(self.latencies, default=None),
+                "completed_versions": len(self.latencies), "superseded_versions": self.superseded,
+                "versions_still_wrong_end": len(self.pending),
+                "pushes_per_passenger_avg": round(len(applied) / len(world.passengers), 3),
+                "pushes_per_passenger_max": max(per_pax.values(), default=0),
+                "pushes_per_channel": {ch: per_ch[ch] for ch in self.settings["channels"]},
+                "all_pushes_per_passenger_avg": round(sum(total_pax.values()) / len(world.passengers), 3),
+                "all_pushes_per_passenger_max": max(total_pax.values(), default=0),
+                "all_pushes_per_channel": {ch: total_ch[ch] for ch in self.settings["channels"]},
+                "fixes_failed": len({e["payload"]["fix_id"] for e in failures}), "failed_fixes_resent": len(resent),
+                "failed_delivery_components": len(failures),
+                "maya_versions": self.maya_versions, "maya_minutes": self.maya,
+                "comparison_series": {"t": self.times, "pax_disagreeing": self.counts}}
+
+
+def truth_fingerprint(result):
+    w = result.world
+    state = {name: getattr(w, name) for name in ("flights", "aircraft", "crews", "stations", "passengers", "bookings", "bags")}
+    state["groups"] = sorted((list(k), v) for k, v in w.groups.items())
+    state["events"] = [e for e in w.events if e["actor"] == "simulator" and not e["type"].startswith("channel_")]
+    state["audit"] = [a for a in w.audit_rows if a["actor"] == "simulator"]
+    return hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()

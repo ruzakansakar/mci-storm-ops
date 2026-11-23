@@ -187,9 +187,13 @@ def summary(scores: list[dict]) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
+    ap.add_argument("--compare", action="store_true", help="seed 7 plus 20 fresh paired today/copilot days")
     ap.add_argument("--seeds", default="1-100")
     ap.add_argument("--show", action="store_true", help="print each day's WARN and FAIL checks")
     args = ap.parse_args(argv)
+    if args.compare:
+        from chaos.compare import main as compare_main
+        return compare_main([])
     from backend.seed.build import build
     data = build()
     scores = []

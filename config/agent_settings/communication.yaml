@@ -3,6 +3,14 @@
 # how late each channel is meant to be or how often it fails. It learns the usual lag of each channel from what it observes.
 
 station: MCI
+fix:
+  settle_min: 2                       # assumption: allow noncritical trip changes to settle
+  window_min: 30                      # assumption: rolling per-passenger/channel push window
+  max_pushes: 3                       # assumption: includes resends and merged corrections
+  retry_min: 15                       # assumption: do not repeat a version while delivery is expected
+  resend_after_min: 30                # assumption: stuck-channel alternative delivery threshold
+  unknown_departure_days: 2           # assumption: unknown departures sort after today's known flights
+  alternate_order: [app, sms]         # assumption: only supported passenger-owned channel types
 channels: [app, sms, gate_screen, call_center]
 fields: [itinerary, status, destination, bag_routing]
 

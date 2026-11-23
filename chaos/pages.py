@@ -13,7 +13,7 @@ from chaos.judge import CHECKS
 OUT = ROOT / "reports" / "chaos"
 COLOR = {"PASS": "#2e7d32", "WARN": "#b26a00", "FAIL": "#c62828", "N/A": "#777"}
 BG = {"PASS": "#e8f5e9", "WARN": "#fff4e0", "FAIL": "#fdecea", "N/A": "#f3f3f3"}
-STYLE = """<style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222;max-width:1250px}h1{margin:0 0 4px}
+STYLE = """<p><a href="comparison.html">Today vs with co-pilot: paired days and summary</a></p><style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222;max-width:1250px}h1{margin:0 0 4px}
 .sub{color:#666;font-size:13px}table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
 td,th{border-bottom:1px solid #e4e4e4;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}
 .v{font-weight:600;padding:2px 8px;border-radius:10px;display:inline-block}.box{border:1px solid #e4e4e4;border-radius:8px;padding:12px;margin:14px 0}

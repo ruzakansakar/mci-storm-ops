@@ -41,15 +41,13 @@ def run_id_for(seed: int, scenario: str, mode: str) -> str:
 
 
 def check_mode(mode: str):
-    if mode == "copilot":
-        raise NotBuiltYet("--mode copilot is not built yet (Phase 4+). Only --mode today exists in Phase 3.")
-    if mode != "today":
-        raise ValueError(f"Unknown mode '{mode}'. Use 'today' (or 'copilot' once Phase 4+ is built).")
+    if mode not in ("today", "copilot"):
+        raise ValueError(f"Unknown mode '{mode}'. Use 'today' or 'copilot'.")
 
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
              data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None,
-             on_tick=None) -> Result:
+             on_tick=None, feeds=None, source_overlay=(), late_delivery=None) -> Result:
     """Play the day. With a writer, results are saved in batches; without one it all stays in memory.
     on_tick(t, world, channels): called at the end of every simulated minute (test harnesses read the answer key there)."""
     check_mode(mode)
@@ -65,6 +63,21 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     world.check_story()
     channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start)
     recorder = Recorder(cfg, sc, start)
+    from backend.agents.communication.detect import load_settings
+    from simulator.comparison import ComparisonRecorder
+    from simulator.clock import at
+    comparison = ComparisonRecorder(load_settings())
+    copilot = None
+    event_cursor = 0
+    if mode == "copilot":
+        from backend.execution.copilot import Copilot
+        schedule = [{k: f[k] for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr")}
+                    for f in data["flights"]]
+        passengers = [{"id": p["id"], "segment": p["segment"],
+                       "channel_types": [c for c in p["contact_channels"] if c in ("app", "sms", "email")]}
+                      for p in data["passengers"]]
+        copilot = Copilot(at(start), schedule, passengers, feeds)
+        channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
     every = cfg["day"]["write_every_min"]
 
     # The reservation system publishes each tracked passenger's trip record: once at the start of the day, then every time it
@@ -73,6 +86,11 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         world.events.append(_trip_record(start, pid, world.truth[pid]))
     for t in SimClock(start, until).ticks():
         world.step(t)
+        for e in source_overlay:
+            if e["t"] == t:
+                world.events.append({"t": t, "type": e["type"], "actor": "simulator", "actor_name": e["feed"],
+                                     "station": e.get("station"), "payload": e["payload"], "incident": False,
+                                     "published_t": e.get("late_t")})
         changes = world.collect_truth_changes()
         for pid, _, new, _ in changes:
             world.events.append(_trip_record(t, pid, new))
@@ -82,7 +100,23 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             world.events.append({"t": e["t"], "type": e["type"], "actor": "simulator", "actor_name": e["actor_name"],
                                  "station": None, "payload": e["payload"], "incident": False})
         channels.refresh()
+        if copilot:
+            published = [{"occurred_at": at(e["t"]), "type": e["type"], "station": e.get("station"),
+                          "published_at": at(delivered) if (delivered := (late_delivery(e) if late_delivery else e.get("published_t"))) is not None else None,
+                          "payload": e["payload"]} for e in world.events[event_cursor:]
+                         if e["type"] in copilot.context.contract.event_types]
+            event_cursor = len(world.events)
+            outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_fix(t, p))
+            for kind, payload in outputs:
+                world.events.append({"t": t, "type": kind, "actor": "agent", "actor_name": "communication",
+                                     "station": None, "payload": payload, "incident": False})
+            from backend.execution.copilot import serial
+            for a in audits:
+                world.audit_rows.append({"t": t, "actor": "agent", "actor_name": "communication", "what": a["what"],
+                                         "entity_type": a["entity_type"], "entity_id": a["entity_id"],
+                                         "before": serial(a["before"]), "after": serial(a["after"])})
         recorder.tick(t, world, channels)
+        comparison.tick(t, world, channels)
         if on_tick:
             on_tick(t, world, channels)
         if writer and ((t - start + 1) % every == 0 or t == until):
@@ -91,10 +125,17 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
                 on_flush(writer.conn)
 
     metrics = recorder.finish(world, channels, until)
+    metrics.update(comparison.finish(world, channels, sc.end, copilot))
     rid = run_id or run_id_for(seed, scenario, mode)
+    result = Result(rid, seed, sc, world, channels, metrics, until)
+    from simulator.comparison import truth_fingerprint
+    metrics["truth_sha256"] = truth_fingerprint(result)
+    metrics["contract_violations"] = len(copilot.context.violations) if copilot else 0
     if writer:
+        if copilot:
+            writer.save_proposals(copilot.context)
         writer.finish(sc, metrics, mode, until)
-    return Result(rid, seed, sc, world, channels, metrics, until)
+    return result
 
 
 def _trip_record(t: int, pid: str, truth: dict) -> dict:
@@ -113,10 +154,17 @@ def run(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until:
     from backend.database import connect
     from scripts.reset_db import main as reset_db
     from simulator.store import Writer
-    with contextlib.redirect_stdout(io.StringIO()):
-        reset_db()
+    if mode == "today":
+        with contextlib.redirect_stdout(io.StringIO()):
+            reset_db()
     with connect() as conn:
-        return simulate(seed, scenario, mode, until_min, writer=Writer(conn, run_id_for(seed, scenario, mode), seed),
+        if mode == "copilot":
+            if not conn.execute("SELECT 1 FROM metric_runs WHERE run_id=%s", (run_id_for(seed, scenario, "today"),)).fetchone():
+                raise ValueError("Run the matching today mode first so both modes can be compared.")
+            if conn.execute("SELECT 1 FROM events WHERE run_id=%s LIMIT 1", (run_id_for(seed, scenario, mode),)).fetchone():
+                raise ValueError("This copilot run already exists; rerun today first to rebuild both modes cleanly.")
+        return simulate(seed, scenario, mode, until_min, writer=Writer(conn, run_id_for(seed, scenario, mode), seed,
+                                                                     persist_truth=mode == "today"),
                         on_flush=on_flush)
 
 
@@ -151,7 +199,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Play one simulated day at MCI and save it to the database.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scenario", choices=SCENARIOS, default=DEFAULT_SCENARIO)
-    ap.add_argument("--mode", default="today", help="today (no co-pilot). copilot comes in Phase 4+.")
+    ap.add_argument("--mode", default="today", choices=("today", "copilot"), help="today or automatic confirmed screen corrections")
     ap.add_argument("--until", default=load_config()["day"]["end"], help="last minute to simulate, HH:MM")
     args = ap.parse_args(argv)
     try:
