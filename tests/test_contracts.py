@@ -275,7 +275,8 @@ def test_an_agent_can_propose_each_of_its_actions_and_it_waits_for_the_rule_chec
 
 
 def test_network_recovery_must_run_the_crew_checks_before_a_delay_swap_or_reserve(db):
-    for action in ("delay_flight", "swap_aircraft", "call_in_reserve_crew"):
+    # swap_crews, not swap_aircraft: since 4d only the built actions are switched on (swap_aircraft is "defined, not built")
+    for action in ("delay_flight", "swap_crews", "call_in_reserve_crew"):
         ctx = ctx_for("network_recovery", db)
         with pytest.raises(ContractViolation, match="needs these checks first"):
             ctx.propose(action, good_output("network_recovery", action))
@@ -369,7 +370,7 @@ def test_an_action_outside_the_contract_is_refused_and_human_only_ones_go_to_a_h
 def test_output_that_does_not_match_the_schema_is_refused(db, agent):
     c = CONTRACTS[agent]
     ctx = ctx_for(agent, db)
-    action = c.actions[0]
+    action = next(a for a in c.actions if c.enabled(a))          # an action switched on in the agent's current phase
     ready(ctx, action)
     good = good_output(agent, action)
     before = violations(db, agent)

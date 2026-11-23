@@ -23,6 +23,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4b-2 | Communication agent, part 2: fix screens + today vs with co-pilot | **done** |
 | 4c | Shared state: Communication reads the Situation agent's picture; app/SMS screens only for passengers who have them | **done** |
 | 4b-3 | Communication messages + conflict holds that clear (evidence or a person) | **done** |
+| 4d | Network Recovery agent (advisory: crews, delays/cancellations, hold or divert, recovery) | **done** |
 | Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
 | Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
@@ -511,6 +512,35 @@ Delivery and anti-spam:
 - A message whose facts change before it arrives is dropped and replaced. One waiting for approval is withdrawn and redrafted.
 - The deliberately unused sentence "A Southwest agent will contact you about overnight arrangements": nobody would do it yet,
   because Passenger Care is not built.
+
+## Network Recovery (Phase 4d, advisory)
+
+The Network Recovery agent plans flights, aircraft, pilots and flight attendants. In this phase it only advises: every proposal
+goes through the rule check, and the result (passed or blocked, and who would have to approve it) is recorded, but nothing is
+applied. The world stays exactly as in today mode.
+
+What it does, every 5 minutes and whenever something important is reported:
+
+- **Crews.** It works out when each crew on a waiting flight would run out of legal duty, given the delay and the Situation
+  agent's expected end (likely and worst case). It warns at least an hour ahead and proposes the best legal fix: a reserve, a
+  crew whose own flight was cancelled (a swap), or a crew flying in as passengers (a deadhead). Every option is run through the
+  crew rules first, and an option they reject is never proposed. Extending a pilot's duty is only ever a question for the
+  captain and crew scheduling.
+- **Delays and cancellations.** It ranks the departures in the stop window by how much they need protecting:
+  - priority, and connecting passengers;
+  - the last flight of the day to that city;
+  - international flights, load, and seats left later today.
+
+  It proposes new times, and cancels only flights whose passengers fit on later flights, or whose crew can't legally fly.
+- **Hold or divert.** For each plane in the air, it works out the latest time it can leave for each alternate airport with
+  10 minutes of spare fuel left. It warns early and lists the alternates that pass the fuel and curfew checks. Diverting is for
+  the dispatcher and the captain.
+- **After diversions.** It plans getting diverted planes back, flags maintenance deadlines and curfews, and proposes the
+  restart order when the stop lifts.
+- **Its plan** is published in `recovery_plans`, ready for Passenger Care later.
+
+`python -m chaos.judge_network` scores it on seed 7 plus 5 fresh random days (`reports/chaos/network.html`). Cancellations and
+stranded passengers for the plan are estimates, because the plan is not applied.
 
 ## Rules for conflicting files
 

@@ -256,6 +256,18 @@ def test_while_maya_is_in_the_air_her_messages_say_when_you_land_not_the_gate(co
         assert "gate" not in m["text"] and "When you land in Kansas City" in m["text"] and "connection" in m["text"]
 
 
+def test_on_a_diverted_plane_at_st_louis_maya_is_told_to_stay_with_the_crew_not_to_go_to_the_gate(co7):
+    """WN2031 diverted to STL at 12:15 and sits there until it resumes: messages in between say it is waiting at St. Louis."""
+    sat = [m for m in co7.metrics["maya_messages"] if 12 * 60 + 15 < m["t"] < 13 * 60 + 50 and m["type"] != "diverted_update"]
+    assert sat
+    for m in sat:
+        assert "gate" not in m["text"]
+        assert "Your flight is waiting at St. Louis. Please stay with the crew; we'll update you when it continues." in m["text"]
+    m, world = a_delay_message()
+    fake = {**m, "claims": m["claims"] + [{"kind": "waiting_at_diversion", "flight": "WN1001"}]}
+    assert any("diversion airport" in p for p in message_problems(fake, world))   # the fact check refuses an untrue claim
+
+
 def test_the_airborne_claim_is_fact_checked():
     m, world = a_delay_message()
     fake = {**m, "claims": m["claims"] + [{"kind": "airborne", "flight": "WN1001"}]}

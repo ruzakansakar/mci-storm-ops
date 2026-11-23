@@ -111,6 +111,39 @@ def messages_section(copilot):
             '<th>Note</th></tr>' + (notes or '<tr><td colspan="2">none</td></tr>') + '</table></details>')
 
 
+def network_section(copilot):
+    """Phase 4d: the Network Recovery agent (advisory: it proposes, nothing is applied), next to what today's process did."""
+    n = copilot.get("network")
+    if not n:
+        return ""
+    crew = "".join(f"<tr><td>{esc(c['flight_id'])}</td><td>{'flight attendants' if c['role'] == 'fa' else 'pilots'}</td>"
+                   f"<td>{esc(c['what_happened'])} at {esc(c['at'])}</td><td>{esc(c['first_warning'] or 'no warning')}</td>"
+                   f"<td>{esc(c['lead_min'] if c['lead_min'] is not None else '-')}</td><td>{esc(c['best_option'] or '-')}</td></tr>"
+                   for c in n["crew_timeouts"])
+    fuel = "".join(f"<tr><td>{esc(f['flight_id'])}</td><td>{esc(f['first_warning'] or 'no warning')}</td>"
+                   f"<td>{esc(f['must_leave_by'] or '-')}</td><td>{esc(f['diverted_at'])} to {esc(f['to'])}</td>"
+                   f"<td>{esc(f['lead_min'] if f['lead_min'] is not None else '-')}</td><td>{esc(', '.join(f['safe_alternates']))}</td></tr>"
+                   for f in n["fuel_diversions"])
+    t, pl = n["today"], n["plan"]
+    delays = ", ".join(f"{d['flight_id']} to {d['new_departure'][11:16]}" for d in pl["delays"]) or "none"
+    vs = (f"<tr><th>Cancelled</th><td>{esc(', '.join(t['cancelled']) or 'none')}</td><td>{esc(', '.join(pl['cancel']) or 'none')}"
+          f" (plan at {esc(pl['final_in_stop_at'])}; ever proposed: {esc(', '.join(pl['ever_proposed_to_cancel']) or 'none')})</td></tr>"
+          f"<tr><th>Delayed to</th><td>as it happened</td><td>{esc(delays)}</td></tr>"
+          f"<tr><th>Crew saves</th><td>-</td><td>{esc(', '.join(pl['crew_saves']) or 'none')}</td></tr>"
+          f"<tr><th>Passengers stranded overnight (ESTIMATE, same method)</th><td>{t['estimate']['passengers_stranded_overnight']}"
+          f" (actual day: {t['actual_passengers_stranded_overnight']} incl. diversions and missed connections)</td>"
+          f"<td>{pl['estimate']['passengers_stranded_overnight']}</td></tr>")
+    return ('<h3>Network Recovery (advisory: it proposes, nothing is applied)</h3>'
+            f'<p>{n["proposals"]} proposals; illegal (blocked by the rule check): <b>{n["illegal_proposals"]}</b>. Every proposal would '
+            'need a person: network operations for flights, crew scheduling for crews; divert and duty extensions are only asked.</p>'
+            '<h4>Crew warnings vs real crew time-outs</h4><table><tr><th>Flight</th><th>Crew</th><th>What happened today</th>'
+            '<th>First warning</th><th>Minutes ahead</th><th>Best legal option</th></tr>' + crew + '</table>'
+            '<h4>The plan vs today</h4><table><tr><th></th><th>Today</th><th>The plan</th></tr>' + vs + '</table>'
+            f'<p>Estimate method: {esc(pl["estimate"]["method"])}.</p>'
+            '<h4>Hold or divert warnings (A31 = WN2031)</h4><table><tr><th>Flight</th><th>First warning</th><th>Must leave by</th>'
+            '<th>Actually diverted</th><th>Minutes ahead</th><th>Safe alternates</th></tr>' + fuel + '</table>')
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -141,7 +174,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \

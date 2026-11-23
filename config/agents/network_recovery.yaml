@@ -1,139 +1,63 @@
 # CONTRACT: network_recovery. Flights, aircraft, AND pilots and flight attendants. Proposes only; never moves anything itself.
+# Phase 4d (ADVISORY): it proposes; the rule check records pass/block and who would have to approve; NOTHING is applied.
 agent: network_recovery
+phase: 4d
 purpose: 'Plans flights, aircraft, pilots and flight attendants: crew legality, reserve crews, deadheads, crew hotels, tomorrow''s crew legality,
   and the rebooking plans that go with them.'
+# ------------------------------------------------------------------ WHAT IT READS
+# Only the plan published before the day (the schedule, the crew roster and its duty time at the start of the day, the reserve
+# list, the fleet, stations, later capacity, booked counts per group) and the events up to its time T. The state at T is rebuilt
+# from the events (backend/agents/network_recovery/state_at.py), never taken from end-of-day tables. Passengers: counts only.
 reads:
-  flights:
-  - id
-  - direction
-  - origin
-  - destination
-  - sched_dep
-  - sched_arr
-  - est_dep
-  - est_arr
-  - edct
-  - aircraft_id
-  - crew_id
-  - reserve_crew_ids
-  - next_destination
-  - priority
-  - status
-  - diverted_to
-  - cancel_reason
-  - controllable
-  - pax_total
-  - as_of
-  aircraft:
-  - id
-  - type
-  - seats
-  - current_station
-  - airborne
-  - fuel_minutes_extra
-  - maint_status
-  - maint_due_at
-  - needs_inspection
-  - next_legs
-  - recovery_priority
-  - as_of
-  crews:
-  - id
-  - kind
-  - pilots
-  - flight_attendants
-  - base
-  - current_station
-  - is_reserve
-  - reserve_status
-  - available_from
-  - pilot_duty_left_min
-  - fa_duty_left_min
-  - min_rest_hours
-  - legality_risk
-  - hotel_if_cancelled
-  - deadhead_planned
-  - restrictions
-  - fatigue_reported
-  - availability
-  - as_of
-  passenger_groups:
-  - flight_id
-  - segment
-  - count
-  - rebooked
-  - refunded
-  - as_of
-  later_capacity:
-  - destination
-  - scheduled_flights
-  - later_flights
-  - open_seats_later
-  - next_later_departure
-  - as_of
-  route_tiers:
-  - destination
-  - region
-  - tier
-  stations:
-  - code
-  - name
-  - region
-  - is_base
-  - is_diversion_option
-  - gates
-  - ramp_open
-  - as_of
-  incidents:
-  - id
-  - kind
-  - status
-  - expected_end_min
-  - expected_end_max
-  - run_id
-  events:
-  - id
-  - occurred_at
-  - type
-  - station
-  - payload
-  - run_id
-  hotels:
-  - id
-  - name
-  - station
-  - rooms_total
-  - rooms_available
-  - rooms_held
-  - rate_usd
-  - distance_miles
-  - as_of
+  events: [id, occurred_at, type, station, payload]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, aircraft_id, crew_id, priority, pax_total]
+  aircraft: [id, type, seats, maint_due_at, needs_inspection]
+  crews: [id, kind, pilots, flight_attendants, base, current_station, is_reserve, reserve_status, available_from,
+          pilot_duty_left_min, fa_duty_left_min, min_rest_hours, restrictions, fatigue_reported, availability]
+  stations: [code, name, region, is_diversion_option, has_customs]
+  later_capacity: [destination, later_flights, open_seats_later, next_later_departure]
+  route_tiers: [destination, region, tier]
+  passenger_groups: [flight_id, segment, count]       # booked counts per group: no passenger ids, no names
+static_reads: [flights, aircraft, crews, stations, later_capacity, route_tiers, passenger_groups]   # published before the day
+event_feeds:
+  flight_ops:
+    flight_delayed: [flight_id, delay_min, new_departure, pax]
+    flight_delay_updated: [flight_id, delay_min, new_departure, pax]
+    flight_cancelled: [flight_id, reason, pax]
+    flight_departed: [flight_id, to, delay_min]
+    flight_airborne: [flight_id, to, fuel_minutes_extra]
+    flight_holding: [flight_id, expected_landing, fuel_minutes_extra, pax]
+    flight_diverted: [flight_id, diverted_to, pax, fuel_minutes_extra, extra_flying_min]
+    flight_resumed: [flight_id, to]
+    flight_arrived: [flight_id, delay_min, after_diversion]
+    tarmac_started: [flight_id]
+    tarmac_ended: [flight_id, minutes]
+    next_day_flight_created: [flight_id, route, departs]
+  crew_ops:                            # crew scheduling's own records
+    reserve_crew_assigned: [flight_id, crew_id, role, reserve_id, reserve_duty_left_min]
+    crew_out_of_duty: [flight_id, crew_id, role]
+    pilot_duty_extended: [flight_id, crew_id, extension_min]
+# Shared state (config/agents/_shared.yaml shared_state): the Situation agent's latest version <= T, these fields only.
+shared_reads:
+  situation_assessments:
+    producer: situation
+    fields: [version, assessed_at, status, type, confidence, expected_end_earliest, expected_end_likely, expected_end_latest,
+             end_confidence, conflicts, stale_sources, data_as_of]
+    conflict_fields: [key, flight_ids, fields, status]
+    heartbeat: true
 writes:
   recommendations:
     mode: insert
-    columns:
-    - incident_id
-    - agent
-    - title
-    - why
-    - options
-    - autonomy
-    - approver_role
-    - deadline
-    - rank
-    - safety_rung
-    - data_as_of
-    - status
-    - run_id
-    - created_at
-    - decision_ids
+    columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status,
+              run_id, created_at, decision_ids]
   events:
     mode: insert
-    types:
-    - recovery_plan_drafted
-    - crew_shortfall_found
-    - aircraft_swap_found
-    - human_decision_needed
+    types: [recovery_plan_drafted, crew_shortfall_found, aircraft_swap_found, human_decision_needed, agent_heartbeat, fuel_warning,
+            crew_warning, agent_error]
+  recovery_plans:                      # its shared plan, append-only and versioned (shared-state rules)
+    mode: insert
+    columns: [agent_run_id, run_id, version, planned_at, situation_version, delays, cancels, crew_actions, hold_divert,
+              aircraft_recovery, restart_order, seats_by_destination, warnings, estimates, sources, data_as_of, decision_ids]
   audit_log:
     mode: insert
 actions:
@@ -160,6 +84,36 @@ actions:
 - set_flight_protection_order
 - swap_aircraft
 - swap_crews
+# 4d builds only these; every other action is defined here but not built yet (enabled_in: later). AgentContext refuses those.
+capabilities:
+- {action: flag_crew_legality, enabled_in: 4d, note: "D01/D08/D10: a crew will go over its limit; warned at least warn_before_min ahead"}
+- {action: call_in_reserve_crew, enabled_in: 4d, note: "D03/D08/D10: a legal reserve (all crew checks run first)"}
+- {action: swap_crews, enabled_in: 4d, note: "D11: a crew with spare legal time takes over"}
+- {action: deadhead_crew, enabled_in: 4d, note: "D04: a crew arriving as passengers"}
+- {action: flag_crew_for_tomorrow, enabled_in: 4d, note: "D05/Q06"}
+- {action: delay_flight, enabled_in: 4d, note: "B02"}
+- {action: cancel_flight, enabled_in: 4d, note: "B03/B04"}
+- {action: set_flight_protection_order, enabled_in: 4d, note: "B06/B14/Q02"}
+- {action: recover_diverted_aircraft, enabled_in: 4d, note: "C04"}
+- {action: flag_maintenance_deadline, enabled_in: 4d, note: "C02"}
+- {action: flag_curfew_risk, enabled_in: 4d, note: "B13"}
+- {action: add_extra_flight, enabled_in: later}
+- {action: book_crew_hotel, enabled_in: later}
+- {action: combine_flights, enabled_in: later}
+- {action: hold_departure_at_gate, enabled_in: later}
+- {action: hold_departure_for_connections, enabled_in: later}
+- {action: prepare_faa_extension_report, enabled_in: later}
+- {action: rebook_passenger, enabled_in: later}
+- {action: refuel_at_diversion, enabled_in: later}
+- {action: reposition_aircraft, enabled_in: later}
+- {action: request_maintenance_support, enabled_in: later}
+- {action: request_new_edct, enabled_in: later}
+- {action: swap_aircraft, enabled_in: later}
+# Human only: it may only ask, with the facts. Divert or keep holding (B08, B09): dispatcher and captain. Extend duty (D02):
+# captain and crew scheduling.
+human_only:
+- {action: divert_flight, decided_by: dispatcher_and_captain, decisions: [B08, B09]}
+- {action: extend_crew_duty, decided_by: captain_and_crew_scheduling, decision: D02}
 never:
 - Never propose any crew assignment that breaks a law.yaml crew rule (Table B, rest, cumulative limits, flight attendant limits).
 - 'Never decide a duty extension. That is human only: the captain and crew scheduling.'

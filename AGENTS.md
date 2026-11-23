@@ -6,7 +6,7 @@ Windows, PowerShell, VS Code, Python venv (.venv), PostgreSQL on Neon (cloud, ab
 
 AGREED ARCHITECTURE (decided by the project owner; do not change)
 - Orchestrator: plain code, no AI. Routes work, runs the rule check on every proposal, catches conflicts between agents, escalates to humans. NOT BUILT YET.
-- 5 agents: situation (built), communication (part 1 built), network_recovery (flights, aircraft AND pilots/flight attendants), station_staff (ground staff, gates, ramp, deplaning help), passenger_care (rebooking, hotels, money, vulnerable passengers).
+- 5 agents: situation (built), communication (built: detect, fix, messages), network_recovery (4d: advisory, built), network_recovery (flights, aircraft AND pilots/flight attendants), station_staff (ground staff, gates, ramp, deplaning help), passenger_care (rebooking, hotels, money, vulnerable passengers).
 - There is NO guardrail agent and NO crew agent. Rule checking is code in backend/rules/check.py, called by the orchestrator. The orchestrator can block but never override; only a named human can override, only where a law rule allows it, and it is logged (backend/rules/override.py).
 - AI is used sparingly: only Situation summaries and Communication message drafts, always with a template fallback. Currently AI is OFF everywhere.
 
@@ -52,8 +52,8 @@ WORKING RULES
 - The project owner is not a programmer: final replies are plain English, no jargon, in the required format.
 
 BUILD PHASES
-Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear.
-Next: the remaining agents one at a time (Network Recovery, Passenger Care, Station & Staff), then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
+Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear, 4d Network Recovery (advisory).
+Next: Passenger Care (reads recovery_plans seats), Station & Staff, then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
 
 PHASE 4b-2 IMPLEMENTATION
 - backend/agents/communication/fix.py proposes grouped confirmed corrections; critical cases skip settling; stale feeds and open conflicts hold. Policy thresholds are in the Communication settings.
@@ -88,3 +88,10 @@ PHASE 4b-3 IMPLEMENTATION (messages + conflict-hold fix)
 - Metrics: simulator/message_metrics.py (inform time, per passenger, blocked, dropped, withdrawn, approval waits, promises found, next-update promises kept). Pages: Maya's message timeline, staff notes, summary in the comparison section.
 - Results: seed 7 wrong-screen passenger-minutes 11,744 today vs 6,180 co-pilot; 828 messages, 0 promises found, 0 blocked, every cancelled or rebooked passenger told (median 19 min), Maya's cancellation approved after 15 min and delivered at 15:14. Conflict days: hold length 315-805 min -> 0-12 min; those passengers' wrong-screen minutes 2,622 today / 2,419 co-pilot before / 1,764 after.
 - Message fix (branch fix-messages): messages know when the passenger is in the air (flight_airborne / flight_holding added to the Communication feed; airborne until landed, diverted or cancelled) and then say "When you land in X, please check this app for your connection" (templates: airborne). Cancellation and rebooking notices that only state confirmed facts are automatic (O14 = send_status_update, auto); options, overnight arrangements, corrections and mass batches still need the supervisor. "No change yet" every 60 min. Seed 7: 458 messages (was 828), 1.5 per passenger (was 2.7), Maya's cancellation notice at 14:59 (was 15:14 after approval); wrong screens unchanged (6,180).
+
+PHASE 4d IMPLEMENTATION (Network Recovery, ADVISORY)
+- backend/agents/network_recovery/ (state_at.py rebuilds the network at T from the published start-of-day plan + events; plan.py: crew legality watch D01/D08/D10 with reserve D03, swap D11, deadhead D04 options run through all crew rule checks first; delay/cancel plan B02/B03/B04 with protection order B06; hold/divert warnings B09 (ask only; B08/D02 human only); diverted aircraft C04, maintenance C02, curfews B13, restart order B14/Q02). Settings: config/agent_settings/network_recovery.yaml (all assumptions; reserve_rest_hours assumes usable reserves are rested).
+- Runs in co-pilot mode after Situation (backend/execution/copilot.py NetworkRunner): every proposal is rule-checked; pass/block and "would need approval by <role>" are recorded (events + audit); NOTHING is applied. World identical to today mode (tested).
+- New shared table recovery_plans (append-only, versioned; SHARED registry; estimates travel as suspicions). Contract phase 4d; PHASES gained 4c, 4d, "later" (= defined, not built).
+- chaos/judge_network.py: crew warning lead times vs real crew time-outs, illegal proposals, fuel warning lead vs real diversions, plan vs today cancellations and an ESTIMATE of stranded passengers (same method both sides). Page: reports/chaos/network.html; debug page "Network Recovery" section.
+- Communication: a passenger on a diverted plane waiting at the diversion airport is told "Your flight is waiting at <city>. Please stay with the crew; we'll update you when it continues." (fact-checked).

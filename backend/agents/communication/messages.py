@@ -75,7 +75,8 @@ def flight_facts(st) -> dict:
         status = "cancelled" if f.cancelled_at else "arrived" if f.arrived else "diverted" if f.diverted_to else \
             "departed" if f.done else "delayed" if f.est_dep > f.sched_dep else "scheduled"
         out[fid] = {"status": status, "origin": f.origin, "destination": f.destination, "dep_time": hhmm(f.est_dep),
-                    "dep_date": _date(f.est_dep), "diverted_to": f.diverted_to, "airborne": f.airborne}
+                    "dep_date": _date(f.est_dep), "diverted_to": f.diverted_to, "airborne": f.airborne,
+                    "waiting_at_diversion": bool(f.diverted_to) and not f.airborne and not f.arrived and not f.resumed}
     return out
 
 
@@ -226,6 +227,12 @@ def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, n
         claims.append({"kind": "next_update", "time": next_time})
     do_now = None
     up = next((x for x in trip["itinerary"] if f.get(x, {}).get("airborne")), None) if kind in AIRBORNE_TYPES else None
+    sat = next((x for x in trip["itinerary"] if f.get(x, {}).get("waiting_at_diversion")), None) \
+        if kind in AIRBORNE_TYPES and not up else None
+    if sat:                                                # on a diverted plane on the ground: not "before you go to the gate"
+        w.flight(f, sat)
+        claims += [{"kind": "waiting_at_diversion", "flight": sat}, {"kind": "city", "from": f[sat]["diverted_to"]}]
+        do_now = T["diverted_waiting"]["sms" if channel == "sms" else "app"].format(div_city=w.city(f[sat]["diverted_to"]))
     if up:                                                 # in the air now: what to do is about landing, not the gate
         w.flight(f, up)                                    # backs the landing city
         claims.append({"kind": "airborne", "flight": up})

@@ -22,12 +22,14 @@ TRUTH_TABLES = {
     "decisions", "actions", "metric_runs", "data_issues",
 }
 # The only tables an agent can write to: proposals, its own events, the audit log, and (orchestrator only) incidents.
-WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments", "mismatches"}
+WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments", "mismatches",
+                   "recovery_plans"}
 OWN_TABLES = {"situation_assessments": {"situation"},      # shared state: only its owner writes it
+              "recovery_plans": {"network_recovery"},      # shared state (Phase 4d): the Network Recovery agent's plan
               "mismatches": {"communication"}}             # what the channels show wrongly: only communication records it
 # Build phases in order. A contract may name, per action, the phase it is switched on in (capabilities: action -> enabled_in);
 # AgentContext refuses an action whose phase has not come yet.
-PHASES = ("4b-1", "4b-2", "4b-3")
+PHASES = ("4b-1", "4b-2", "4b-3", "4c", "4d", "later")   # "later": defined in the contract, not built yet
 # Derived lookups an agent may ask AgentContext for, by name. Each reveals channel TYPES only (never an address, name or ref).
 PROJECTIONS = {"passenger_screens": "which of the four screens each passenger has (app/SMS only if on file)",
                "contact_channel_types": "which supported channel types one passenger has (app, sms, email)"}

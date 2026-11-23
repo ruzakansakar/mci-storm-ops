@@ -33,6 +33,15 @@ SHARED = {
                                                   # the most a reader may see of each conflict (never its evidence ids)
     },
 }
+SHARED["recovery_plans"] = {                      # Phase 4d: the Network Recovery agent's (advisory) plan
+    "producer": "network_recovery",
+    "version": "version",
+    "time": "planned_at",
+    "sources": ["sources", "data_as_of"],
+    "suspected": {"estimates": None},              # estimates (e.g. passengers stranded) are not facts: no confidence column
+    "confidences": [],
+    "conflict_keys": [],
+}
 # fields no reader contract may list, with the reason
 NEVER_SHARED = {
     ("situation_assessments", "flight_controllability"): "it decides compensation: usable only once a human has approved it "
@@ -85,7 +94,7 @@ def project(row: dict | None, table: str, spec: dict) -> dict | None:
             continue
         if f in meta["suspected"]:
             conf = meta["suspected"][f]
-            out["suspected"][f] = {"value": row.get(f), "confidence": _num(row.get(conf)) if conf in fields else None,
+            out["suspected"][f] = {"value": row.get(f), "confidence": _num(row.get(conf)) if conf and conf in fields else None,
                                    "suspected": True}
         elif f in meta["confidences"]:
             continue                                     # a confidence travels only with the suspicion it belongs to
