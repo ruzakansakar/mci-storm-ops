@@ -1,0 +1,50 @@
+# Settings for the Network Recovery agent (backend/agents/network_recovery/). Phase 4d: ADVISORY (it proposes; nothing is
+# applied). Every number is a class-project assumption. The agent reads only this file, its contract's tables and events, and
+# the Situation agent's shared picture; never the simulator's code or config.
+
+run:
+  every_min: 5                         # assumption: plan every 5 simulated minutes (as the Situation agent assesses)
+  day_start: "05:00"                   # assumption
+  day_end: "23:59"                     # assumption
+  trigger_events: [flight_delayed, flight_delay_updated, flight_cancelled, flight_holding, flight_diverted, flight_airborne,
+                   flight_resumed, reserve_crew_assigned]   # also plan the minute one of these is delivered
+
+crew:
+  onward_leg_min: 120                  # assumption: a crew's duty plan covers this flight plus about one more leg (the airline's
+                                       # planning estimate; crew_short_for_plan events say "flight + one more leg + buffer")
+  warn_before_min: 60                  # assumption (the brief): warn at least this long before a crew would go illegal
+  restart_after_end_min: 15            # assumption: departures start pushing back this long after the stop's expected end
+  usable_reserve_status: [Available, On Call]   # assumption: published reserve statuses that may still be called in
+  reserve_rest_hours: 10               # assumption: a reserve in a usable status has had at least the legal rest (10 h, 14 CFR
+                                       # 117.25); the roster does not list reserves' rest, and an unknown rest would block them
+  late_night_after: "21:00"            # assumption: reserves with "Late-night restriction" don't fly departures after this
+  international_region: "Mexico / Caribbean"   # assumption: flights there need an "International capable" reserve
+  swap_from_status: [cancelled]        # assumption: a crew is free to swap in only if its own flight was cancelled
+  deadhead_after_landing_min: 30       # assumption: an arriving crew can be at another gate this long after landing
+
+plan:
+  protection:                          # assumption: how much each thing protects a departure from being cancelled (B06)
+    priority: {P1: 40, P2: 30, P3: 15, P4: 0}
+    per_connecting_pax: 0.5            # each booked connecting passenger
+    last_flight_to_city: 25            # the last departure of the day to that city
+    international: 20
+    per_pax: 0.05                      # load
+    no_seats_later_today: 20           # nobody could be re-accommodated later today
+  cancel_only_if_stop_min: 90          # assumption: only plan cancellations if the stop (to Situation's latest end) is this long
+  max_cancel_fraction: 0.2             # assumption: at most this share of departures in the stop window
+  restart_spacing_min: 3               # assumption: one departure every 3 minutes once the stop lifts (restart order, B14)
+  recheck_proposal_min: 30             # assumption: re-propose the same thing at most this often if nothing changed
+
+fuel:                                  # hold or divert (B09; deciding is human only: dispatcher and captain)
+  warn_lead_min: 15                    # assumption: warn this long before the latest safe moment to leave for an alternate
+  alternates:                          # assumption: extra flying minutes from holding over MCI to each diversion airport
+    STL: 15                            # given in the class story (A31's planned alternate)
+    ICT: 25                            # assumption: rounded up from rough distance (conservative = safer)
+    OMA: 25                            # assumption
+    DSM: 25                            # assumption
+    TUL: 25                            # assumption
+  # The fuel floor (10 min) is a rule: config/rules (fuel_buffer_min), checked by backend/rules/safety.py fuel_reserve.
+
+recovery:
+  turn_at_alternate_min: 60            # assumption: refuel and turn at the diversion airport before flying back
+  flight_back_min: 40                  # assumption: flying back from a nearby alternate to MCI

@@ -86,11 +86,21 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
                          for s_ in sorted(set(SOR.values()))]                      # as backend/seed/load.py seeds it
         from backend.execution.simulated_human import SimulatedHumans
         humans = SimulatedHumans(random.Random(f"humans:{scenario}:{seed}"), lambda *a: _window(world, *a))
+        network_rows = {                                   # the plan published before the day (start-of-day values only)
+            "flights": [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "aircraft_id",
+                                               "crew_id", "priority", "pax_total")} for f in data["flights"]],
+            "aircraft": [{k: a.get(k) for k in ("id", "type", "seats", "maint_due_at", "needs_inspection")} for a in data["aircraft"]],
+            # as backend/seed/load.py loads the roster: every crew starts on duty, reserves as reserve; nobody reported fatigue
+            "crews": [{**c, "availability": c.get("availability") or ("reserve" if c.get("is_reserve") else "on_duty"),
+                       "fatigue_reported": bool(c.get("fatigue_reported"))} for c in data["crews"]],
+            "stations": [dict(x) for x in data["stations"]],
+            "later_capacity": [dict(x) for x in data["later_capacity"]], "route_tiers": [dict(x) for x in data["route_tiers"]],
+            "passenger_groups": [{k: g[k] for k in ("flight_id", "segment", "count")} for g in data["passenger_groups"]]}
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
                           stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
-                          **(copilot_options or {}))
+                          network_rows=network_rows, **(copilot_options or {}))
         from backend.contracts import load_contracts
-        agent_types = {t for a in ("situation", "communication") for t in load_contracts()[a].event_types}
+        agent_types = {t for a in ("situation", "network_recovery", "communication") for t in load_contracts()[a].event_types}
         channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
         channels.msg_rng = random.Random(f"messages:{scenario}:{seed}")
     every = cfg["day"]["write_every_min"]
@@ -145,6 +155,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
 
     metrics = recorder.finish(world, channels, until)
     metrics.update(comparison.finish(world, channels, sc.end, copilot))
+    if copilot:
+        from simulator.network_metrics import network_metrics
+        metrics["network"] = network_metrics(world, copilot, data)
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
@@ -154,6 +167,8 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         if copilot:
             writer.save_proposals(copilot.context)
             writer.save_proposals(copilot.situation.context)
+            if copilot.network:
+                writer.save_proposals(copilot.network.context)
             writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)
     return result

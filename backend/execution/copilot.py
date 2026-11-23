@@ -70,15 +70,69 @@ class SituationRunner:
             self.errors.append((now, str(err)))
 
 
+class NetworkRunner:
+    """The Network Recovery agent in the minute loop (Phase 4d, ADVISORY): after Situation, on its own schedule (every few
+    minutes and when a trigger event is delivered). Each proposal goes through the rule check; the result (pass or block, and
+    who would have to approve it) is recorded, and NOTHING is applied."""
+
+    def __init__(self, store, rows, feeds):
+        from backend.agents.network_recovery.plan import Memory, load_settings
+        from backend.agents.situation.state_at import parse_clock
+        self.s = load_settings()
+        self.context = BufferedContext(None, feeds=feeds, agent="network_recovery", store=store, rows=deepcopy(rows))
+        self.memory = Memory()
+        r = self.s["run"]
+        self.start, self.end = parse_clock(r["day_start"]), parse_clock(r["day_end"])
+        self.every = timedelta(minutes=r["every_min"])
+        self.triggers = set(r["trigger_events"])
+        self.errors, self.verdicts = [], []
+
+    def due(self, now) -> bool:
+        if not self.start <= now <= self.end:
+            return False
+        if (now - self.start) % self.every == timedelta(0):
+            return True
+        return any((e.get("published_at") or e["occurred_at"]) == now and e["type"] in self.triggers for e in self.context.events)
+
+    def tick(self, now):
+        from backend.agents.network_recovery.plan import plan
+        if not self.due(now):
+            return
+        ctx = self.context
+        ctx.now = now
+        saved = deepcopy(self.memory)
+        try:
+            res = plan(ctx, self.memory, self.s)
+        except Exception as err:                 # no partial plan; one agent_error with the reason
+            self.memory = saved
+            ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
+            self.errors.append((now, f"{type(err).__name__}: {err}"))
+            return
+        world = {"now": now, "flights": {}}
+        for p in res["proposals"]:
+            verdict = check_only(p, world)
+            rec = ctx.saved[("recommendations", p["id"])]
+            rec["rule_check_ok"] = verdict["result"] == "pass"
+            rec["rule_check_notes"], rec["rule_ids"] = verdict["reasons"], verdict["rule_ids"]
+            rec["status"] = "pending" if verdict["result"] == "pass" else "blocked_by_rule_check"
+            v = {"proposal": serial({k: x for k, x in p.items() if k != "option"}), "verdict": verdict, "advisory": True,
+                 "applied": False, "would_need_approval_by": rec.get("approver_role"), "at": now.isoformat()}
+            kind = "rule_check_passed" if verdict["result"] == "pass" else "rule_check_blocked"
+            ctx.outputs.append((kind, v))
+            ctx._audit_row(kind, "recommendation", p["id"], None, v)          # every pass and block is in the audit log too
+            self.verdicts.append(v)
+
+
 class Copilot:
     def __init__(self, now, schedule, passengers, feeds=None, situation_schedule=None, system_health=None, situation_until=None,
-                 stations=None, humans=None):
+                 stations=None, humans=None, network_rows=None):
         self.store = SharedStore()
         self.context = BufferedContext(now, feeds=feeds, store=self.store,
                                        rows={"flights": deepcopy(schedule), "passengers": deepcopy(passengers),
                                              "stations": deepcopy(stations or [])})
         self.situation = SituationRunner(self.store, situation_schedule or schedule, system_health or [], self.context.feeds,
                                          situation_until)
+        self.network = NetworkRunner(self.store, network_rows, self.context.feeds) if network_rows else None
         self.settings = communication_settings()
         self.detection = Memory()
         self.fixes = FixMemory()
@@ -139,6 +193,11 @@ class Copilot:
         # 1. Situation (its own schedule)
         self.situation.tick(now)
         outputs, audits = self._drain(self.situation.context, "situation")
+        # 1b. Network Recovery (advisory: proposals are rule-checked and recorded, never applied)
+        if self.network:
+            self.network.tick(now)
+            o, a = self._drain(self.network.context, "network_recovery")
+            outputs, audits = outputs + o, audits + a
         # 2. Communication: detect, read Situation's picture, plan fixes and messages
         ctx = self.context
         ctx.now = now

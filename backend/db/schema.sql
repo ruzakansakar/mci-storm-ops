@@ -403,6 +403,33 @@ CREATE TABLE situation_assessments (
 CREATE TRIGGER situation_assessments_append_only BEFORE UPDATE OR DELETE ON situation_assessments
     FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
+-- The Network Recovery agent's plan (shared state, Phase 4d). Append-only and versioned, like situation_assessments. ADVISORY:
+-- nothing in it is applied; it is what the agent proposes, for people (and later Passenger Care) to read.
+CREATE TABLE recovery_plans (
+    id                     bigserial PRIMARY KEY,
+    agent_run_id           text NOT NULL,
+    run_id                 text,
+    version                int NOT NULL,
+    planned_at             timestamptz NOT NULL,         -- simulated time T the plan is "as of"
+    situation_version      int,                          -- the Situation version it was built on
+    delays                 jsonb NOT NULL DEFAULT '[]'::jsonb,
+    cancels                jsonb NOT NULL DEFAULT '[]'::jsonb,
+    crew_actions           jsonb NOT NULL DEFAULT '[]'::jsonb,
+    hold_divert            jsonb NOT NULL DEFAULT '[]'::jsonb,
+    aircraft_recovery      jsonb NOT NULL DEFAULT '[]'::jsonb,
+    restart_order          jsonb NOT NULL DEFAULT '[]'::jsonb,
+    seats_by_destination   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    warnings               jsonb NOT NULL DEFAULT '[]'::jsonb,
+    estimates              jsonb NOT NULL DEFAULT '{}'::jsonb,   -- labelled estimates (the plan is not applied)
+    sources                jsonb NOT NULL DEFAULT '[]'::jsonb,
+    data_as_of             timestamptz,
+    decision_ids           text[] NOT NULL,
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (agent_run_id, version)
+);
+CREATE TRIGGER recovery_plans_append_only BEFORE UPDATE OR DELETE ON recovery_plans
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
 -- ============================================================ CHECKING & MEASURING
 
 -- Written by the communication agent only (its own rows; it may update their status, never another agent's or run's).

@@ -53,6 +53,7 @@ event_feeds:
     next_day_flight_created: [flight_id, route, departs]   # 4b-3: a flight for tomorrow that rebooked passengers may be on
     flight_airborne: [flight_id]       # an inbound flight took off: its passengers are in the air until it lands or diverts
     flight_holding: [flight_id]        # circling, still in the air
+    flight_resumed: [flight_id]        # a diverted flight takes off again from the diversion airport
   channels:                          # one feed per channel, each with its own heartbeat (the payload's "channel" names it)
     _split_by: channel
     _feeds: [app, sms, gate_screen, call_center]

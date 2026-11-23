@@ -84,16 +84,19 @@ class Writer:
         """The shared records agents wrote in a co-pilot run (append-only), under this run. Situation's versions get their own
         agent run id, '<run id>:situation', so they never mix with a standalone replay of the today run."""
         from backend.contracts.shared_state import SHARED
-        rows = store.records.get("situation_assessments") or []
-        if not rows:
-            return
-        cols = [c for c in rows[0] if c not in ("agent_run_id", "run_id")]
-        jsonish = {"flight_controllability", "impact", "conflicts", "stale_sources", "evidence"}
-        with self.conn.cursor() as cur:
-            cur.executemany(
-                f"INSERT INTO situation_assessments (agent_run_id, run_id, {', '.join(cols)}) "
-                f"VALUES (%s, %s, {', '.join(['%s'] * len(cols))})",
-                [[f"{self.run_id}:situation", self.run_id] + [Jsonb(r[c]) if c in jsonish else r[c] for c in cols] for r in rows])
+        jsonish = {"flight_controllability", "impact", "conflicts", "stale_sources", "evidence", "delays", "cancels", "crew_actions",
+                   "hold_divert", "aircraft_recovery", "restart_order", "seats_by_destination", "warnings", "estimates", "sources"}
+        for table, meta in SHARED.items():
+            rows = store.records.get(table) or []
+            if not rows:
+                continue
+            cols = [c for c in rows[0] if c not in ("agent_run_id", "run_id")]
+            with self.conn.cursor() as cur:
+                cur.executemany(
+                    f"INSERT INTO {table} (agent_run_id, run_id, {', '.join(cols)}) "
+                    f"VALUES (%s, %s, {', '.join(['%s'] * len(cols))})",
+                    [[f"{self.run_id}:{meta['producer']}", self.run_id] + [Jsonb(r[c]) if c in jsonish else r[c] for c in cols]
+                     for r in rows])
 
     def _new_flights(self, cur, world):
         """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""
