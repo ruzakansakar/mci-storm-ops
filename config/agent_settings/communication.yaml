@@ -16,7 +16,8 @@ messages:                             # Phase 4b-3: passenger messages and staff
   channel_order: [app, sms]           # assumption: one message per change, in the app if they have it, else by SMS (O02);
                                       # a failed delivery is resent once on the other one
   settle_min: 2                       # assumption: wait this long after a trip change so several changes become one message
-  interval_min: 30                    # assumption: while a passenger's flight is waiting on the incident, an update this often
+  interval_min: 60                    # assumption: while a passenger's flight is waiting on the incident, a "no change yet"
+                                      # update this often (real changes are still sent at once, after settle_min)
   max_per_hour: 4                     # assumption: anti-spam: at most this many messages per passenger in any rolling 60 min
   mass_message_passengers: 50         # assumption: one message to more passengers than this needs one approval for the batch
   mass_promise_margin_min: 20         # assumption: a batch needs an approval first; promise the next update this much later

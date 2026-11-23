@@ -173,9 +173,11 @@ def test_no_sent_message_contains_a_promise_blame_or_sensitive_detail(co7):
     assert co7.metrics["promises_found"] == 0
 
 
-def test_cancellation_overnight_and_correction_messages_were_approved_by_the_supervisor(co7):
+def test_only_messages_beyond_confirmed_facts_wait_for_the_supervisor(co7):
+    """Confirmed facts (incl. a cancellation with its confirmed new flight) go automatically; options, overnight arrangements
+    and corrections, and any batch over the mass limit, need the customer service supervisor."""
     log = {e["id"]: e for e in co7.copilot.messages.log}
-    need = ("cancellation_rebooking", "cancellation_only", "overnight_notice", "rebooking", "correction")
+    need = ("cancellation_only", "overnight_notice", "correction")
     hits = [e for e in _delivered(co7) if e["payload"]["type"] in need]
     assert hits
     for e in hits:
@@ -190,6 +192,11 @@ def test_cancellation_overnight_and_correction_messages_were_approved_by_the_sup
         if big[lg["rec"]] > S["messages"]["mass_message_passengers"]:
             assert lg["action"] == "send_mass_message"
     assert all(lg["action"] in ("send_status_update", "send_mass_message", "resend_on_other_channel") for lg in auto)
+    canc = [lg for lg in auto if lg["type"] in ("cancellation_rebooking", "rebooking")]
+    assert canc and all(lg["action"] in ("send_status_update", "resend_on_other_channel") or lg["action"] == "send_mass_message"
+                        for lg in canc)
+    for lg in canc:                              # confirmed facts only: no "options" or overnight wording
+        assert "option" not in lg["text"].lower() and "tonight" not in lg["text"].lower()
 
 
 def test_anti_spam_at_most_n_messages_per_passenger_per_hour(co7):
@@ -217,7 +224,7 @@ def test_only_people_with_an_app_or_sms_get_messages_and_on_their_own_channels(c
     assert reads and {pid for r in reads for pid in r[1]} <= app_pax
 
 
-def test_maya_gets_a_delay_notice_and_an_approved_cancellation_for_wn3005_with_no_promise(co7):
+def test_maya_gets_a_delay_notice_and_an_automatic_cancellation_for_wn3005_soon_after_14_55(co7):
     mine = co7.metrics["maya_messages"]
     types = [m["type"] for m in mine]
     assert "delay_update" in types
@@ -225,7 +232,8 @@ def test_maya_gets_a_delay_notice_and_an_approved_cancellation_for_wn3005_with_n
     assert len(canc) == 1
     text = canc[0]["text"]
     assert "WN1033" in text and "cancelled" in text and "WN3005" in text and "06:30 on Oct 7" in text
-    assert canc[0]["decided"].startswith("approved by customer service supervisor after")
+    assert canc[0]["decided"].startswith("automatic")
+    assert 14 * 60 + 55 <= canc[0]["t"] <= 15 * 60 + 5                        # within a few minutes of the 14:55 cancellation
     assert not [m for m in mine if forbidden_found(m["text"])]
     assert not re.search(r"hotel|money|compensat|voucher|refund", " ".join(m["text"] for m in mine).lower())
 
@@ -238,3 +246,17 @@ def test_messages_do_not_change_screens_or_the_world(co7):
     assert truth_fingerprint(today) == truth_fingerprint(co7)
     assert co7.metrics["passenger_minutes_of_disagreement"] < today.metrics["passenger_minutes_of_disagreement"]
     assert not [e for e in today.world.events if e["type"] in ("message_delivered", "message_sent")]
+
+
+def test_while_maya_is_in_the_air_her_messages_say_when_you_land_not_the_gate(co7):
+    """WN2031 took off at 09:45 and diverted at 12:15: until then she is in the air, so no "before you go to the gate"."""
+    early = [m for m in co7.metrics["maya_messages"] if m["t"] < 12 * 60 + 15]
+    assert len(early) >= 1                                   # 11:35 (with hourly "no change yet", no 12:09 update)
+    for m in early:
+        assert "gate" not in m["text"] and "When you land in Kansas City" in m["text"] and "connection" in m["text"]
+
+
+def test_the_airborne_claim_is_fact_checked():
+    m, world = a_delay_message()
+    fake = {**m, "claims": m["claims"] + [{"kind": "airborne", "flight": "WN1001"}]}
+    assert any("in the air" in p for p in message_problems(fake, world))       # WN1001 has not taken off

@@ -71,6 +71,9 @@ def _claim_problems(c: dict, pid: str | None, world: dict) -> list[str]:
     elif k == "departure":
         if f["dep_time"] != c["time"] or f["dep_date"] != c["date"]:
             out.append(f"says {c['flight']} leaves {c['time']} {c['date']} but it is {f['dep_time']} {f['dep_date']}")
+    elif k == "airborne":
+        if not f.get("airborne"):
+            out.append(f"says the passenger is in the air on {c['flight']}, but flight operations does not")
     elif k == "diverted_to":
         if f.get("diverted_to") != c["to"]:
             out.append(f"says {c['flight']} diverted to {c['to']} but flight operations says {f.get('diverted_to')}")

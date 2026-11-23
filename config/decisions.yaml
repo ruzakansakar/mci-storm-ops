@@ -5045,21 +5045,20 @@ decisions:
   trigger: flight_cancelled
   deadline: within 10 min of the cancellation
   proposed_by: communication
-  action: draft_message
+  action: send_status_update
   decided_by:
-    level: needs_approval
-    role: customer_service_supervisor
+    level: auto
   checked_by:
   - orchestrator rule check
   - rung_8_cost
   - offer_needs_approved_decision
   - message_matches_truth
-  - action_draft_message
+  - action_send_status_update
   safety_rung: 8
   rules:
   - offer_needs_approved_decision
   - message_matches_truth
-  - action_draft_message
+  - action_send_status_update
   data_needed: *id029
   affects: *id030
   in_story: true

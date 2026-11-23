@@ -25,8 +25,12 @@ from backend.agents.communication.state_at import hhmm
 from backend.rules.message_check import message_problems, templates
 from backend.settings import TZ
 
-AUTO_TYPES = {"first_notice", "delay_update", "diverted_update", "still_delayed", "no_change"}
-APPROVAL_TYPES = {"cancellation_rebooking", "cancellation_only", "overnight_notice", "correction", "rebooking"}
+# automatic: restating confirmed facts (including a cancellation with its confirmed new flight). Approval: anything beyond
+# confirmed facts (options, overnight arrangements, correcting an earlier wrong message), and any batch over the mass limit.
+AUTO_TYPES = {"first_notice", "delay_update", "diverted_update", "still_delayed", "no_change", "cancellation_rebooking",
+              "rebooking"}
+APPROVAL_TYPES = {"cancellation_only", "overnight_notice", "correction"}
+AIRBORNE_TYPES = {"first_notice", "no_change", "delay_update", "still_delayed"}   # the "what to do now" is about landing
 DECISION = {"first_notice": ["O01", "O02", "O05", "O06"], "delay_update": ["O07", "O02", "O05", "O06"],
             "still_delayed": ["O07", "O02", "O05", "O06"], "diverted_update": ["O13", "O02", "O05", "O06"],
             "no_change": ["O07", "O02", "O05", "O06"],
@@ -71,7 +75,7 @@ def flight_facts(st) -> dict:
         status = "cancelled" if f.cancelled_at else "arrived" if f.arrived else "diverted" if f.diverted_to else \
             "departed" if f.done else "delayed" if f.est_dep > f.sched_dep else "scheduled"
         out[fid] = {"status": status, "origin": f.origin, "destination": f.destination, "dep_time": hhmm(f.est_dep),
-                    "dep_date": _date(f.est_dep), "diverted_to": f.diverted_to}
+                    "dep_date": _date(f.est_dep), "diverted_to": f.diverted_to, "airborne": f.airborne}
     return out
 
 
@@ -120,10 +124,10 @@ class Writer:
         self.claims.append({"kind": "route", "flight": fid, "from": f[fid]["origin"], "to": f[fid]["destination"]})
         return fid
 
-    def render(self, kind, channel, values, next_sentence, first_name=None):
+    def render(self, kind, channel, values, next_sentence, first_name=None, do_now=None):
         tpl = self.T["templates"][kind]
         parts = {"know": tpl["know"].format(**values), "dont_know": tpl["dont_know"].format(**values).strip(),
-                 "do_now": (tpl.get("sms_do_now") if channel == "sms" and tpl.get("sms_do_now") else tpl["do_now"]).format(**values),
+                 "do_now": do_now or (tpl.get("sms_do_now") if channel == "sms" and tpl.get("sms_do_now") else tpl["do_now"]).format(**values),
                  "next": tpl.get("next") or next_sentence}
         greeting = self.T["greeting"]["app_named"].format(first_name=first_name) if first_name and channel == "app" else ""
         if greeting:
@@ -220,7 +224,15 @@ def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, n
     next_sentence = T["next"]["timed" + sms].format(next_time=next_time) if next_time else T["next"]["if_changes" + sms]
     if next_time:
         claims.append({"kind": "next_update", "time": next_time})
-    text, parts = w.render(kind, channel, values, next_sentence, first_name)
+    do_now = None
+    up = next((x for x in trip["itinerary"] if f.get(x, {}).get("airborne")), None) if kind in AIRBORNE_TYPES else None
+    if up:                                                 # in the air now: what to do is about landing, not the gate
+        w.flight(f, up)                                    # backs the landing city
+        claims.append({"kind": "airborne", "flight": up})
+        later = trip["itinerary"][trip["itinerary"].index(up) + 1:]
+        key = ("connection" if later else "final") + ("_sms" if channel == "sms" else "")
+        do_now = T["airborne"][key].format(land_city=w.city(f[up]["destination"]))
+    text, parts = w.render(kind, channel, values, next_sentence, first_name, do_now)
     return {"type": kind, "passenger_id": pid, "channel": channel, "text": text, "parts": parts, "claims": claims + w.claims,
             "trip_version": trip["at"].isoformat(),
             "trip_facts": {"itinerary": list(trip["itinerary"]), "status": trip["status"]}}   # what it says about the trip

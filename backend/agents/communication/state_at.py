@@ -59,6 +59,7 @@ class Flight:
     destination: str | None = None
     diverted_to: str | None = None       # 4b-3: where it landed instead (flight_diverted)
     arrived: bool = False                # 4b-3: flight_arrived seen
+    airborne: bool = False               # in the air now: took off (departed / airborne / holding), not yet landed or diverted
 
 
 @dataclass
@@ -180,6 +181,10 @@ def _apply(st: CommState, e: dict) -> None:
             f.diverted_to = p.get("diverted_to")
         if typ == "flight_arrived":
             f.arrived = True
+        if typ in ("flight_departed", "flight_airborne", "flight_holding"):
+            f.airborne = True
+        elif typ in ("flight_arrived", "flight_diverted", "flight_cancelled"):
+            f.airborne = False
 
 
 def compare(st: CommState, minute: datetime) -> None:
