@@ -102,7 +102,9 @@ def main(argv=None):
                                                                           "worse_than_today")},
                                    "passengers": len(h["passengers"])} for r in results for h in r["conflict_holds"]],
                "holds_by_reason": dict(sum((Counter(r["copilot"]["holds_by_reason"]) for r in results), Counter())),
-               "situation_link_events": dict(sum((Counter(r["copilot"]["situation_link_events"]) for r in results), Counter()))}
+               "situation_link_events": dict(sum((Counter(r["copilot"]["situation_link_events"]) for r in results), Counter())),
+               "conflicts_closed_by": dict(Counter(c["closed_by"] for r in results for c in r["copilot"].get("conflict_detail", []))),
+               "messages": message_summary(results)}
     (out / f"{args.name}-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     write_page(results, summary, args.name)
     print(json.dumps(summary), flush=True)
@@ -115,6 +117,29 @@ def main(argv=None):
             write_day_page(None, sc)
             sit.append(sc)
         print("index:", write_index(sit, title="Chaos days: Situation agent, and today vs with co-pilot (played in memory)"))
+
+
+def message_summary(results):
+    """Messages over all days (co-pilot mode only; today mode sends none)."""
+    rows = [r["copilot"] for r in results if "messages_delivered" in r["copilot"]]
+    if not rows:
+        return {}
+    inform = [r["cancellation_inform_min"] for r in rows if r["cancellation_inform_min"]["count"]]
+    waits = [r["approval_waits_min"] for r in rows if r["approval_waits_min"]["count"]]
+    total = lambda k: sum(r[k] for r in rows)
+    return {"delivered": total("messages_delivered"), "per_passenger_avg": round(mean(r["messages_per_passenger_avg"] for r in rows), 2),
+            "per_passenger_max": max(r["messages_per_passenger_max"] for r in rows),
+            "by_type": dict(sum((Counter(r["messages_by_type"]) for r in rows), Counter())),
+            "inform_median_of_days": round(mean(x["median"] for x in inform), 1) if inform else None,
+            "inform_worst": max((x["max"] for x in inform), default=None), "never_told": sum(x["never"] for x in inform),
+            "blocked": total("messages_blocked"), "blocked_reasons": dict(sum((Counter(r["blocked_reasons"]) for r in rows), Counter())),
+            "dropped_truth_changed": total("messages_dropped_truth_changed"), "withdrawn": total("messages_withdrawn"),
+            "approvals_void": total("approvals_void_truth_changed"), "corrections": total("corrections_sent"),
+            "approval_wait_median_of_days": round(mean(x["median"] for x in waits), 1) if waits else None,
+            "approval_wait_longest": max((x["max"] for x in waits), default=None),
+            "promises_found": total("promises_found"),
+            "next_update": dict(sum((Counter({k: v for k, v in r["next_update_promises"].items() if isinstance(v, int)})
+                                     for r in rows), Counter()))}
 
 
 COLS = [("passenger_minutes_of_disagreement", "Passenger-minutes wrong"), ("critical_passenger_minutes_wrong", "Critical passenger-minutes"),

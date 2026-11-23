@@ -1,10 +1,10 @@
 # CONTRACT: communication. Every channel telling each passenger the same true story. Written for the whole agent; built in 3 phases.
 #   4b-1        DETECT: find what each channel shows wrongly, why (as far as a real system can tell), how bad, and when it clears.
-#   4b-2 (now)  FIX: re-show the confirmed truth on a channel that is wrong, resend on another channel when a delivery failed.
-#   4b-3        MESSAGES: draft and send messages (names and contacts only for the passengers it is working on, G05).
+#   4b-2        FIX: re-show the confirmed truth on a channel that is wrong, resend on another channel when a delivery failed.
+#   4b-3 (now)  MESSAGES: draft and send messages (names and contacts only for the passengers it is working on, G05).
 # AgentContext refuses any action whose phase has not come yet (capabilities: enabled_in), whatever the agent's code does.
 agent: communication
-phase: 4b-2
+phase: 4b-3
 purpose: >-
   Every passenger hears the same true story from every channel (app, sms, gate_screen, call_center), quickly, and never anything
   a human hasn't approved. One of two agents that may ever see names (only from 4b-3, and only for the passengers it is working on).
@@ -15,9 +15,11 @@ purpose: >-
 reads:
   events: [id, occurred_at, type, station, payload]
   flights: [id, direction, origin, destination, sched_dep, sched_arr]       # the published schedule only
-  passengers: [id, segment]          # segment (child_alone / wheelchair / international / connecting / standard): priority only,
-                                     # sensitive, never in any text
-static_reads: [flights, passengers]  # published before the day; segment doesn't change during it
+  passengers: [id, segment, full_name]   # segment (child_alone / wheelchair / international / connecting / standard): priority
+                                     # only, sensitive, never in any text. full_name (4b-3): ONLY for the passengers it declares it is
+                                     # working on (AgentContext.working_on), and only the first name, only in app messages.
+  stations: [code, name]             # city names for messages ("Baltimore"), published reference data
+static_reads: [flights, passengers, stations]  # published before the day; none of these change during it
 # SHARED STATE (Phase 4c, rules in config/agents/_shared.yaml shared_state). The latest Situation version with assessed_at <= its
 # time T, only these fields. NOT flight_controllability (it decides compensation: only once a human has approved it, later phase)
 # and NOT evidence (internals). Suspected cause and expected end arrive as suspicions with their confidence, never as facts.
@@ -27,7 +29,9 @@ shared_reads:
     producer: situation
     fields: [version, assessed_at, status, type, likely_cause, confidence, expected_end_earliest, expected_end_likely,
              expected_end_latest, end_confidence, conflicts, stale_sources, data_as_of]
-    conflict_fields: [key, flight_ids, fields]        # which flights and which fields disagree; not who said what
+    conflict_fields: [key, flight_ids, fields, status, sides, opened_at, side, settled_by]
+                                       # which flights and which details disagree, what each side says (no evidence ids), and how
+                                       # it was settled; Communication never picks a side itself
     heartbeat: true
 # Derived lookups (AgentContext), channel TYPES only, never an address, name or booking ref. name -> phase it is switched on in.
 projections:
@@ -46,11 +50,14 @@ event_feeds:
     flight_departed: [flight_id]
     flight_arrived: [flight_id]
     flight_diverted: [flight_id, diverted_to]
+    next_day_flight_created: [flight_id, route, departs]   # 4b-3: a flight for tomorrow that rebooked passengers may be on
   channels:                          # one feed per channel, each with its own heartbeat (the payload's "channel" names it)
     _split_by: channel
     _feeds: [app, sms, gate_screen, call_center]
     channel_view_updated: [passenger_id, channel, kind, shown_itinerary, shown_status, shown_destination, shown_bag_routing]
-    channel_update_failed: [passenger_id, channel, kind, queued_at]       # the delivery receipt: "this update did not arrive"
+    channel_update_failed: [passenger_id, channel, kind, queued_at, message_id]   # the receipt: "this update did not arrive"
+    message_delivered: [passenger_id, channel, message_id]                 # 4b-3: the receipt "this message arrived"
+    message_dropped: [passenger_id, channel, message_id, reason]           # 4b-3: not delivered because the trip changed first
 
 # ------------------------------------------------------------------ WHAT IT WRITES
 writes:
@@ -66,7 +73,8 @@ writes:
     mode: insert
     types: [mismatch_detected, mismatch_cleared, delivery_failure_detected, communication_summary, human_decision_needed,
             agent_error, message_drafted, message_held_for_approval, channel_fix_held, conflict_hold_cleared,
-            situation_unavailable, situation_available_again, situation_cannot_assess, agents_disagree]
+            situation_unavailable, situation_available_again, situation_cannot_assess, agents_disagree,
+            message_blocked, message_held, message_withdrawn, message_sent, staff_note_published, conflict_escalated]
   audit_log:
     mode: insert
 
@@ -83,6 +91,7 @@ actions:
 - use_message_template
 - draft_message
 - send_mass_message
+- resolve_source_conflict            # 4b-3: ASK network operations which side of a Situation conflict is true (A09); never picks one
 capabilities:
 - {action: detect_mismatch, enabled_in: 4b-1, autonomy: auto, note: "record a mismatch; it changes nothing a passenger sees"}
 - {action: escalate_channel_problem, enabled_in: 4b-1, autonomy: needs_approval, approver: customer_service_supervisor}
@@ -95,6 +104,8 @@ capabilities:
 - {action: send_staff_briefing, enabled_in: 4b-3, autonomy: needs_approval}
 - {action: send_crew_message, enabled_in: 4b-3, autonomy: needs_approval}
 - {action: use_message_template, enabled_in: 4b-3, autonomy: auto}
+- {action: resolve_source_conflict, enabled_in: 4b-3, autonomy: needs_approval, approver: network_operations_control,
+   note: "after conflict_ask_after_min of holding (urgent after conflict_urgent_after_min); counts only, never a name"}
 # Human only: it may show the facts (ask_human), never propose it.
 human_only:
 - {action: public_statement, decided_by: corporate_communications, decision: O10}
@@ -105,7 +116,8 @@ decisions:
 - {id: O02, question: "Which channel?", decided_by: auto, enabled_in: 4b-3}
 - {id: O03, question: "Keep every channel saying the same thing: detect and fix mismatches", decided_by: auto,
    enabled_in: 4b-1, note: "4b-1 detects; 4b-2 fixes"}
-- {id: O04, question: "Correct wrong information already sent", decided_by: auto, enabled_in: 4b-2}
+- {id: O04, question: "Correct wrong information already sent", decided_by: customer_service_supervisor, enabled_in: 4b-3,
+   note: "a correction message (draft_message): it tells the passenger an earlier screen was wrong"}
 - {id: O05, question: "Never promise anything that hasn't been approved", decided_by: auto, enabled_in: 4b-3}
 - {id: O06, question: "Plain language and translation", decided_by: auto, enabled_in: 4b-3}
 - {id: O07, question: "How often to update during the stop", decided_by: auto, enabled_in: 4b-3}
@@ -115,13 +127,19 @@ decisions:
 - {id: O11, question: "A message failed: resend on another channel", decided_by: auto, enabled_in: 4b-1,
    note: "4b-1 spots failed deliveries; 4b-2 resends"}
 - {id: O12, question: "A passenger with no contact details", decided_by: auto, enabled_in: 4b-3}
+- {id: O13, question: "Tell passengers on a diverted flight what happens next", decided_by: auto, enabled_in: 4b-3}
+- {id: O14, question: "Tell passengers their flight is cancelled (and, once Passenger Care decides it, what they are owed)",
+   decided_by: customer_service_supervisor, enabled_in: 4b-3, note: "cancellation, rebooking and overnight notices"}
+- {id: A09, question: "Two systems disagree on a fact: which wins?", decided_by: network_operations_control, enabled_in: 4b-3,
+   note: "raised by Situation; Communication may ALSO raise it when a conflict holds passenger corrections (also_raised_by)"}
 
 never:
 - Never change the truth (flights, bookings, passengers, bags); it only reads it.
 - Never show or send anything that isn't the confirmed truth or an approved decision.
 - Never promise compensation, a rebooking, a hotel or a time that nobody approved.
-- Never message passengers on a flight where a source conflict (A09) is open; hold and ask a human.
-- Never read or reveal names or contacts, except in 4b-3 for the passengers on its working-on list.
+- Never tell passengers a detail that a source conflict (A09) is open about; hold that detail, keep the rest, and ask a human.
+- Never read or reveal names or contacts, except in 4b-3 a first name for the passengers on its working-on list, in the app only.
+- Never send a message that fails the message fact check, or that is out of date by the time it would arrive.
 - Never put sensitive segment information (wheelchair, child flying alone) into any message text.
 - Never use the simulator's internal knowledge of why a channel lagged, only what a real system sees (updates and delivery receipts).
 - Never use AI to decide what is true, who gets messaged, or any promise.
@@ -177,7 +195,9 @@ output:
     flight_id: {type: [string, "null"]}
     audience_passenger_ids: {type: array, items: {type: string}}                       # 4b-3
     channels: {type: array, items: {type: string, enum: [app, sms, gate_screen, call_center, email]}}   # 4b-3
-    draft_text: {type: string, minLength: 1, maxLength: 600}                           # 4b-3
+    draft_text: {type: string, minLength: 1, maxLength: 900}                           # 4b-3
+    messages: {type: array, items: {type: object}}                                     # 4b-3: each message, its claims and parts
+    urgent: {type: boolean}                                                            # 4b-3: an urgent question to a human
     used_template: {type: boolean}                                                     # 4b-3
     promises_compensation: {type: boolean}                                             # 4b-3
     safety_rung: {type: integer, minimum: 1, maximum: 8}

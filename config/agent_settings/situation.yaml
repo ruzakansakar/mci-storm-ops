@@ -9,7 +9,7 @@ run:
   day_end: "23:59"                     # assumption
   # assess immediately when one of these is delivered (a late event wakes the agent when it arrives)
   trigger_events: [ground_stop_started, ground_stop_extended, ground_stop_ended, ground_delay_started, ground_delay_extended,
-                   ground_delay_ended, ramp_closed, ramp_reopened, flight_diverted, flight_cancelled, flight_delayed,
+                   ground_delay_ended, ramp_closed, ramp_reopened, human_decision_recorded, flight_diverted, flight_cancelled, flight_delayed,
                    flight_delay_updated, flight_holding, airport_ops_notice, police_tsa_notice, system_status_changed]
   watchdog_after_sec: 180              # assumption: wake this long after a source goes quiet (its heartbeat is then too old)
 
@@ -167,6 +167,18 @@ data:
     flight_ops: "Amadeus Altea (simulated)"
     station_ops: "Airport operations (simulated)"
   holding_after_stop_end_min: 20       # assumption: holding this long after the FAA says the stop ended is a conflict
+
+conflicts:                             # A09 conflicts: what later evidence SETTLES each type (a rule, never a guess)
+  unresolved_after_min: 30             # assumption: no settling evidence this long after it opened = "unresolved: needs a human"
+  settle:
+    departed-during-stop:              # "flight ops says it departed, but the ramp was closed during the ground stop"
+      departure_real: [flight_arrived, flight_diverted, flight_holding]     # later seen airborne or landed: the departure was real
+      departure_false: [flight_departed, flight_delayed, flight_delay_updated, flight_cancelled, tarmac_started]
+                                       # a later departure, still at the gate (a new delay or leaving the gate) or cancelled: false
+    # holding-after-end: settled when the holding flights land, divert or resume (both were true: the stop ended, flights were
+    #   still landing). faa-notices: settled by a later FAA notice for the same program. health-up-feed-stopped: settled when
+    #   the feed is heard again (system health was right) or system health reports the system down (the silence was real).
+    # Any conflict: closed at once when a human answers (human_decision_recorded, decision A09).
 
 proposals:
   faa_quiet_min: 30                    # P02: assumption: ask for an FAA status check only if no FAA update has come in this long

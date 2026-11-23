@@ -8,6 +8,7 @@ It reads only from the database (through AgentContext) and config/agent_settings
 The replay clock below wakes the agent every few minutes and when a trigger event happens; it is plumbing (like a message
 bus), not the agent, and it only ever hands the agent a time. The agent itself sees nothing after that time.
 """
+import copy
 import argparse
 import time
 import uuid
@@ -52,13 +53,14 @@ def _times(cur, run_id: str, feeds: Feeds, s: dict, until: datetime | None = Non
 def _save(memory: Memory) -> dict:
     return {"version": memory.version, "last": memory.last, "last_id": memory.last_id, "incident_no": memory.incident_no,
             "open": dict(memory.open), "asked": set(memory.asked), "last_p02": memory.last_p02, "n_hist": len(memory.history),
-            "normal_since": memory.normal_since}
+            "normal_since": memory.normal_since, "conflicts": copy.deepcopy(memory.conflicts)}
 
 
 def _restore(memory: Memory, saved: dict) -> None:
     memory.version, memory.last, memory.last_id = saved["version"], saved["last"], saved["last_id"]
     memory.incident_no, memory.open, memory.asked = saved["incident_no"], saved["open"], saved["asked"]
     memory.last_p02, memory.normal_since = saved["last_p02"], saved["normal_since"]
+    memory.conflicts = saved["conflicts"]
     del memory.history[saved["n_hist"]:]
 
 

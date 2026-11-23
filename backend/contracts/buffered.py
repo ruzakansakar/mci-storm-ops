@@ -31,6 +31,7 @@ class BufferedContext(AgentContext):
         self.audit = []
         self.saved = {}
         self.read_columns = set()
+        self.name_reads = []                        # (when, passenger ids, columns): every name read, for the privacy tests
 
     def _violate(self, kind, detail, error=None):
         from backend.contracts.context import ContractViolation
@@ -79,8 +80,13 @@ class BufferedContext(AgentContext):
         for col in columns + list(where or {}) + ([order_by] if order_by else []):
             if col not in allowed:
                 self._violate("read", f"column '{table}.{col}' is not in this agent's reads")
-        if any(c in PII_COLUMNS.get(table, ()) for c in columns):
-            self._violate("read", "names and contact details are unavailable here")
+        pii = [c for c in columns if c in PII_COLUMNS.get(table, ())]
+        if pii:                                     # the same rule as AgentContext: only for the passengers it is working on
+            wanted = (where or {}).get("id")
+            wanted = set(wanted) if isinstance(wanted, (list, tuple, set)) else ({wanted} if wanted is not None else None)
+            if not self.contract.can_see_names() or not wanted or not wanted <= self.scope:
+                self._violate("read", f"names and contacts ({', '.join(pii)}) can only be read for the passengers it is working on")
+            self.name_reads.append((self.now, sorted(wanted), pii))
         self.read_columns.update((table, c) for c in columns)
         if table == "events":
             rows = []
@@ -122,6 +128,11 @@ class BufferedContext(AgentContext):
             if values["type"] == HEARTBEAT:
                 self.store.heartbeats.setdefault(self.agent, []).append(self.now)
         return row_id
+
+    def propose(self, action, output, safety_rung=None, supersedes=None):
+        rid = super().propose(action, output, safety_rung, supersedes)
+        self.saved[("recommendations", rid)]["_action"] = action      # kept beside the row (the table has no action column)
+        return rid
 
     def write_many(self, table, rows, mode="insert", row_ids=None):
         ids = row_ids if row_ids is not None else [None] * len(rows)

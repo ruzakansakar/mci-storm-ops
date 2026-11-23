@@ -43,6 +43,9 @@ class Channels:
         self.sent_main = Counter()
         self.flight_displays = {}
         self.call_center_notes = {}
+        self.msg_rng = None                                    # co-pilot messages: their own random stream (screens unaffected)
+        self.mqueue = []                                       # heap of (due, seq, message) on the way
+        self.mseq = 0
 
     # ---------------------------------------------------------------- truth changed
 
@@ -119,16 +122,21 @@ class Channels:
         pid, ch = proposal["passenger_id"], proposal["channel"]
         if ch not in self.screens.get(pid, ()):
             return {"accepted": False, "reason": "this passenger does not have that screen"}
-        snap = dict(proposal["confirmed"])
+        held = set(proposal.get("held_fields") or ())
+        snap = {f: self.truth[pid][f] for f in held}           # held details: placeholders, left as the screen shows them
+        snap.update(proposal["confirmed"])
         snap["itinerary"] = tuple(snap["itinerary"])
         snap["bag_routing"] = tuple(snap["bag_routing"])
-        if any(snap[f] != self.truth[pid][f] for f in FIELDS):
+        if any(snap[f] != self.truth[pid][f] for f in FIELDS if f not in held):
             return {"accepted": False, "reason": "authoritative trip changed before dispatch"}
         # Existing system text is reused verbatim; the agent drafts nothing.
         snap["message"] = self.truth[pid]["message"]
         for kind in ("main", "bag"):
+            if kind == "bag" and "bag_routing" in held:
+                continue
             update = self._enqueue(t, pid, ch, kind, snap, self.load(t), fix_id=proposal["id"])
             update["flight_id"] = proposal.get("flight_id")
+            update["held"] = sorted(held)
         return {"accepted": True, "queued_at": t, "endpoint": "flight_display" if ch == "gate_screen" else
                 "passenger_call_center_notes" if ch == "call_center" else "push",
                 "flight_id": proposal.get("flight_id"), "channel": ch}
@@ -157,6 +165,8 @@ class Channels:
                 self.delivered_versions[u["key"]] = u["version"]
                 self.failed.pop(u["key"], None)
                 snap, cur = u["snapshot"], self.shown[(pid, ch)]
+                if u.get("held"):                              # a correction that leaves a conflicted detail as it is
+                    snap = {**snap, **{f: cur[f] for f in u["held"]}}
                 if kind == "main":
                     cur.update(itinerary=snap["itinerary"], status=snap["status"], destination=snap["destination"],
                                message=snap["message"])
@@ -175,6 +185,53 @@ class Channels:
                                                 "shown_status": snap["status"], "shown_destination": snap["destination"],
                                                 "shown_bag_routing": list(snap["bag_routing"]), "message": snap["message"], **metadata}})
             self.dirty_pairs.add((pid, ch))
+
+    # ---------------------------------------------------------------- co-pilot messages (Phase 4b-3)
+
+    def deliver_messages(self, t, proposal):
+        """Messages travel like screen updates: the channel's delay (base + load + jitter) and failure chance, on their own random
+        stream. A message whose trip changes before it arrives is dropped (never delivered out of date). Staff notes go to the
+        gate and call-center staff tools at once."""
+        from simulator.clock import at
+        out = []
+        for m in proposal["messages"]:
+            pid, ch = m["passenger_id"], m["channel"]
+            if ch == "staff":
+                self.events.append({"t": t, "type": "staff_note_published", "actor_name": "staff tools",
+                                    "payload": {"message_id": m["id"], "text": m["text"], "to": ["gate agents", "call center"]}})
+                out.append(m["id"])
+                continue
+            if ch not in self.screens.get(pid, ()):
+                return {"accepted": False, "reason": f"{pid} has no {ch}"}
+            told = m.get("trip_facts")
+            if told and (list(self.truth[pid]["itinerary"]) != told["itinerary"] or self.truth[pid]["status"] != told["status"]):
+                return {"accepted": False, "reason": "authoritative trip changed before dispatch"}
+            c = self.cfg["channels"][ch]
+            extra = min(self.cfg["load"]["extra_cap_min"], c["per_100_changes_min"] * self.load(t) / 100)
+            lag = max(1, round(c["base_min"] + extra + self.msg_rng.uniform(0, c["jitter_min"])))
+            fails = self.msg_rng.random() < c["fail_chance"]
+            self.mseq += 1
+            heapq.heappush(self.mqueue, (t + lag, self.mseq, {"t": t, "pid": pid, "ch": ch, "m": m, "fails": fails,
+                                                               "told": told, "rec": proposal.get("id")}))
+            out.append(m["id"])
+        return {"accepted": True, "queued_at": t, "messages": out}
+
+    def apply_messages(self, t):
+        while self.mqueue and self.mqueue[0][0] <= t:
+            _, _, q = heapq.heappop(self.mqueue)
+            m, pid, ch = q["m"], q["pid"], q["ch"]
+            base = {"passenger_id": pid, "channel": ch, "message_id": m["id"]}
+            told = q["told"]
+            if told and (list(self.truth[pid]["itinerary"]) != told["itinerary"] or self.truth[pid]["status"] != told["status"]):
+                self.events.append({"t": t, "type": "message_dropped", "actor_name": f"channel:{ch}",
+                                    "payload": {**base, "reason": "the trip changed before it arrived", "type": m["type"]}})
+            elif q["fails"]:
+                self.events.append({"t": t, "type": "channel_update_failed", "actor_name": f"channel:{ch}",
+                                    "payload": {**base, "kind": "message", "queued_at": q["t"], "type": m["type"]}})
+            else:
+                self.events.append({"t": t, "type": "message_delivered", "actor_name": f"channel:{ch}",
+                                    "payload": {**base, "type": m["type"], "text": m["text"], "queued_at": q["t"],
+                                                "recommendation": q["rec"]}})
 
     # ---------------------------------------------------------------- measuring
 

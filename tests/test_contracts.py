@@ -415,7 +415,8 @@ def test_passenger_names_are_hidden_from_agents_that_may_not_see_them_and_scoped
                 ctx.read("passengers", ["full_name"], where={"id": "PAX0002"})                # someone else
             with pytest.raises(ContractViolation, match="working on"):
                 ctx.read("passengers", ["full_name"])                                         # everybody
-            assert ctx.read("passengers", ["id", "final_destination"], limit=3)               # ids and destinations are fine
+            plain = [c for c in CONTRACTS[agent].reads["passengers"] if c not in ("full_name", "booking_ref", "contact_channels")]
+            assert ctx.read("passengers", plain, limit=3)                                   # the other columns are fine
         else:
             for col in ("full_name", "booking_ref", "contact_channels"):
                 with pytest.raises(ContractViolation):

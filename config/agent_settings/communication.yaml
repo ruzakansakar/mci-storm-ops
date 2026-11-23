@@ -12,6 +12,29 @@ fix:
   resend_after_min: 30                # assumption: stuck-channel alternative delivery threshold
   unknown_departure_days: 2           # assumption: unknown departures sort after today's known flights
   alternate_order: [app, sms]         # assumption: only supported passenger-owned channel types
+messages:                             # Phase 4b-3: passenger messages and staff notes (templates: config/message_templates.yaml)
+  channel_order: [app, sms]           # assumption: one message per change, in the app if they have it, else by SMS (O02);
+                                      # a failed delivery is resent once on the other one
+  settle_min: 2                       # assumption: wait this long after a trip change so several changes become one message
+  interval_min: 30                    # assumption: while a passenger's flight is waiting on the incident, an update this often
+  max_per_hour: 4                     # assumption: anti-spam: at most this many messages per passenger in any rolling 60 min
+  mass_message_passengers: 50         # assumption: one message to more passengers than this needs one approval for the batch
+  mass_promise_margin_min: 20         # assumption: a batch needs an approval first; promise the next update this much later
+  sms_max_chars: 320                  # assumption: two SMS segments
+  readability_min: 55                 # assumption: Flesch reading ease (60+ is plain English; flight numbers make it a bit lower)
+  cause_confidence_min: 0.7           # assumption: say "weather" only if Situation is at least this sure; else "an operational issue"
+  end_confidence_low: 0.5             # assumption: below this, "we don't have a reliable estimate yet"
+  affected_window_min: 120            # assumption: a flight is affected if it leaves before Situation's latest expected end + this
+  correction_after_min: 20            # assumption: an app/SMS screen wrong this long told the passenger something wrong: correct it
+  staff_note_gap_min: 15              # assumption: at most one staff note this often (and only when the picture changed)
+  approval_withdraw_on_change: true   # a message waiting for approval is withdrawn and redrafted if the trip changes meanwhile
+conflicts:                            # Phase 4b-3: holds for a Situation conflict are narrow, short and escalated
+  hold_fields:                        # which trip details a conflict on a flight holds (conflict field -> trip fields)
+    status: [status]                  # "departed vs at the gate" holds only the trip's status; itinerary and bags keep being fixed
+    expected_end: []
+    system_status: []
+  ask_after_min: 15                   # assumption: after this long holding, ask network operations which side is true (A09)
+  urgent_after_min: 45                # assumption: after this long, ask again as urgent
 situation:                            # reading the Situation agent's shared picture (Phase 4c)
   unavailable_after_min: 12           # assumption: Situation runs at least every 5 min; no heartbeat for this long = it stopped
   escalate_after_min: 30              # assumption: tell the customer service supervisor if it stays unavailable longer than this
@@ -62,8 +85,6 @@ escalate:                              # the contract's escalate_when (a recomme
 
 summary_every_min: 15                  # assumption: a communication_summary event at most this often (and when a critical one opens)
 
-later:                                 # used from 4b-3 on
-  mass_message_passengers: 50          # assumption: a message to more passengers than this always needs the supervisor
 
 ai:
   enabled: false                       # no AI in 4b-1

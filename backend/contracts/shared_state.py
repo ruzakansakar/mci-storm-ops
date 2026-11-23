@@ -29,7 +29,8 @@ SHARED = {
         "suspected": {"type": "confidence", "likely_cause": "confidence", "expected_end_earliest": "end_confidence",
                       "expected_end_likely": "end_confidence", "expected_end_latest": "end_confidence"},
         "confidences": ["confidence", "end_confidence"],
-        "conflict_keys": ["key", "flight_ids", "fields"],     # the most a reader may see of each conflict
+        "conflict_keys": ["key", "flight_ids", "fields", "status", "sides", "opened_at", "side", "settled_by"],
+                                                  # the most a reader may see of each conflict (never its evidence ids)
     },
 }
 # fields no reader contract may list, with the reason
@@ -90,7 +91,7 @@ def project(row: dict | None, table: str, spec: dict) -> dict | None:
             continue                                     # a confidence travels only with the suspicion it belongs to
         elif f == "conflicts":
             keys = spec.get("conflict_fields") or ["key"]
-            out["facts"]["conflicts"] = [{k: c.get(k) for k in keys} for c in (row.get("conflicts") or [])]
+            out["facts"]["conflicts"] = [{k: c[k] for k in keys if k in c} for c in (row.get("conflicts") or [])]
         else:
             out["facts"][f] = row.get(f)
     return out

@@ -83,9 +83,22 @@ def test_conflict_holds_and_messages_still_disabled():
     assert not propose_fixes(ctx, result, FixMemory(), view)            # Situation reports conflicting data on F1
     out = {"title": "x", "why": "x", "data_as_of": ctx.now.isoformat(), "options": [], "findings": [],
            "decision_ids": ["O03"], "sources": [{"source": "reservations", "as_of": ctx.now.isoformat()}]}
+    # phase gating still works: under the 4b-2 contract, message actions are refused ("switched on in phase 4b-3")
+    from copy import deepcopy
+    from backend.contracts import load_contracts
+    from backend.contracts.loader import Contract
+    contracts = dict(load_contracts())
+    data = deepcopy(contracts["communication"].data)
+    data["phase"] = "4b-2"
+    contracts["communication"] = Contract(data)
+    old = BufferedContext(ctx.now, [], [])
+    old.contracts, old.contract = contracts, contracts["communication"]
     for action in ("draft_message", "send_status_update", "send_mass_message"):
         with pytest.raises(ContractViolation, match="phase"):
-            ctx.propose(action, out)
+            old.propose(action, out)
+    # and in 4b-3 a public statement is still human only: the agent may only hand over facts
+    with pytest.raises(ContractViolation, match="human-only|not an action"):
+        ctx.propose("public_statement", out)
 
 
 def test_no_names_no_contacts_and_future_payload_stripped():
@@ -131,7 +144,7 @@ def test_structured_copy_rejects_invented_fields_and_stale_versions():
     p["action"] = "send_status_update"
     delivered.clear()
     assert execute(p, world, delivered.append, lambda *x: None)["status"] == "pending"
-    assert not delivered  # auto in the catalog, but still disabled until phase 4b-3
+    assert not delivered  # a message action is on in 4b-3, but one with no message to fact-check is refused
 
 
 def test_corrections_use_channel_delay_and_failure_draws():
