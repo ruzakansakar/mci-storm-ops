@@ -51,7 +51,8 @@ class Copilot:
                  "truth_feed_fresh": ctx.feed_age_sec("reservations") <= ctx.contract.max_data_age_sec,
                  "flight_feed_fresh": ctx.feed_age_sec("flight_ops") <= ctx.contract.max_data_age_sec,
                  "conflicts_known": True, "open_conflicts": conflicts_from_events(self.detection.events.values()),
-                 "contact_types": {p["id"]: ctx.contact_channel_types(p["id"]) for p in ctx.rows["passengers"]}}
+                 "contact_types": {p["id"]: ctx.contact_channel_types(p["id"]) for p in ctx.rows["passengers"]},
+                 "screens": ctx.passenger_screens()}
 
         def record(kind, payload):
             ctx.outputs.append((kind, serial(payload)))

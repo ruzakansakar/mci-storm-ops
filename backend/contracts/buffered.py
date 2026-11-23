@@ -28,9 +28,13 @@ class BufferedContext(AgentContext):
         self._audit_row("contract violation refused", "agent", self.agent, None, {"kind": kind})
         raise err
 
+    def passenger_screens(self):
+        from backend.screens import screens_for
+        self._projection("passenger_screens")
+        return {p["id"]: screens_for(p.get("channel_types", ())) for p in self.rows["passengers"]}
+
     def contact_channel_types(self, passenger_id):
-        if not self.contract.enabled("resend_on_other_channel"):
-            self._violate("read", "channel type projection is available only for communication corrections")
+        self._projection("contact_channel_types")
         return sorted({c for p in self.rows["passengers"] if p["id"] == passenger_id
                        for c in p.get("channel_types", ()) if c in ("app", "sms", "email")})
 

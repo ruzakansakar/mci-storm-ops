@@ -77,7 +77,10 @@ def section(today, copilot):
         for row in mode["maya_minutes"]:
             cells = [f'<td>{hm(row["t"])}</td>']
             for ch in ("app", "sms", "gate_screen", "call_center"):
-                v = row["channels"][ch]
+                v = row["channels"].get(ch)
+                if v is None:                                  # a screen this passenger does not have
+                    cells.append("<td>-</td>")
+                    continue
                 wrong = any(v[k] != row["truth"][k] for k in ("itinerary", "status", "destination"))
                 cells.append(f'<td style="background:{"#fff0ef" if wrong else "#e7f5ef"}">{esc(v["status"])} '
                              f'{esc(" > ".join(v["itinerary"]))}</td>')

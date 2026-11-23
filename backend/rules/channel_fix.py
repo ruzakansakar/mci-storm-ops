@@ -24,6 +24,8 @@ def reasons(proposal, world):
         out.append("a source conflict (A09) is open on this trip")
     if channel not in ("app", "sms", "gate_screen", "call_center"):
         out.append("unsupported delivery channel")
+    elif channel not in world.get("screens", {}).get(pid, ()):
+        out.append("this passenger does not have that screen")
     if proposal.get("action") == "resend_on_other_channel":
         if channel == proposal.get("original_channel") or channel not in world.get("contact_types", {}).get(pid, ()):
             out.append("resend requires another channel this passenger has")

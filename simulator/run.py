@@ -61,7 +61,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     sc = prebuilt(flights) if prebuilt else build_scenario(seed, scenario, flights)   # prebuilt: a ready-made day (chaos tests)
     world = World(data, sc, cfg, start)
     world.check_story()
-    channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start)
+    from backend.screens import screens_for
+    screens = {p["id"]: screens_for(p["contact_channels"]) for p in data["passengers"]}
+    channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start, screens)
     recorder = Recorder(cfg, sc, start)
     from backend.agents.communication.detect import load_settings
     from simulator.comparison import ComparisonRecorder, focus_passenger

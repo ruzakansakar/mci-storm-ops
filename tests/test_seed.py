@@ -47,9 +47,14 @@ def test_bags_follow_their_passenger(db):
                       (SELECT array_agg(flight_id ORDER BY seq) FROM bookings b WHERE b.passenger_id=g.passenger_id)""") == 0
 
 
-def test_four_screens_per_passenger_all_matching_at_the_start(db):
+def test_each_passenger_has_only_his_screens_all_matching_at_the_start(db):
+    # gate screen and call center for everyone; app and SMS only if they are among the passenger's contact channels (Phase 4c)
     assert one(db, """SELECT count(*) FROM passengers p WHERE
-                      (SELECT count(*) FROM channel_views v WHERE v.passenger_id=p.id) <> 4""") == 0
+                      (SELECT array_agg(v.channel ORDER BY v.channel) FROM channel_views v WHERE v.passenger_id=p.id) <>
+                      (SELECT array_agg(c ORDER BY c) FROM unnest(ARRAY['gate_screen','call_center'] ||
+                              ARRAY(SELECT x FROM unnest(p.contact_channels) x WHERE x IN ('app','sms'))) c)""") == 0
+    assert one(db, "SELECT count(*) FROM channel_views v JOIN passengers p ON p.id=v.passenger_id "
+                   "WHERE v.channel IN ('app','sms') AND NOT v.channel = ANY(p.contact_channels)") == 0
     assert one(db, """SELECT count(*) FROM channel_views v WHERE v.shown_itinerary <>
                       (SELECT array_agg(flight_id ORDER BY seq) FROM bookings b WHERE b.passenger_id=v.passenger_id)""") == 0
 
@@ -83,7 +88,21 @@ def test_seed_data_is_exactly_what_it_was_before_the_numbers_moved_into_config_s
     data = build()
     issues = data.pop("data_issues")
     blob = json.dumps(data, sort_keys=True, default=str).encode()
-    # every table except data_issues is byte-for-byte what it was before the rules were moved (step 1-3)
+    # Phase 4c changed the data on purpose, in exactly two ways: (1) app/SMS screens only for passengers who have them on file,
+    # (2) the story override gives Maya Torres app + SMS (config/seed.yaml story_overrides). New checksum:
+    assert hashlib.sha256(blob).hexdigest() == "8df52897fda3545d729ebeea00b82d55fb22f45d2d48b560e3a17050bfeb453c"
+    # ...and undoing exactly those two changes gives back the data, byte for byte, from before (steps 1-3): nothing else moved.
+    old = json.loads(json.dumps(data, default=str))
+    maya = next(p for p in old["passengers"] if p["full_name"] == "Maya Torres")
+    maya["contact_channels"] = ["email"]                       # her random draw, before the story override
+    by_pid, order = {}, []
+    for v in old["channel_views"]:
+        if v["passenger_id"] not in by_pid:
+            order.append(v["passenger_id"])
+        by_pid.setdefault(v["passenger_id"], {})[v["channel"]] = v
+    old["channel_views"] = [by_pid[pid].get(ch) or {**by_pid[pid]["gate_screen"], "channel": ch}
+                            for pid in order for ch in ("app", "sms", "gate_screen", "call_center")]
+    blob = json.dumps(old, sort_keys=True, default=str).encode()
     assert hashlib.sha256(blob).hexdigest() == "7f6e1cd978a43c1c80a868f132a2ed06b51ecc42512de3b6428de5728e456a04"
     # data_issues: same rows, only the crew-rest wording changed in step 3
     assert len(issues) == 266 and sum(i["category"] == "crew_rest" for i in issues) == 35

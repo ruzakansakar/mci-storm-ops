@@ -18,6 +18,10 @@ reads:
   passengers: [id, segment]          # segment (child_alone / wheelchair / international / connecting / standard): priority only,
                                      # sensitive, never in any text
 static_reads: [flights, passengers]  # published before the day; segment doesn't change during it
+# Derived lookups (AgentContext), channel TYPES only, never an address, name or booking ref. name -> phase it is switched on in.
+projections:
+  passenger_screens: 4b-1            # which screens each passenger has: app/SMS only if on file; gate screen and call center for all
+  contact_channel_types: 4b-2        # for resend_on_other_channel: which other channel types this passenger has
 
 # The feeds it listens to. Only the payload fields listed here reach the agent: the simulator's record of WHY a copy was late
 # (lag_min, cause_if_late) and the message texts are stripped. The only failure signal is a delivery receipt, as a real system has.

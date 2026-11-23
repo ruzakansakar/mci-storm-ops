@@ -104,7 +104,9 @@ def play(seed: int, data: dict, chaos: bool) -> dict:
                  "sched_dep": at(f["sched_dep"]), "sched_arr": at(f["sched_arr"])} for f in res.world.flights.values()
                 if not f.get("_next_day")]
     segments = [{"id": pid, "segment": p["segment"]} for pid, p in res.world.passengers.items()]
-    return {"seed": seed, "chaos": chaos, "events": events, "schedule": schedule, "passengers": segments,
+    from backend.screens import screens_for
+    screens = {p["id"]: screens_for(p["contact_channels"]) for p in data["passengers"]}
+    return {"seed": seed, "chaos": chaos, "events": events, "schedule": schedule, "passengers": segments, "screens": screens,
             "answer": key["k"].finish(), "metrics": res.metrics}
 
 
@@ -140,6 +142,12 @@ class MemoryContext:
             out.append({"id": e["id"], "occurred_at": e["occurred_at"], "type": e["type"], "station": e["station"], "feed": feed,
                         "payload": {k: v for k, v in e["payload"].items() if k in fields}})
         return sorted(out, key=lambda e: e["occurred_at"])
+
+    def passenger_screens(self):
+        if not self.contract.projection_ok("passenger_screens"):
+            self.sink["forbidden_reads"].append(("passenger_screens", []))
+            raise PermissionError("passenger_screens")
+        return dict(self.day["screens"])
 
     def read(self, table, columns=None, **_):
         allowed = self.contract.reads.get(table)

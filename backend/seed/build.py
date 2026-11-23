@@ -6,6 +6,7 @@ Rules for conflicting files (decided with the project owner):
   * the recovery dataset wins for crew hours, maintenance and special-needs counts
   * conflicts are recorded in data_issues, never silently fixed
 """
+from backend.screens import screens_for
 import random
 import string
 from datetime import datetime, time, timedelta
@@ -369,6 +370,8 @@ def _sample_passengers(rng: random.Random, flights: list[dict], groups: list[dic
         pc = CFG["passengers"]
         contacts = rng.choices([c["channels"] for c in pc["contact_channels"]],
                                weights=[c["weight"] for c in pc["contact_channels"]])[0]
+        # story override, applied after the random draw so the random stream (and every other passenger) is unchanged
+        contacts = list((pc.get("story_overrides") or {}).get(name, {}).get("contact_channels", contacts))
         loyalty = rng.choices(list(pc["loyalty"]), weights=list(pc["loyalty"].values()))[0]
         passengers.append({
             "id": pid, "full_name": name, "booking_ref": ref, "segment": seg, "final_destination": final,
@@ -385,7 +388,7 @@ def _sample_passengers(rng: random.Random, flights: list[dict], groups: list[dic
             my_bags.append(tag)
             bags.append({"tag": tag, "passenger_id": pid, "routing": routing,
                          "current_location": itinerary[0]["origin"], "source": "generated"})
-        for ch in ("app", "sms", "gate_screen", "call_center"):
+        for ch in screens_for(contacts):                     # app/SMS only if on file; gate screen and call center for all
             views.append({"passenger_id": pid, "channel": ch, "shown_itinerary": routing, "shown_status": "confirmed",
                           "shown_destination": final, "shown_bag_routing": routing if my_bags else [],
                           "updated_at": AS_OF})

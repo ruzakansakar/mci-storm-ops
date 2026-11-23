@@ -36,6 +36,7 @@ class Memory:
     state: CommState | None = None
     schedule: list | None = None
     segments: dict | None = None
+    screens: dict | None = None                      # pid -> screens this passenger has (screen types only)
     events: dict = field(default_factory=dict)             # event id -> event (everything read so far)
     last_scan: datetime | None = None
     stale: set = field(default_factory=set)               # feeds stale at the last scan
@@ -147,6 +148,7 @@ def scan(ctx, memory: Memory | None = None, write: bool = True, settings: dict |
     if memory.schedule is None:
         memory.schedule = ctx.read("flights")
         memory.segments = {r["id"]: r["segment"] for r in ctx.read("passengers")}
+        memory.screens = ctx.passenger_screens()      # screen types only: app/SMS exist only for passengers who have them
     stale = _stale(ctx, s)
     frozen = {"*"} if any(x["feed"] == s["data"]["truth_feed"] for x in stale) else {x["feed"] for x in stale}
     came_back = memory.stale - {x["feed"] for x in stale}
@@ -160,7 +162,8 @@ def scan(ctx, memory: Memory | None = None, write: bool = True, settings: dict |
     for e in new:
         memory.events.setdefault(e["id"], e)
     if memory.state is None or full or came_back:
-        memory.state = build_state(memory.schedule, list(memory.events.values()), t, s["channels"], frozen)
+        memory.state = build_state(memory.schedule, list(memory.events.values()), t, s["channels"], frozen,
+                                   memory.screens)
         st = memory.state
         st.closed = [c for c in st.closed if (tuple(c[0]), c[1]) not in memory.closed_done]     # already reported
     else:

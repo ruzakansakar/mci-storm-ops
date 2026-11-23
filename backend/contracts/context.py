@@ -89,13 +89,23 @@ class AgentContext:
         """When this simulated source last sent a heartbeat (every simulated minute unless it was stopped)."""
         return self.feeds.last_heartbeat(feed, self.now)
 
+    def _projection(self, name: str):
+        if not self.contract.projection_ok(name):
+            self._violate("read", f"projection '{name}' is not in this agent's contract (or not switched on in its phase)")
+
     def contact_channel_types(self, passenger_id: str) -> list[str]:
-        """4b-2 projection: channel type names only; never names or addresses."""
-        if self.agent != "communication" or not self.contract.enabled("resend_on_other_channel"):
-            self._violate("read", "channel type projection is available only for communication corrections")
+        """Projection: channel type names only; never names or addresses."""
+        self._projection("contact_channel_types")
         self.cur.execute("SELECT DISTINCT c FROM passengers CROSS JOIN LATERAL unnest(contact_channels) c "
                          "WHERE id=%s AND c IN ('app', 'sms', 'email') ORDER BY c", (passenger_id,))
         return [row[0] for row in self.cur.fetchall()]
+
+    def passenger_screens(self) -> dict[str, tuple]:
+        """Projection: which of the four screens each passenger has (backend/screens.py). Screen types only, in one query."""
+        from backend.screens import screens_for
+        self._projection("passenger_screens")
+        self.cur.execute("SELECT id, contact_channels FROM passengers ORDER BY id")
+        return {pid: screens_for(contacts) for pid, contacts in self.cur.fetchall()}
 
     def feed_age_sec(self, feed: str) -> float:
         return (self.now - self.feed_last(feed)).total_seconds()

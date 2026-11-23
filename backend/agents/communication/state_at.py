@@ -79,9 +79,10 @@ class CommState:
         return copy.deepcopy(self)
 
 
-def new_state(schedule: list[dict], channels: list[str]) -> CommState:
+def new_state(schedule: list[dict], channels: list[str], screens: dict | None = None) -> CommState:
     st = CommState()
     st.channels = list(channels)
+    st.screens = dict(screens or {})                  # pid -> the screens this passenger has (no entry: all channels)
     for f in schedule:
         if f.get("sched_dep") is None:
             continue
@@ -116,10 +117,11 @@ def _apply(st: CommState, e: dict) -> None:
         first = pid not in st.truth
         st.truth[pid] = {**snap, "at": when, "event": eid}
         st.history.setdefault(pid, []).append((when, eid, snap))
-        if first:                                         # start of day: every channel shows the start-of-day record
-            for ch in st.channels:
+        mine = [ch for ch in st.channels if ch in st.screens.get(pid, st.channels)]
+        if first:                                         # start of day: each of HIS screens shows the start-of-day record
+            for ch in mine:
                 st.shown[(pid, ch)] = dict(snap)
-        for ch in st.channels:
+        for ch in mine:
             st.dirty.add((pid, ch))
     elif typ == "channel_view_updated":
         pid, ch, kind = p.get("passenger_id"), p.get("channel"), p.get("kind")
@@ -180,9 +182,10 @@ def compare(st: CommState, minute: datetime) -> None:
     st.dirty = keep
 
 
-def build_state(schedule: list[dict], events: list[dict], t: datetime, channels: list[str], frozen: set | None = None) -> CommState:
+def build_state(schedule: list[dict], events: list[dict], t: datetime, channels: list[str], frozen: set | None = None,
+                screens: dict | None = None) -> CommState:
     """The full rebuild: everything known at t, from scratch."""
-    st = new_state(schedule, channels)
+    st = new_state(schedule, channels, screens)
     st.frozen = set(frozen or ())
     apply_events(st, events, t)
     return st

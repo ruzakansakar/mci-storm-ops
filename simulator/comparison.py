@@ -58,14 +58,14 @@ class ComparisonRecorder:
                 if pid == self.focus:
                     self.maya_versions.append({"changed_at": t, "truth": snap, "catch_up": {}})
             self.previous[pid] = snap
-            if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in self.settings["channels"]):
+            if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in channels.screens[pid]):
                 self.latencies.append(t - self.pending.pop(pid)[0])
         if self.focus in world.truth:
             self.maya.append({"t": t, "truth": snapshot(world.truth[self.focus]),
-                              "channels": {ch: snapshot(channels.shown[(self.focus, ch)]) for ch in self.settings["channels"]}})
+                              "channels": {ch: snapshot(channels.shown[(self.focus, ch)]) for ch in channels.screens[self.focus]}})
             if self.maya_versions:
                 version = self.maya_versions[-1]
-                for ch in self.settings["channels"]:
+                for ch in channels.screens[self.focus]:
                     if ch not in version["catch_up"] and all(channels.shown[(self.focus, ch)][f] == world.truth[self.focus][f]
                                                             for f in FIELDS[:3]):
                         version["catch_up"][ch] = t

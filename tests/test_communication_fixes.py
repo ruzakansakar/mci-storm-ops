@@ -115,7 +115,7 @@ def test_structured_copy_rejects_invented_fields_and_stale_versions():
     snap = {"itinerary": ["F1"], "status": "cancelled", "destination": "BWI", "bag_routing": []}
     p = {"action": "fix_channel_mismatch", "passenger_id": "P1", "channel": "app", "confirmed": snap, "truth_as_of": "v1"}
     world = {"confirmed_trips": {"P1": snap}, "trip_versions": {"P1": "v1"}, "truth_feed_fresh": True,
-             "flight_feed_fresh": True, "conflicts_known": True}
+             "flight_feed_fresh": True, "conflicts_known": True, "screens": {"P1": ("app", "gate_screen", "call_center")}}
     assert not reasons(p, world)
     assert reasons({**p, "confirmed": {**snap, "hotel": "promised"}}, world)
     assert reasons({**p, "message": {"text": "Free hotel"}}, world)
