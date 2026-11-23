@@ -21,8 +21,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4a | Situation agent | **done** |
 | 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
 | 4b-2 | Communication agent, part 2: fix screens + today vs with co-pilot | **done** |
-| 4c | Shared state: Communication reads Situation assessments | next |
-| 4b-3 | Communication message writing | after shared state |
+| 4c | Shared state: Communication reads the Situation agent's picture; app/SMS screens only for passengers who have them | **done** |
+| 4b-3 | Communication message writing | next |
 | Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
 | Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
@@ -432,6 +432,35 @@ settings are never calibrated on them. `python -m chaos.judge_communication --se
 15:14 -> 14:59, gate 15:20 -> 15:06, call center 15:32 -> 15:17; her call center, stuck on "diverted" all afternoon today, shows
 "delayed" at 14:43. On 20 fresh random days: 51% fewer on average (15 days had wrong screens), best 72%, worst 13%, no day
 worse, world truth identical on every day. Today mode is byte-for-byte what it was before 4b-2.
+
+## How agents share information (Phase 4c)
+
+Agents never call each other. One agent writes a shared record and another reads it, always through its own AgentContext, under
+seven rules (written in `config/agents/_shared.yaml`, enforced in `backend/contracts/shared_state.py`):
+
+1. Agents share information only through shared tables and events, never by calling each other.
+2. A shared record is never changed or deleted. Each new version says who made it, as of when, and from what sources.
+3. A reader sees only versions made at or before its own current moment, never one from later, even later in the same minute.
+4. A reader's contract lists exactly which fields it may read; anything else is refused. Some fields are never shared: the
+   Situation agent's "was this flight within Southwest's control" (it decides compensation, so only after a human approves) and
+   its internal evidence.
+5. A suspicion stays a suspicion: a suspected cause or an expected end time arrives labelled "suspected", with its confidence.
+6. An old version is not out of date: Situation only writes a new one when something changes. What matters is whether Situation
+   is still running, so it leaves a heartbeat every time it runs, and readers check that.
+7. When two agents disagree about the same fact, both views are logged and a human is asked; nobody quietly picks one.
+
+In co-pilot mode each minute runs Situation first (on its normal schedule), then Communication, then the rule check and delivery.
+Situation's versions are exactly the same as in its standalone replay. Communication uses Situation's picture to hold corrections on
+a flight where Situation reports conflicting data (and to resume when that clears), notices if Situation stops running (corrections
+carry on; the supervisor is told after 30 minutes), and keeps the latest picture ready for messages in 4b-3.
+
+**Screens.** The gate screen and the call center apply to every passenger. The app and SMS exist only for passengers who have
+them on file (app+SMS 197, SMS only 65, app+email 47, email only 11). Maya Torres has app + SMS: a story override in
+`config/seed.yaml`, applied after her random draw so no one else changes.
+
+**Result.** Seed 7: 11,744 passenger-minutes on a wrong screen today vs 6,190 with co-pilot (47% fewer). On the same 20 random days
+as before: 48% fewer on average, none worse. On 20 extra days with source conflicts and feed outages
+(`reports/chaos/comparison-extra.html`): 49% fewer on average, none worse; 115 corrections held for Situation conflicts on 8 days.
 
 ## Rules for conflicting files
 

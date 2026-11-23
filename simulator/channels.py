@@ -19,11 +19,13 @@ FIELDS = tuple(FIELD_KIND)
 
 
 class Channels:
-    def __init__(self, cfg: dict, rng, initial_truth: dict, start: int):
+    def __init__(self, cfg: dict, rng, initial_truth: dict, start: int, screens: dict | None = None):
         self.cfg, self.rng = cfg, rng
         self.truth = dict(initial_truth)                       # passenger id -> latest truth snapshot
+        # which screens each passenger has (backend/screens.py): app/SMS only if on file. Default: all four.
+        self.screens = {pid: tuple((screens or {}).get(pid, CHANNELS)) for pid in initial_truth}
         # what each channel shows right now: (pid, channel) -> snapshot of the truth as the channel last heard it
-        self.shown = {(pid, ch): {**snap, "updated_at": start} for pid, snap in initial_truth.items() for ch in CHANNELS}
+        self.shown = {(pid, ch): {**snap, "updated_at": start} for pid, snap in initial_truth.items() for ch in self.screens[pid]}
         self.queue = []                                        # heap of (due, seq, update)
         self.waiting = {}                                      # (pid, channel, kind) -> [updates not applied yet]
         self.failed = {}                                       # (pid, channel, kind) -> update that never arrived
@@ -59,12 +61,21 @@ class Channels:
             self.versions[pid] = t
             load = self.load(t)
             for ch in CHANNELS:
+                has = ch in self.screens[pid]
                 if any(old[f] != new[f] for f in MAIN_FIELDS):
                     seat_hold = rebooked and old["itinerary"] != new["itinerary"]
-                    self._enqueue(t, pid, ch, "main", new, load, seat_hold=seat_hold)
+                    self._enqueue(t, pid, ch, "main", new, load, seat_hold=seat_hold) if has else self._skip_draws()
                 if old["bag_routing"] != new["bag_routing"]:
-                    self._enqueue(t, pid, ch, "bag", new, load)
-                self.dirty_pairs.add((pid, ch))
+                    self._enqueue(t, pid, ch, "bag", new, load) if has else self._skip_draws()
+                if has:
+                    self.dirty_pairs.add((pid, ch))
+
+    def _skip_draws(self):
+        """A screen the passenger does not have gets no copy. Its two random draws (delay jitter, failure) are still taken, in
+        the same order, so the screens that do exist keep exactly the delays and failures they would have had (the random
+        stream is shared by all screens; skipping draws would reshuffle every later delay of the day)."""
+        self.rng.uniform(0, 1)
+        self.rng.random()
 
     def _enqueue(self, t, pid, ch, kind, snapshot, load, seat_hold=False, fix_id=None):
         c, lab = self.cfg["channels"][ch], self.cfg["labels"]
@@ -106,6 +117,8 @@ class Channels:
         The original random stream and original queued deliveries are untouched.
         """
         pid, ch = proposal["passenger_id"], proposal["channel"]
+        if ch not in self.screens.get(pid, ()):
+            return {"accepted": False, "reason": "this passenger does not have that screen"}
         snap = dict(proposal["confirmed"])
         snap["itinerary"] = tuple(snap["itinerary"])
         snap["bag_routing"] = tuple(snap["bag_routing"])

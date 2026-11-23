@@ -26,6 +26,7 @@ class ComparisonRecorder:
         self.maya_versions = []
         self.times = []
         self.counts = []
+        self.pax_minutes = Counter()             # passenger -> minutes with at least one wrong screen
 
     def tick(self, t, world, channels):
         critical = set()
@@ -48,6 +49,7 @@ class ComparisonRecorder:
             self.first_agree = t
         self.times.append(t)
         self.counts.append(channels.passengers_disagreeing())
+        self.pax_minutes.update(channels.dis_pax.keys())
         for pid, row in world.truth.items():
             snap = snapshot(row)
             old = self.previous.get(pid)
@@ -58,14 +60,14 @@ class ComparisonRecorder:
                 if pid == self.focus:
                     self.maya_versions.append({"changed_at": t, "truth": snap, "catch_up": {}})
             self.previous[pid] = snap
-            if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in self.settings["channels"]):
+            if pid in self.pending and all(snapshot(channels.shown[(pid, ch)]) == snap for ch in channels.screens[pid]):
                 self.latencies.append(t - self.pending.pop(pid)[0])
         if self.focus in world.truth:
             self.maya.append({"t": t, "truth": snapshot(world.truth[self.focus]),
-                              "channels": {ch: snapshot(channels.shown[(self.focus, ch)]) for ch in self.settings["channels"]}})
+                              "channels": {ch: snapshot(channels.shown[(self.focus, ch)]) for ch in channels.screens[self.focus]}})
             if self.maya_versions:
                 version = self.maya_versions[-1]
-                for ch in self.settings["channels"]:
+                for ch in channels.screens[self.focus]:
                     if ch not in version["catch_up"] and all(channels.shown[(self.focus, ch)][f] == world.truth[self.focus][f]
                                                             for f in FIELDS[:3]):
                         version["catch_up"][ch] = t
@@ -88,7 +90,24 @@ class ComparisonRecorder:
                    if any(p["passenger_id"] == e["payload"]["passenger_id"] and p["original_channel"] == e["payload"]["channel"]
                           and p["truth_as_of"] == e["payload"]["version_at"] and p["data_as_of"] >= e["payload"]["failed_at"]
                           for p in applied)}
-        return {"critical_passenger_minutes_wrong": self.critical_minutes,
+        held = [e for e in world.events if e["type"] == "channel_fix_held"]
+        holds = Counter(e["payload"].get("kind") or e["payload"]["reason"] for e in held)
+        by_flight = {}
+        for e in held:
+            if e["payload"].get("kind") == "situation_conflict":
+                for fid in e["payload"]["flight_ids"]:
+                    f = by_flight.setdefault(fid, {"flight_id": fid, "holds": 0, "passengers": set(), "first": e["t"], "last": e["t"]})
+                    f["holds"] += 1
+                    f["passengers"].add(e["payload"]["passenger_id"])
+                    f["last"] = e["t"]
+        conflict_holds = [{**f, "passengers": sorted(f["passengers"])} for f in by_flight.values()]
+        link = Counter(e["type"] for e in world.events if e["type"] in ("situation_unavailable", "situation_available_again",
+                                                                        "situation_cannot_assess", "agents_disagree",
+                                                                        "conflict_hold_cleared"))
+        return {"holds_by_reason": dict(holds), "conflict_holds": conflict_holds, "situation_link_events": dict(link),
+                "copilot_situation": copilot.situation_summary() if copilot else None,
+                "pax_minutes_wrong": dict(self.pax_minutes),
+                "critical_passenger_minutes_wrong": self.critical_minutes,
                 "all_screens_agree_after_stop_min": None if self.first_agree is None else self.first_agree - stop_end,
                 "all_screens_stay_correct_after_stop_min": None if channels.dis else max(0, (self.last_wrong or stop_end - 1) + 1 - stop_end),
                 "lost_updates_wrong_end": len({(p, ch, "bag" if f == "bag_routing" else "main") for p, ch, f in channels.dis

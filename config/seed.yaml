@@ -91,6 +91,9 @@ passengers:                        # the ~300 sample passengers we follow one by
   lives_locally_chance:            # assumption: share who live in the Kansas City area
     arrival: 0.7
     departure: 0.8
+  story_overrides:                 # STORY OVERRIDE (not a random draw): the story passenger's details, applied AFTER her random
+    Maya Torres:                   # draws, so no other passenger's data changes. She gets app + SMS so the story can follow
+      contact_channels: [app, sms] # all four of her screens (gate screen and call center apply to everyone).
   a31_sample: 15                   # assumption: sample passengers on WN2031 (so the story has people to follow)
 
 staff:                             # assumption: MCI staff roster

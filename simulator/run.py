@@ -34,6 +34,7 @@ class Result:
     channels: Channels
     metrics: dict
     until: int
+    copilot: object = None             # co-pilot mode: the agents' loop (their shared store), for tests and pages
 
 
 def run_id_for(seed: int, scenario: str, mode: str) -> str:
@@ -47,7 +48,7 @@ def check_mode(mode: str):
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
              data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None,
-             on_tick=None, feeds=None, source_overlay=(), late_delivery=None) -> Result:
+             on_tick=None, feeds=None, source_overlay=(), late_delivery=None, copilot_options=None) -> Result:
     """Play the day. With a writer, results are saved in batches; without one it all stays in memory.
     on_tick(t, world, channels): called at the end of every simulated minute (test harnesses read the answer key there)."""
     check_mode(mode)
@@ -61,7 +62,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     sc = prebuilt(flights) if prebuilt else build_scenario(seed, scenario, flights)   # prebuilt: a ready-made day (chaos tests)
     world = World(data, sc, cfg, start)
     world.check_story()
-    channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start)
+    from backend.screens import screens_for
+    screens = {p["id"]: screens_for(p["contact_channels"]) for p in data["passengers"]}
+    channels = Channels(cfg, random.Random(f"channels:{scenario}:{seed}"), world.truth, start, screens)
     recorder = Recorder(cfg, sc, start)
     from backend.agents.communication.detect import load_settings
     from simulator.comparison import ComparisonRecorder, focus_passenger
@@ -76,7 +79,15 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         passengers = [{"id": p["id"], "segment": p["segment"],
                        "channel_types": [c for c in p["contact_channels"] if c in ("app", "sms", "email")]}
                       for p in data["passengers"]]
-        copilot = Copilot(at(start), schedule, passengers, feeds)
+        situation_schedule = [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "crew_id")}
+                              for f in data["flights"]]
+        from backend.seed.build import AS_OF, SOR
+        system_health = [{"system": s_, "status": "up", "last_heartbeat": AS_OF, "note": "simulated stand-in for the official system"}
+                         for s_ in sorted(set(SOR.values()))]                      # as backend/seed/load.py seeds it
+        copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
+                          **(copilot_options or {}))
+        from backend.contracts import load_contracts
+        agent_types = {t for a in ("situation", "communication") for t in load_contracts()[a].event_types}
         channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
     every = cfg["day"]["write_every_min"]
 
@@ -104,15 +115,15 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             published = [{"occurred_at": at(e["t"]), "type": e["type"], "station": e.get("station"),
                           "published_at": at(delivered) if (delivered := (late_delivery(e) if late_delivery else e.get("published_t"))) is not None else None,
                           "payload": e["payload"]} for e in world.events[event_cursor:]
-                         if e["type"] in copilot.context.contract.event_types]
+                         if e["type"] in agent_types]           # each agent's context cuts these to its own contract
             event_cursor = len(world.events)
             outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_fix(t, p))
-            for kind, payload in outputs:
-                world.events.append({"t": t, "type": kind, "actor": "agent", "actor_name": "communication",
-                                     "station": None, "payload": payload, "incident": False})
             from backend.execution.copilot import serial
+            for agent, kind, payload in outputs:
+                world.events.append({"t": t, "type": kind, "actor": "agent", "actor_name": agent,
+                                     "station": None, "payload": serial(payload), "incident": False})
             for a in audits:
-                world.audit_rows.append({"t": t, "actor": "agent", "actor_name": "communication", "what": a["what"],
+                world.audit_rows.append({"t": t, "actor": "agent", "actor_name": a["agent"], "what": a["what"],
                                          "entity_type": a["entity_type"], "entity_id": a["entity_id"],
                                          "before": serial(a["before"]), "after": serial(a["after"])})
         recorder.tick(t, world, channels)
@@ -127,13 +138,15 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     metrics = recorder.finish(world, channels, until)
     metrics.update(comparison.finish(world, channels, sc.end, copilot))
     rid = run_id or run_id_for(seed, scenario, mode)
-    result = Result(rid, seed, sc, world, channels, metrics, until)
+    result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
     metrics["truth_sha256"] = truth_fingerprint(result)
-    metrics["contract_violations"] = len(copilot.context.violations) if copilot else 0
+    metrics["contract_violations"] = (len(copilot.context.violations) + len(copilot.situation.context.violations)) if copilot else 0
     if writer:
         if copilot:
             writer.save_proposals(copilot.context)
+            writer.save_proposals(copilot.situation.context)
+            writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)
     return result
 

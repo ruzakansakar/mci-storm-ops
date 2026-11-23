@@ -18,6 +18,21 @@ reads:
   passengers: [id, segment]          # segment (child_alone / wheelchair / international / connecting / standard): priority only,
                                      # sensitive, never in any text
 static_reads: [flights, passengers]  # published before the day; segment doesn't change during it
+# SHARED STATE (Phase 4c, rules in config/agents/_shared.yaml shared_state). The latest Situation version with assessed_at <= its
+# time T, only these fields. NOT flight_controllability (it decides compensation: only once a human has approved it, later phase)
+# and NOT evidence (internals). Suspected cause and expected end arrive as suspicions with their confidence, never as facts.
+# Freshness: Situation's heartbeat (each run), not the age of its last version. Every read is in the audit log with its version.
+shared_reads:
+  situation_assessments:
+    producer: situation
+    fields: [version, assessed_at, status, type, likely_cause, confidence, expected_end_earliest, expected_end_likely,
+             expected_end_latest, end_confidence, conflicts, stale_sources, data_as_of]
+    conflict_fields: [key, flight_ids, fields]        # which flights and which fields disagree; not who said what
+    heartbeat: true
+# Derived lookups (AgentContext), channel TYPES only, never an address, name or booking ref. name -> phase it is switched on in.
+projections:
+  passenger_screens: 4b-1            # which screens each passenger has: app/SMS only if on file; gate screen and call center for all
+  contact_channel_types: 4b-2        # for resend_on_other_channel: which other channel types this passenger has
 
 # The feeds it listens to. Only the payload fields listed here reach the agent: the simulator's record of WHY a copy was late
 # (lag_min, cause_if_late) and the message texts are stripped. The only failure signal is a delivery receipt, as a real system has.
@@ -31,8 +46,6 @@ event_feeds:
     flight_departed: [flight_id]
     flight_arrived: [flight_id]
     flight_diverted: [flight_id, diverted_to]
-    source_conflict_opened: [flight_id]
-    source_conflict_resolved: [flight_id]
   channels:                          # one feed per channel, each with its own heartbeat (the payload's "channel" names it)
     _split_by: channel
     _feeds: [app, sms, gate_screen, call_center]
@@ -52,7 +65,8 @@ writes:
   events:
     mode: insert
     types: [mismatch_detected, mismatch_cleared, delivery_failure_detected, communication_summary, human_decision_needed,
-            agent_error, message_drafted, message_held_for_approval, channel_fix_held]
+            agent_error, message_drafted, message_held_for_approval, channel_fix_held, conflict_hold_cleared,
+            situation_unavailable, situation_available_again, situation_cannot_assess, agents_disagree]
   audit_log:
     mode: insert
 
@@ -186,6 +200,8 @@ escalate_when:                       # numbers in config/agent_settings/communic
 - More than flight_passengers_wrong tracked passengers are shown wrong flight information for the same flight.
 - A child flying alone or a wheelchair passenger is shown a cancelled or wrong flight for more than vulnerable_wrong_min minutes.
 - More than failures_per_window delivery failures on one channel within failures_window_min.
+- The Situation agent has not run (no heartbeat) for more than situation.escalate_after_min minutes (fixes carry on meanwhile).
+- Situation and Communication disagree about the same fact (both views are logged).
 - (4b-3) A draft would need to mention money, a safety matter or a cause that is not confirmed.
 ai_allowed:
   allowed: true

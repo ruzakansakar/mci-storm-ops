@@ -118,6 +118,11 @@ class MemoryContext:
         self.sink["events"].append({"occurred_at": self.now, "type": type_, "payload": payload})
         return len(self.sink["events"])
 
+    def heartbeat(self, payload=None):
+        """Shared-state rule 6 (each run). Kept apart from the agent's other events, which the judge scores."""
+        self.sink.setdefault("heartbeats", []).append(self.now)
+        return len(self.sink["heartbeats"])
+
     def propose(self, action, output, safety_rung=None, supersedes=None):
         rid = len(self.sink["recs"]) + 1
         self.sink["recs"].append({"id": rid, "created_at": self.now, "decision_ids": output["decision_ids"], "supersedes": supersedes,

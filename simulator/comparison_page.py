@@ -58,6 +58,26 @@ def maya_table(today, copilot):
             + "".join(f"<th>{n}</th>" for n in CHANNEL_NAMES.values()) + "</tr>" + "".join(rows) + "</table>")
 
 
+def situation_strip(copilot):
+    """What Communication knew from Situation (each time it changed), and why fixes were held."""
+    sit = copilot.get("copilot_situation")
+    if not sit:
+        return ""
+    rows = "".join(
+        f"<tr><td>{esc(x['t'][11:16])}</td><td>{esc(x['version'] or '-')}</td>"
+        f"<td>{esc(x['status'] or '-')}</td><td>{'yes' if x['available'] else '<b>no (not running)</b>'}</td>"
+        f"<td>{esc(', '.join(x['conflict_flights']) or 'none')}</td></tr>" for x in sit["timeline"])
+    holds = ", ".join(f"{esc(k)}: {v}" for k, v in sorted((copilot.get("holds_by_reason") or {}).items())) or "none"
+    conflicts = "".join(f"<li>{esc(c['flight_id'])}: {c['holds']} holds for {len(c['passengers'])} passenger(s), "
+                        f"{hm(c['first'])}&ndash;{hm(c['last'])}</li>" for c in copilot.get("conflict_holds") or [])
+    return ('<h3>What Communication knew from Situation</h3><p>Situation ran ' + esc(sit["situation_runs"]) + ' times and wrote '
+            + esc(sit["situation_versions"]) + ' versions. Communication read the latest version at or before each minute (never '
+            'a later one), only the fields its contract lists. Suspected causes and expected ends are kept as suspicions; they '
+            'are not used in anything shown to passengers yet.</p><details><summary>Each change it saw</summary><table><tr><th>Time'
+            '</th><th>Version</th><th>Status</th><th>Situation running</th><th>Flights with conflicting data</th></tr>' + rows +
+            '</table></details><p><b>Fixes held</b>, by reason: ' + holds + '</p>' + (f'<ul>{conflicts}</ul>' if conflicts else ''))
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -77,7 +97,10 @@ def section(today, copilot):
         for row in mode["maya_minutes"]:
             cells = [f'<td>{hm(row["t"])}</td>']
             for ch in ("app", "sms", "gate_screen", "call_center"):
-                v = row["channels"][ch]
+                v = row["channels"].get(ch)
+                if v is None:                                  # a screen this passenger does not have
+                    cells.append("<td>-</td>")
+                    continue
                 wrong = any(v[k] != row["truth"][k] for k in ("itinerary", "status", "destination"))
                 cells.append(f'<td style="background:{"#fff0ef" if wrong else "#e7f5ef"}">{esc(v["status"])} '
                              f'{esc(" > ".join(v["itinerary"]))}</td>')
@@ -85,7 +108,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \

@@ -28,6 +28,9 @@ OWN_TABLES = {"situation_assessments": {"situation"},      # shared state: only 
 # Build phases in order. A contract may name, per action, the phase it is switched on in (capabilities: action -> enabled_in);
 # AgentContext refuses an action whose phase has not come yet.
 PHASES = ("4b-1", "4b-2", "4b-3")
+# Derived lookups an agent may ask AgentContext for, by name. Each reveals channel TYPES only (never an address, name or ref).
+PROJECTIONS = {"passenger_screens": "which of the four screens each passenger has (app/SMS only if on file)",
+               "contact_channel_types": "which supported channel types one passenger has (app, sms, email)"}
 INCIDENT_TABLES = {"incidents", "incident_events"}
 INCIDENT_WRITERS = {"orchestrator"}
 WRITE_MODES = {"insert", "update", "insert_or_update"}
@@ -85,6 +88,13 @@ class Contract:
                                  if "_split_by" in types}
         self.phase: str | None = data.get("phase")
         self.enabled_in: dict = {c["action"]: c["enabled_in"] for c in data.get("capabilities") or [] if c.get("action")}
+        self.projections: dict = dict(data.get("projections") or {})            # name -> phase it is available from
+        self.shared_reads: dict = dict(data.get("shared_reads") or {})          # shared table -> {producer, fields, ...}
+
+    def projection_ok(self, name: str) -> bool:
+        if name not in self.projections:
+            return False
+        return not self.phase or PHASES.index(self.projections[name]) <= PHASES.index(self.phase)
 
     def enabled(self, action: str) -> bool:
         """Is this action switched on in the contract's current phase? (No phase or no entry: always.)"""
@@ -124,6 +134,18 @@ def validate_contract(data: dict, rules: dict | None = None, tables: dict | None
                 raise ContractError(f"{name}: reads unknown column {table}.{c}")
             if c in PII_COLUMNS.get(table, ()) and name not in PII_AGENTS:
                 raise ContractError(f"{name}: may not read {table}.{c} (names and contact details are only for {sorted(PII_AGENTS)})")
+
+    for proj, phase in (data.get("projections") or {}).items():
+        if proj not in PROJECTIONS:
+            raise ContractError(f"{name}: unknown projection '{proj}'")
+        if phase not in PHASES:
+            raise ContractError(f"{name}: projection '{proj}' names unknown phase '{phase}'")
+
+    from backend.contracts.shared_state import SharedStateError, validate_shared_reads
+    try:
+        validate_shared_reads(name, data.get("shared_reads"), tables)
+    except SharedStateError as err:
+        raise ContractError(str(err)) from None
 
     writes = data["writes"]
     if not isinstance(writes, dict) or not writes:

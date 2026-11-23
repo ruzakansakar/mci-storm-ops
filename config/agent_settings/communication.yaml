@@ -12,6 +12,11 @@ fix:
   resend_after_min: 30                # assumption: stuck-channel alternative delivery threshold
   unknown_departure_days: 2           # assumption: unknown departures sort after today's known flights
   alternate_order: [app, sms]         # assumption: only supported passenger-owned channel types
+situation:                            # reading the Situation agent's shared picture (Phase 4c)
+  unavailable_after_min: 12           # assumption: Situation runs at least every 5 min; no heartbeat for this long = it stopped
+  escalate_after_min: 30              # assumption: tell the customer service supervisor if it stays unavailable longer than this
+  disagree_after_min: 10              # assumption: both agents judge feed freshness on their own clocks; a disagreement must last
+                                      # this long before it is logged and escalated (short timing differences are not one)
 channels: [app, sms, gate_screen, call_center]
 fields: [itinerary, status, destination, bag_routing]
 
