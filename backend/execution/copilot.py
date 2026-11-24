@@ -475,17 +475,51 @@ class Copilot:
     def recovery_delivery_problems(self, message):
         return recovery_send_problems(message, self.recovery.world)
 
+    # ------------------------------------------------------------ the minute, in steps (Phase 5a: the orchestrator runs them)
     def tick(self, now, published, deliver):
+        """One minute, in the agreed order. backend/orchestrator/ runs the same steps with its own checks in between."""
+        self.receive(published)
+        human_out, approved_now = self.answers(now, self.humans.due(now) if self.humans else [])
+        outputs, audits = [], []
+        for name in ("situation", "network_recovery", "passenger_care", "station_staff"):
+            o, a = self.run_agent(name, now)
+            outputs, audits = outputs + o, audits + a
+        o, a = self.communicate(now, deliver, approved_now, human_out)
+        return outputs + o, audits + a
+
+    def receive(self, published):
         for event in published:
             self.event_id += 1
             self.store.events.append({**deepcopy(event), "id": self.event_id})
-        human_out = []
-        # 0. people answer what is due. A conflict answer is published first, so Situation sees it this very minute.
-        approved_now = []
+
+    def care_publish(self, now):
         def publish(kind, payload):
             self._publish(now, kind, payload)
             self.vendor_out.append(("system:care_records", kind, deepcopy(payload)))
-        for q in (self.humans.due(now) if self.humans else []):
+        return publish
+
+    def run_agent(self, name, now):
+        """Run one agent for this minute (on its own schedule) and collect what it wrote."""
+        if name == "situation":
+            self.situation.tick(now)
+            return self._drain(self.situation.context, "situation")
+        if name == "network_recovery" and self.network:
+            self.network.tick(now)
+            return self._drain(self.network.context, "network_recovery")
+        if name == "passenger_care" and self.care:
+            self.care.tick(now, self.humans, self.care_publish(now))
+            return self._drain(self.care.context, "passenger_care")
+        if name == "station_staff" and self.station:
+            self.station.tick(now, self.humans)
+            return self._drain(self.station.context, "station_staff")
+        return [], []
+
+    def answers(self, now, due):
+        """0. People answer what is due. A conflict answer is published first, so Situation sees it this very minute."""
+        human_out = []
+        approved_now = []
+        publish = self.care_publish(now)
+        for q in due:
             actor = f"simulated_human:{q.role}"
             if q.agent == "network_recovery":
                 if self.network:
@@ -523,25 +557,10 @@ class Copilot:
                 self._set_status(q.agent, q.rec_id, "approved")
             else:
                 approved_now.append(q)
-        # 1. Situation (its own schedule)
-        self.situation.tick(now)
-        outputs, audits = self._drain(self.situation.context, "situation")
-        # 1b. Network Recovery (advisory: proposals are rule-checked and recorded, never applied)
-        if self.network:
-            self.network.tick(now)
-            o, a = self._drain(self.network.context, "network_recovery")
-            outputs, audits = outputs + o, audits + a
-        # 1c. Passenger Care (hotel holds and approved rooms are applied to the co-pilot's own ledger; the rest waits or advises)
-        if self.care:
-            self.care.tick(now, self.humans, publish)
-            o, a = self._drain(self.care.context, "passenger_care")
-            outputs, audits = outputs + o, audits + a
-        # 1d. Station & Staff (gates and staff applied to the co-pilot's own ledgers once approved; tarmac care asks and requests)
-        if self.station:
-            self.station.tick(now, self.humans)
-            o, a = self._drain(self.station.context, "station_staff")
-            outputs, audits = outputs + o, audits + a
-        # 2. Communication: detect, read Situation's picture, plan fixes and messages
+        return human_out, approved_now
+
+    def communicate(self, now, deliver, approved_now, human_out):
+        """2. Communication: detect, read Situation's picture, plan fixes and messages; then the executor and the answers."""
         ctx = self.context
         ctx.now = now
         result = scan(ctx, self.detection, write=False)
@@ -653,7 +672,7 @@ class Copilot:
                 self._send_recovery(ctx, item, now, deliver, item.get("recommendation") in crew_approved)
         out2, aud2 = self._drain(ctx, "communication")
         vendor, self.vendor_out = self.vendor_out, []
-        return outputs + out2 + human_out + vendor, audits + aud2
+        return out2 + human_out + vendor, aud2
 
     def _send_recovery(self, ctx, item, now, deliver, crew_approved=False):
         if item.get("recommendation") and not crew_approved:

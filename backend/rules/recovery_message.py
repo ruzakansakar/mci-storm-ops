@@ -1,8 +1,13 @@
 """A recovery draft is a proposed statement, never evidence that it is true."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 import yaml
 from backend.settings import ROOT, TZ
+
+
+# The operational facts of a change, as an application confirmation states them. The departure and report time are derived
+# for the wording (Phase 5a) and are checked against current truth separately.
+OPERATIONAL = ("proposal_id", "action", "flight_id", "new_departure", "crew_id", "role")
 
 
 @lru_cache
@@ -10,14 +15,33 @@ def templates():
     return yaml.safe_load((ROOT / "config" / "recovery_message_templates.yaml").read_text(encoding="utf-8"))
 
 
-def directives(view):
+@lru_cache
+def report_lead_min() -> int:
+    """How long before departure a crew reports (Communication settings; an assumption)."""
+    from backend.settings import ROOT as _R
+    s = yaml.safe_load((_R / "config" / "agent_settings" / "communication.yaml").read_text(encoding="utf-8"))
+    return int(s["recovery"]["crew_report_before_departure_min"])
+
+
+def directives(view, flights=None):
+    """proposal id -> the change as the plan states it. A crew change carries the flight's expected departure (the plan's new time
+    for that flight, else the published operational estimate in `flights`) and the crew's report time, so a passenger hears the
+    outcome and a crew member when to report (Phase 5a)."""
     facts = (view or {}).get("facts") or {}
     out = {}
+    planned = {d.get("flight_id"): d.get("new_departure") for d in facts.get("delays") or []}
     for col, action in (("delays", "delay_flight"), ("cancels", "cancel_flight"), ("crew_actions", None)):
         for row in facts.get(col) or []:
             if row.get("proposal_id") is not None:
-                out[row["proposal_id"]] = {k: v for k, v in {**row, "action": action or row.get("action")}.items()
-                                            if k in ("proposal_id", "action", "flight_id", "new_departure", "crew_id", "role", "report_by")}
+                c = {k: v for k, v in {**row, "action": action or row.get("action")}.items()
+                     if k in ("proposal_id", "action", "flight_id", "new_departure", "crew_id", "role", "report_by")}
+                if col == "crew_actions":
+                    dep = planned.get(c["flight_id"]) or ((flights or {}).get(c["flight_id"]) or {}).get("departure")
+                    if dep:
+                        c["departure"] = dep
+                        if not c.get("report_by"):
+                            c["report_by"] = (datetime.fromisoformat(dep) - timedelta(minutes=report_lead_min())).isoformat()
+                out[row["proposal_id"]] = c
     return out
 
 
@@ -26,8 +50,11 @@ def text_for(change, audience):
     action = change["action"]
     values = {"flight_id": change["flight_id"], "crew_id": change.get("crew_id"),
               "change": t["change_names"][action]}
-    if change.get("new_departure"):
-        values["departure"] = datetime.fromisoformat(change["new_departure"]).astimezone(TZ).strftime("%H:%M")
+    dep = change.get("new_departure") or change.get("departure")
+    if dep:
+        values["departure"] = datetime.fromisoformat(dep).astimezone(TZ).strftime("%H:%M")
+    if change.get("report_by"):
+        values["report_by"] = datetime.fromisoformat(change["report_by"]).astimezone(TZ).strftime("%H:%M")
     if audience == "staff":
         return t["staff"].format(**values)
     return t[audience][action].format(**values)
@@ -45,7 +72,7 @@ def draft_problems(draft, change):
 
 def send_problems(draft, world):
     view = world.get("recovery_view")
-    change = directives(view).get(draft.get("proposal_id"))
+    change = directives(view, world.get("recovery_flights")).get(draft.get("proposal_id"))
     if change is None:
         return ["proposal rejected, superseded or no longer published"]
     problems = draft_problems(draft, change)
@@ -64,7 +91,8 @@ def send_problems(draft, world):
     # Approval is not application. A source confirmation binds the applied action
     # to the proposal/version, and current operational facts must still match.
     applied = world.get("recovery_applications", {}).get(draft["proposal_id"])
-    if (not applied or applied.get("plan_version") != draft.get("plan_version") or applied.get("change") != change):
+    op = lambda c: {k: c[k] for k in OPERATIONAL if k in (c or {})}    # what an application confirms (not the derived wording)
+    if (not applied or applied.get("plan_version") != draft.get("plan_version") or op(applied.get("change")) != op(change)):
         problems.append("approved, waiting to take effect")
     elif not truth_matches(change, world.get("recovery_flights", {}), world.get("recovery_crews", {})):
         problems.append("approved, waiting to take effect")

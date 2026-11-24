@@ -1,0 +1,34 @@
+# Settings for the orchestrator (backend/orchestrator/). Phase 5a: coordination only, nothing changes the world.
+# Every number is a class-project assumption. The answer deadline itself is a rule (human_answer_deadline_min in config/rules).
+
+run:
+  day_end: "23:59"                     # assumption: every incident still open is ranked and logged until here
+  agents: [situation, network_recovery, passenger_care, station_staff, communication]   # the agreed order (never changed)
+
+incidents:
+  station: MCI
+  reclassify_within_min: 20            # assumption: a new type within 20 min of opening (from "unknown") is the same incident
+  quiet_before_recovery_min: 60        # assumption: an incident whose type Situation has not reported for an hour is recovering
+  close_after_recovery_min: 180        # assumption: close (Q07) this long after recovery started, if nothing is left in the queue
+  rank: [security, airport, weather, it_outage, faa_program, crew, other, unknown]   # T05: safety first (assumption)
+
+queue:
+  escalation_chain:                    # S06: who is next when nobody answered in time (assumption)
+    customer_service_supervisor: director_of_operations
+    station_manager: director_of_operations
+    network_operations_control: director_of_operations
+    crew_scheduling: network_operations_control
+    ramp_supervisor: station_manager
+    captain: chief_pilot
+    maintenance_control: director_of_operations
+    regulatory_compliance: director_of_operations
+  batch:                               # routine approvals of the same kind, asked within the window, become ONE queue item
+    window_min: 15                     # assumption
+    kinds:
+      station_staff: [call_in_ground_staff, arrange_food_water]
+  workload_max_per_hour: 30            # assumption: flag a role that gets more than this many queue items in an hour
+  conflict_roles:                      # who is asked when two agents disagree (assumption)
+    rebooking_on_cancelled_flight: network_operations_control
+    departure_without_station_capacity: network_operations_control
+    draft_contradicts_plan: customer_service_supervisor
+    resource_used_twice: station_manager

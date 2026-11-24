@@ -59,7 +59,30 @@ class Writer:
         """When the source delivered this event, if late (None = as it happened). Chaos tests deliver some events late."""
         return at(e["published_t"]) if e.get("published_t") is not None else None
 
-    def save_proposals(self, context):
+    def save_incidents(self, orch):
+        """The orchestrator's incidents (only it writes incidents). Returns {its incident number: database id}."""
+        out = {}
+        with self.conn.cursor() as cur:
+            for i in orch.incidents.all:
+                cur.execute("INSERT INTO incidents (kind, station, title, likely_cause, status, opened_at, resolved_at, opened_by, run_id) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,'orchestrator',%s) RETURNING id",
+                            (i.kind, "MCI", f"{i.kind} at MCI (incident {i.id})", i.kind, i.status, i.opened_at, i.resolved_at, self.run_id))
+                out[i.id] = cur.fetchone()[0]
+        return out
+
+    def save_orchestrator(self, orch, incident_map):
+        """One orchestrator_log row a minute, and what each incident's work is (tags)."""
+        from backend.execution.copilot import serial
+        with self.conn.cursor() as cur:
+            cur.executemany("INSERT INTO orchestrator_log (run_id, at, row) VALUES (%s,%s,%s)",
+                            [(self.run_id, r["at"], Jsonb(serial(r))) for r in orch.log])
+            cur.executemany("INSERT INTO incident_items (run_id, incident_id, kind, ref, at) VALUES (%s,%s,%s,%s,%s)",
+                            [(self.run_id, incident_map[t["incident_id"]], t["kind"], str(t["ref"]), t["at"]) for t in orch.tags
+                             if t["incident_id"] in incident_map]
+                            + [(self.run_id, incident_map[i.incident_id], "queue_item", str(i.id), i.asked_at) for i in orch.queue.items
+                               if i.incident_id in incident_map])
+
+    def save_proposals(self, context, incident_map=None):
         """Persist buffered, contract-validated proposals in one batch.
 
         Execution event IDs are run-local proposal IDs; options preserve that
@@ -73,12 +96,13 @@ class Writer:
             options = [{**o, "local_proposal_id": local_id} for o in r["options"]]
             rows.append((r["agent"], r["title"], r["why"], Jsonb(serial(options)), r["autonomy"], r["approver_role"],
                          r["safety_rung"], r["decision_ids"], r["data_as_of"], r["status"], self.run_id, r["created_at"],
-                         r.get("rule_check_ok"), r.get("rule_check_notes"), r.get("rule_ids")))
+                         r.get("rule_check_ok"), r.get("rule_check_notes"), r.get("rule_ids"),
+                         (incident_map or {}).get(r.get("incident_id"))))
         if rows:
             with self.conn.cursor() as cur:
                 cur.executemany("INSERT INTO recommendations (agent,title,why,options,autonomy,approver_role,safety_rung,"
-                                "decision_ids,data_as_of,status,run_id,created_at,rule_check_ok,rule_check_notes,rule_ids) "
-                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+                                "decision_ids,data_as_of,status,run_id,created_at,rule_check_ok,rule_check_notes,rule_ids,incident_id) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
 
     def save_shared(self, store):
         """The shared records agents wrote in a co-pilot run (append-only), under this run. Situation's versions get their own

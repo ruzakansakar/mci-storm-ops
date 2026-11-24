@@ -1,5 +1,6 @@
 # CONTRACT: orchestrator. Plain code, no AI. Routes work, runs the rule check on every proposal, catches conflicts, escalates to humans.
 agent: orchestrator
+phase: 5a
 purpose: Plain code, no AI. Opens and runs the incident, routes work to the five agents, runs the rule check (backend/rules/check.py) on every
   proposal before any human sees it, catches conflicts between agents, and escalates to humans.
 reads:
@@ -139,7 +140,16 @@ reads:
   - chosen_option
   - reason
   - decided_at
+# Phase 5a: it reads Situation's picture (to open, rank and close incidents) through AgentContext, like any reader.
+shared_reads:
+  situation_assessments:
+    producer: situation
+    fields: [version, assessed_at, status, type, confidence, expected_end_likely, expected_end_latest, end_confidence, impact]
+    heartbeat: true                    # impact: other_suspected_causes = a possible second incident (A04)
 writes:
+  orchestrator_log:                    # Phase 5a: one row a minute (append-only): who ran, versions read and written, the queue
+    mode: insert
+    columns: [at, row]
   incidents:
     mode: insert_or_update
     columns:
@@ -198,6 +208,14 @@ writes:
     - rule_check_passed
     - rule_check_blocked
     - conflict_found
+    - agents_disagree
+    - incident_ranked
+    - incident_recovery_proposed
+    - decision_escalated
+    - queue_batched
+    - queue_merged
+    - workload_high
+    - stale_chain_found
   audit_log:
     mode: insert
 actions:
@@ -214,6 +232,21 @@ actions:
 - set_incident_priority
 - track_cost
 - write_after_action_report
+# 5a builds these; the others are defined here but not built yet (enabled_in: later).
+capabilities:
+- {action: open_incident, enabled_in: 5a, note: "A04: new incident or part of an open one (automatic)"}
+- {action: set_incident_priority, enabled_in: 5a, note: "T05: two incidents, safety first (station manager)"}
+- {action: declare_recovery, enabled_in: 5a, note: "A10 (network operations control)"}
+- {action: close_incident, enabled_in: 5a, note: "Q07: temporary notes deleted, audit log kept (station manager)"}
+- {action: escalate_to_next_role, enabled_in: 5a, note: "S06: nobody answered in time (automatic)"}
+- {action: rank_for_humans, enabled_in: 5a, note: "one queue: safety rung, deadline, passengers"}
+- {action: flag_stale_data, enabled_in: 5a, note: "S02: the shared-state audit flags a stale chain"}
+- {action: escalate_cost, enabled_in: later}
+- {action: file_dot_tarmac_report, enabled_in: later}
+- {action: keep_records, enabled_in: later}
+- {action: resolve_source_conflict, enabled_in: later}
+- {action: track_cost, enabled_in: later}
+- {action: write_after_action_report, enabled_in: later}
 never:
 - Never let a human see a proposal before the rule check (backend/rules/check.py) has run on it.
 - Never pass a proposal the rule check blocked, and never override a block. Only a named human can, where a law rule allows it.

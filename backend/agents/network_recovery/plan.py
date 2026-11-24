@@ -50,6 +50,7 @@ class Memory:
     stop_started: datetime | None = None
     restart_done: set = field(default_factory=set)
     plans: list = field(default_factory=list)          # every version written (for pages)
+    basis: dict = field(default_factory=dict)          # the upstream versions it last read (stamped on every version it writes)
 
 
 def _static(ctx, memory):
@@ -533,6 +534,7 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     pic = ctx.read_shared("situation_assessments")
     p = Planner(ctx, memory, s)
     p.station = ctx.read_shared("station_plans") if "station_plans" in (ctx.contract.shared_reads or {}) else None
+    memory.basis = {"situation_version": (pic or {}).get("version"), "station_plan_version": (p.station or {}).get("version")}
     res = p.run(events, pic)
     warnings = [{"kind": "crew", **{k: w[k] for k in ("flight_id", "role", "illegal_at", "likelihood", "best")}} for w in res["crew"]] + \
                [{"kind": "fuel", **{k: w[k] for k in ("flight_id", "must_leave_by", "likelihood")}} for w in res["fuel"]]

@@ -220,6 +220,56 @@ def station_section(copilot):
             '<th>Proposed departure</th><th>Why</th></tr>' + (moved or '<tr><td colspan="3">none</td></tr>') + '</table>')
 
 
+def orchestrator_section(copilot):
+    """Phase 5a: the orchestrator: how the agents connected at 14:15, the human queue over the day, conflicts, incidents."""
+    o = copilot.get("orchestrator")
+    if not o:
+        return ""
+    t5 = lambda v: v[11:16] if isinstance(v, str) and len(v) > 15 else (v or "-")
+    vers = lambda d: ", ".join(f"{k.replace('_', ' ')} v{v}" for k, v in sorted(d.items())) or "-"
+    names = {"situation": "Situation", "network_recovery": "Network Recovery", "passenger_care": "Passenger Care",
+             "station_staff": "Station &amp; Staff", "communication": "Communication"}
+    conn = "".join(f"<tr><td>{names[c['agent']]}</td><td>{esc(c['last_ran'] or '-')}</td><td>{esc(vers(c['read']))}</td>"
+                   f"<td>{esc(vers(c['published']))}</td><td>{'<b>' + esc('; '.join(c['stale'])) + '</b>' if c['stale'] else 'up to date'}</td></tr>"
+                   for c in o["connections_1415"])
+    arrow = " &rarr; ".join(names[c["agent"]] for c in o["connections_1415"])
+    hours = sorted({h for hs in o["by_role_hour"].values() for h in hs})
+    load = "".join(f"<tr><td>{esc(r.replace('_', ' '))}</td>" + "".join(
+        (f"<td><b>{hs.get(h, 0)}</b></td>" if hs.get(h, 0) > o["workload_limit"] else f"<td>{hs.get(h, 0) or ''}</td>") for h in hours)
+        + "</tr>" for r, hs in sorted(o["by_role_hour"].items()))
+    qs = o["queue"]
+    top = sorted((i for i in o["queue_items"] if i["kind"] != "single" or i["members"] > 1 or i["escalated_to"]),
+                 key=lambda i: (i["rung"], i["deadline"], -i["pax"]))[:15]
+    items = "".join(f"<tr><td>{i['id']}</td><td>{esc(i['agent'])}</td><td>{esc(', '.join(i['decision_ids']) or i['action'])}</td>"
+                    f"<td>{esc(i['role'].replace('_', ' '))}</td><td>{esc(t5(i['asked_at']))}</td><td>{esc(t5(i['deadline']))}</td>"
+                    f"<td>{i['members']}</td><td>{esc(' > '.join(i['escalated_to']) or '-')}</td><td>{esc(i['status'])}</td></tr>"
+                    for i in top)
+    conf = "".join(f"<tr><td>{esc(t5(c['at']))}</td><td>{esc(c['kind'].replace('_', ' '))}</td><td>{esc(c['detail'])}</td>"
+                   f"<td>{'blocked' if c['block'] else 'asked ' + esc((c.get('asked') or '').replace('_', ' '))}</td></tr>"
+                   for c in o["conflicts"][:25])
+    inc = "".join(f"<tr><td>{i['id']}</td><td>{esc(i['kind'])}</td><td>{i['rank'] + 1}</td><td>{esc(t5(i['opened_at']))}</td>"
+                  f"<td>{esc(t5(i['recovery_at']))}</td><td>{esc(t5(i['resolved_at']))}</td>"
+                  f"<td>{esc(', '.join(f'{k.replace(chr(95), chr(32))} {v}' for k, v in sorted(i['work'].items())))}</td></tr>"
+                  for i in o["incidents"])
+    return ('<h3>Orchestrator</h3>'
+            f'<p>{o["minutes_logged"]} minutes logged. Agents run in this order every minute: {arrow}. Stale chains found: '
+            f'{len(o["stale"])}. Proposals blocked because of a conflict: {len(o["blocked"])}.</p>'
+            '<h4>How the agents connected at 14:15</h4><table><tr><th>Agent</th><th>Last ran</th><th>Read</th><th>Published</th>'
+            '<th>Shared-state audit</th></tr>' + conn + '</table>'
+            f'<h4>The human queue</h4><p>{qs["items"]} items ({esc(", ".join(f"{k} {v}" for k, v in sorted(qs["by_status"].items())))}); '
+            f'{qs["batches"]} batches covering {qs["batched_proposals"]} routine approvals; {qs["merged"]} duplicates merged; '
+            f'{qs["escalated"]} escalated past their deadline; {qs["conflict_items"]} conflicts for a person. Limit: '
+            f'{o["workload_limit"]} items per role per hour (bold = over).</p>'
+            '<table><tr><th>Role</th>' + "".join(f"<th>{h[:2]}</th>" for h in hours) + '</tr>' + load + '</table>'
+            '<p>Batched, merged or escalated items (first 15, in queue order: safety rung, deadline, passengers):</p>'
+            '<table><tr><th>#</th><th>Agent</th><th>Decision</th><th>Approver</th><th>Asked</th><th>Deadline</th><th>Proposals</th>'
+            '<th>Escalated to</th><th>Status</th></tr>' + (items or '<tr><td colspan="9">none</td></tr>') + '</table>'
+            '<h4>Conflicts caught (first 25)</h4><table><tr><th>At</th><th>Kind</th><th>Both views</th><th>What happened</th></tr>'
+            + (conf or '<tr><td colspan="4">none</td></tr>') + '</table>'
+            '<h4>Incidents</h4><table><tr><th>#</th><th>Kind</th><th>Rank</th><th>Opened</th><th>Recovery</th><th>Closed</th>'
+            '<th>Work tagged</th></tr>' + inc + '</table>')
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -250,7 +300,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + care_section(copilot) + station_section(copilot) + recovery_messages_section(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + care_section(copilot) + station_section(copilot) + orchestrator_section(copilot) + recovery_messages_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \

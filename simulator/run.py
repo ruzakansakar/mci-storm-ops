@@ -73,7 +73,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     copilot = None
     event_cursor = 0
     if mode == "copilot":
-        from backend.execution.copilot import Copilot
+        from backend.orchestrator.loop import Orchestrator as Copilot     # Phase 5a: the orchestrator owns the minute loop
         schedule = [{k: f[k] for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr")}
                     for f in data["flights"]]
         passengers = [{"id": p["id"], "segment": p["segment"], "full_name": p["full_name"],
@@ -190,6 +190,8 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         from simulator.station_metrics import station_metrics
         from backend.execution.copilot import serial as _serial
         metrics["station"] = _serial(station_metrics(world, copilot, data))
+        from simulator.orchestrator_metrics import orchestrator_metrics
+        metrics["orchestrator"] = _serial(orchestrator_metrics(copilot))
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
@@ -197,15 +199,19 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     metrics["contract_violations"] = (len(copilot.context.violations) + len(copilot.situation.context.violations)) if copilot else 0
     if writer:
         if copilot:
-            writer.save_proposals(copilot.context)
-            writer.save_proposals(copilot.situation.context)
+            imap = writer.save_incidents(copilot) if hasattr(copilot, "incidents") else {}
+            writer.save_proposals(copilot.context, imap)
+            writer.save_proposals(copilot.situation.context, imap)
             if copilot.network:
-                writer.save_proposals(copilot.network.context)
+                writer.save_proposals(copilot.network.context, imap)
             if copilot.care:
-                writer.save_proposals(copilot.care.context)
+                writer.save_proposals(copilot.care.context, imap)
                 writer.save_hotel_ledger(copilot.care.ledger)
             if copilot.station:
-                writer.save_proposals(copilot.station.context)
+                writer.save_proposals(copilot.station.context, imap)
+            if hasattr(copilot, "incidents"):
+                writer.save_proposals(copilot.octx, imap)
+                writer.save_orchestrator(copilot, imap)
                 writer.save_station_ledgers(copilot.station.gate_ledger, copilot.station.staff_ledger)
             writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)

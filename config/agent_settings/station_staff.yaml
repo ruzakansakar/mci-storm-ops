@@ -19,6 +19,8 @@ gates:
   buffer_min: 10                       # assumption: a gate is free this long after a plane leaves before the next one can use it
   overnight_until_first_departure: true   # assumption: planes at MCI at the start of the day are at gates until their first departure
   conflict_tolerance_min: 15           # assumption: re-plan a gate when its plane's times move by more than this
+  lock_before_arrival_min: 30          # assumption (5a): a gate held for a plane landing within this time changes only for a
+                                       # real conflict (an earlier plane still there), and the reason is logged
 
 diversions:
   flight_back_min: 40                  # assumption: from leaving a diversion airport to landing at MCI (nearby alternates)
