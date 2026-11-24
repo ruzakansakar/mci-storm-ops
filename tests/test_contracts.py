@@ -436,19 +436,28 @@ def test_network_recovery_is_refused_passenger_names_and_truth_writes(db):
 
 # ------------------------------------------------------------------ stale data
 
+def live_reader_contracts():
+    """Since 4f every agent reads only data published before the day plus events (whose freshness is the feeds' heartbeats).
+    The rule for a LIVE table (a row's as_of time) is still AgentContext's: it is tested on station_staff's contract with the
+    stations table read live instead of as published before the day. Nothing about the rule changes."""
+    from backend.contracts.loader import validate_contract
+    data = dict(CONTRACTS["station_staff"].data)
+    data["static_reads"] = [t for t in data["static_reads"] if t != "stations"]
+    return {**CONTRACTS, "station_staff": validate_contract(data)}
+
+
 def test_stale_data_is_refused_and_fresh_data_is_accepted(db):
-    # an agent that reads a LIVE table (station_staff reads stations with their as_of time). Since 4d/4e Network Recovery and
-    # Passenger Care read only data published before the day plus events; their freshness is the feeds' heartbeats.
-    agent, action = "station_staff", "adjust_checkin_cutoffs"
+    agent, action = "station_staff", "request_wheelchair_help"
+    contracts = live_reader_contracts()
     limit = CONTRACTS[agent].max_data_age_sec
-    probe = ctx_for(agent, db)
+    probe = ctx_for(agent, db, contracts=contracts)
     probe.read("stations", ["code"], limit=1)
     as_of = probe.oldest_as_of
     out = good_output(agent, action)
-    fresh = ctx_for(agent, db, now=as_of + timedelta(seconds=limit))
+    fresh = ctx_for(agent, db, now=as_of + timedelta(seconds=limit), contracts=contracts)
     fresh.read("stations", ["code"], limit=1)
     assert fresh.propose(action, out)
-    stale = ctx_for(agent, db, now=as_of + timedelta(seconds=limit + 1))
+    stale = ctx_for(agent, db, now=as_of + timedelta(seconds=limit + 1), contracts=contracts)
     stale.read("stations", ["code"], limit=1)
     with pytest.raises(StaleDataError, match="old"):
         stale.propose(action, out)

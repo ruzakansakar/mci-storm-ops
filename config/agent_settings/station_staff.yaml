@@ -1,0 +1,64 @@
+# Settings for the Station & Staff agent (backend/agents/station_staff/). Phase 4f. Every number is a class-project assumption.
+# The agent reads only this file, its contract's tables and events, and the shared Situation, Network Recovery and Passenger
+# Care pictures. The legal limits (tarmac, wheelchair, ground staff hours, crowding) come from config/rules, never from here.
+
+run:
+  every_min: 5                         # assumption: plan every 5 simulated minutes (as the other agents)
+  day_start: "05:00"                   # assumption
+  day_end: "23:59"                     # assumption
+  station: MCI
+  trigger_events: [tarmac_started, tarmac_ended, ramp_closed, ramp_reopened, flight_arrived, flight_diverted, flight_resumed,
+                   flight_holding, flight_cancelled, flight_delay_updated]
+  horizon_min: 60                      # assumption: assign gates and staff for work starting within the next 60 minutes
+international_region: "Mexico / Caribbean"   # assumption: flights to or from here are international (4 h tarmac limit, customs)
+
+gates:
+  southwest_gates: 15                  # assumption: gates Southwest uses at MCI (the station row counts every gate at the airport)
+  remote_stands: 4                     # assumption: hardstands Southwest can use with stairs when the gates run out
+  stairs: 4                            # assumption: sets of air stairs at the station
+  buffer_min: 10                       # assumption: a gate is free this long after a plane leaves before the next one can use it
+  overnight_until_first_departure: true   # assumption: planes at MCI at the start of the day are at gates until their first departure
+  conflict_tolerance_min: 15           # assumption: re-plan a gate when its plane's times move by more than this
+
+diversions:
+  flight_back_min: 40                  # assumption: from leaving a diversion airport to landing at MCI (nearby alternates)
+
+staff:                                 # who each piece of work needs (assumption: Southwest's station planning numbers)
+  arrival:
+    ramp: {count: 4, before_min: 0, after_min: 30}           # unload, bags, marshalling
+    gate_agent: {count: 1, before_min: 5, after_min: 20}     # meet the plane, jet bridge
+  departure:
+    ramp: {count: 4, before_min: 40, after_min: 0}           # load, fuel, push back
+    gate_agent: {count: 2, before_min: 45, after_min: 0}     # boarding
+  cancelled:
+    customer_service: {count: 2, before_min: 0, after_min: 90}   # the rebooking line for a cancelled flight
+  diverted_arrival:
+    customer_service: {count: 1, before_min: 0, after_min: 30}   # meet passengers whose plane was diverted
+  wheelchair:
+    meet_before_arrival_min: 10        # assumption: the wheelchair agent is at the door this long before the plane lands
+    help_after_arrival_min: 45         # assumption: deplaning, bags and the curb or the connecting gate
+    board_before_departure_min: 60     # assumption: for a connection, from this long before departure to boarding
+    agent_min_per_passenger: 20        # assumption: from booked counts, one agent takes one passenger in about 20 minutes (the
+                                       # passengers Passenger Care names get one agent each for the whole step, never left alone)
+  child:
+    meet_before_arrival_min: 10        # assumption
+    guardian_handoff_within_min: 60    # assumption: the guardian collects the child within an hour of landing
+    supervisor_roles: [customer_service, gate_agent]   # assumption: a customer service agent supervises, else a gate agent
+  replan_after_move_min: 15            # assumption: re-plan an assignment when its work moves by more than this
+  break_plan_lead_min: 30              # assumption: plan a break this long before the break interval runs out
+  call_in:
+    start_early_max_min: 120           # assumption: a later shift may start at most 2 h early (shift limit still checked)
+  roster:                              # the published roster has no history before today
+    days_in_a_row: 5                   # assumption: the roster tool already keeps everyone within the days-in-a-row limit
+    rest_before_today_min: 720         # assumption: everyone had at least 12 h off before their first shift today
+
+tarmac:
+  ask_captain_before_return_min: 30    # assumption: ask the captain this long before the time to start returning (F06/F07)
+  food_water_lead_min: 30              # assumption: propose food and water this long before the 2 h deadline (F02)
+  offer_deplaning_after_min: 60        # assumption: offer deplaning (F05) once a plane has waited this long and deplaning is possible
+  diversion_deplaning_after_min: 45    # assumption: plan getting off at a diversion airport after this wait (F08/F11)
+  wheelchair_per_flight_default: 0     # passenger groups give the real count per flight
+
+ramp:
+  ask_reopen_before_min: 5             # assumption: ask the ramp supervisor about reopening this long before the expected end (E02)
+  ask_close_when: [weather]            # assumption: ask about closing the ramp (E01) when Situation reports a weather stop

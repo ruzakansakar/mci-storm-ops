@@ -48,6 +48,13 @@ shared_reads:
              end_confidence, conflicts, stale_sources, data_as_of]
     conflict_fields: [key, flight_ids, fields, status]
     heartbeat: true
+  station_plans:                       # Phase 4f: ONLY the ramp status and the gate and staff shortages (never names or rosters)
+    producer: station_staff
+    fields: [version, planned_at, ramp_status, gate_shortages, staff_shortages]
+    item_fields:
+      gate_shortages: [from, to, short_by]
+      staff_shortages: [role, from, to, short_by, departures_workable]
+    heartbeat: true
 writes:
   recommendations:
     mode: insert
@@ -60,7 +67,8 @@ writes:
   recovery_plans:                      # its shared plan, append-only and versioned (shared-state rules)
     mode: insert
     columns: [agent_run_id, run_id, version, planned_at, situation_version, delays, cancels, crew_actions, hold_divert,
-              aircraft_recovery, restart_order, seats_by_destination, warnings, estimates, sources, data_as_of, decision_ids, approval_status]
+              aircraft_recovery, restart_order, seats_by_destination, warnings, estimates, sources, data_as_of, decision_ids, approval_status,
+              station_plan_version]
   audit_log:
     mode: insert
 actions:

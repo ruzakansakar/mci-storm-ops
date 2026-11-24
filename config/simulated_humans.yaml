@@ -13,12 +13,22 @@ response_min:                          # how long a person takes to answer, draw
   network_operations_control:
     normal: [5, 20]                    # assumption
     urgent: [2, 8]                     # assumption
+  station_manager:                     # Phase 4f
+    normal: [5, 20]                    # assumption
+    urgent: [2, 8]                     # assumption
+  ramp_supervisor:                     # Phase 4f
+    normal: [5, 20]                    # assumption
+    urgent: [2, 8]                     # assumption
 
 handles:                               # what each simulated person answers. Anything else stays pending (it is listed, not answered)
   customer_service_supervisor: [draft_message, send_mass_message, send_staff_briefing, send_crew_message, escalate_channel_problem,
                                 issue_compensation, arrange_ground_transport, offer_refund]   # 4e: rooms, transport, refund offers
   network_operations_control: [resolve_source_conflict, delay_flight, cancel_flight]
   crew_scheduling: [call_in_reserve_crew, swap_crews, deadhead_crew]
-# Deliberately NOT handled: supervise_child_alone (the station manager is not simulated: it stays pending), rebook_passenger
+  station_manager: [assign_gates, move_gate_agents, call_in_ground_staff, supervise_child_alone, arrange_food_water,
+                    start_deplaning, arrange_diversion_deplaning, request_airport_resources]          # 4f: Station & Staff
+  ramp_supervisor: [flag_ramp_service_impact]   # 4f: only if a pause ever needs approval (it is automatic in the rules)
+# Deliberately NOT handled: the human-only decisions (ramp closure E01, reopening E02, stopping work E12: ramp supervisor; returning
+# to a gate F06 and the keep-on-board exception F07: the captain): they are only ever asked, with the facts. rebook_passenger
 # (Passenger Care's rebooking advice is advisory), classify_cause / A03 ("was it within Southwest's control?") and other Situation proposals. Those decide
 # what passengers are owed; a simulation should not invent that answer.

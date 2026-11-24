@@ -58,7 +58,26 @@ SHARED["care_plans"] = {                          # Phase 4e: the Passenger Care
     "conflict_keys": [],
     # the most a reader may see of each passenger's entry (never the segment, the compensation or anything sensitive)
     "item_keys": {"passengers": ["passenger_id", "hotel_name", "hotel_status", "hotel_decision", "shuttle", "transport",
-                                 "transport_status", "transport_decision"]},
+                                 "transport_status", "transport_decision"],
+                  # Phase 4f: help requests for Station & Staff (ids and flights only: no names, no compensation)
+                  "wheelchair_requests": ["passenger_id", "flight_id", "itinerary", "max_unattended_min", "needs"],
+                  "vulnerable": ["passenger_id", "kind", "itinerary", "decision", "plan", "staff_supervisor"]},
+}
+SHARED["station_plans"] = {                       # Phase 4f: the Station & Staff agent's plan (gates, staff, tarmac, help)
+    "producer": "station_staff",
+    "version": "version",
+    "time": "planned_at",
+    "sources": ["sources", "data_as_of"],
+    "suspected": {},
+    "confidences": [],
+    "conflict_keys": [],
+    "item_keys": {
+        "gate_shortages": ["from", "to", "needed", "gates", "short_by", "flights"],
+        "staff_shortages": ["role", "from", "to", "needed", "on_duty", "short_by", "departures_workable"],
+        "gates": ["flight_id", "gate", "from", "to", "status"],
+        "tarmac": ["flight_id", "station", "started", "status_announcement", "food_and_water", "start_return_by", "limit",
+                   "status", "asked_captain"],
+    },
 }
 # fields no reader contract may list, with the reason
 NEVER_SHARED = {

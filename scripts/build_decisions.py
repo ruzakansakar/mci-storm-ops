@@ -284,6 +284,9 @@ OWNER = {
     "E08": "ramp_supervisor", "E09": "ramp_supervisor", "F12": "ramp_supervisor",
     # deplaning help in the terminal / at the gate
     "F09": "station_manager", "J04": "station_manager", "J08": "station_manager",
+    # Phase 4f: the station manager assigns the staff member who supervises a child flying alone (as autonomy.yaml
+    # action_supervise_child_alone already says); the catalog had the customer service supervisor
+    "J01": "station_manager", "J03": "station_manager",
     # restart order and last flights
     "Q02": "network_operations_control", "Q04": "network_operations_control", "Q06": "crew_scheduling",
     # the DOT tarmac report
@@ -354,7 +357,8 @@ def build():
 
 
 # A decision another agent may also raise (Phase 4b-3): Communication asks A09 when a conflict holds passenger corrections.
-ALSO_RAISED_BY = {"A09": ["communication"]}
+# Phase 4f: Station & Staff names the staff member who supervises a child flying alone (J01/J03, raised by Passenger Care).
+ALSO_RAISED_BY = {"A09": ["communication"], "J01": ["station_staff"], "J03": ["station_staff"]}
 
 
 def story_events() -> set[str]:

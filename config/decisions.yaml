@@ -2444,7 +2444,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: customer_service_supervisor
+    role: station_manager
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2473,6 +2473,8 @@ decisions:
   in_story: true
   simulator_event: flight_cancelled
   status: defined
+  also_raised_by:
+  - station_staff   # Phase 4f: Station & Staff names the supervising staff member
 - id: J02
   family: vulnerable_passengers
   question: 'Child rebooking: nonstop or same plane only, never international'
@@ -2514,7 +2516,7 @@ decisions:
   action: supervise_child_alone
   decided_by:
     level: needs_approval
-    role: customer_service_supervisor
+    role: station_manager
   checked_by:
   - orchestrator rule check
   - rung_5_vulnerable
@@ -2537,6 +2539,8 @@ decisions:
   in_story: true
   simulator_event: passenger_stranded_overnight
   status: defined
+  also_raised_by:
+  - station_staff   # Phase 4f: Station & Staff names the supervising staff member
 - id: J04
   family: vulnerable_passengers
   question: A wheelchair user is never left more than 30 minutes unattended

@@ -203,7 +203,9 @@ class CareRunner:
                 self.apply(p, now, publish)
             else:
                 rec["status"] = "pending"
-                if humans and p["kind"] != "advice":         # advice is advisory: recorded, never put to a person to apply
+                # advice is advisory: recorded, never put to a person to apply. A child's supervision is a request for Station &
+                # Staff (Phase 4f): it names the staff member, the station manager approves that, and this request is then closed.
+                if humans and p["kind"] not in ("advice", "child"):
                     humans.ask("passenger_care", p["id"], p, rec.get("approver_role"), now, True)
 
     def approved(self, q, now, publish):
@@ -221,6 +223,15 @@ class CareRunner:
         self.apply(p, now, publish, q.role, q.answer["waited_min"])
         return {"agent": "passenger_care", "recommendation": q.rec_id, "action": p["action"], "role": q.role,
                 "waited_min": q.answer["waited_min"]}
+
+    def close_child(self, care_decision, station_rec, staff_id, approved_by):
+        """Station & Staff's supervisor for this child was approved and assigned: the request is done (Phase 4f)."""
+        rec = self.context.saved.get(("recommendations", care_decision))
+        if rec is not None and rec.get("status") == "pending":
+            rec["status"] = "closed_by_station_staff"
+            rec["closed_by"] = {"station_recommendation": station_rec, "staff_id": staff_id, "approved_by": approved_by}
+            return True
+        return False
 
     def apply(self, p, now, publish, approved_by=None, waited=None):
         k = p["kind"]
@@ -240,9 +251,165 @@ class CareRunner:
                                            "approved_by": approved_by or "automatic", "waited_min": waited})
 
 
+class StationRunner:
+    """The Station & Staff agent in the minute loop (Phase 4f), after Passenger Care. Each proposal goes through the rule check.
+    Automatic ones (wheelchair help, pausing ramp work while the ramp is closed) are APPLIED at once; gates, staff for flights,
+    call-ins and a child's supervisor wait for the (simulated) station manager, are checked again when approved and then applied.
+    Applying writes ONLY to the co-pilot's own gate_assignments / staff_assignments ledgers and confirms back as events (as the
+    gate plan and the staff roster tool would); flights, bookings, crews and the roster are never changed. Requests (food and
+    water, deplaning, the airport) are recorded with the person's answer; human-only matters are only ever asked."""
+
+    def __init__(self, store, rows, feeds, publish):
+        from backend.agents.station_staff.station import Memory, clock, load_settings
+        self.s = load_settings()
+        self.context = BufferedContext(None, feeds=feeds, agent="station_staff", store=store, rows=deepcopy(rows))
+        self.memory = Memory()
+        r = self.s["run"]
+        self.start, self.end = clock(r["day_start"]), clock(r["day_end"])
+        self.every = timedelta(minutes=r["every_min"])
+        self.triggers = set(r["trigger_events"])
+        self.errors, self.verdicts, self.options = [], [], {}
+        self.gate_ledger, self.staff_ledger = [], []
+        self.active = {}                       # recommendation id -> the staff rows it applied (until released)
+        self.publish = publish                 # (now, kind, payload): confirmations, in their own event-id namespace
+        self.care = None                       # the Passenger Care runner, to close its child request once a supervisor is named
+
+    def due(self, now) -> bool:
+        if not self.start <= now <= self.end:
+            return False
+        if (now - self.start) % self.every == timedelta(0):
+            return True
+        return any((e.get("published_at") or e["occurred_at"]) == now and e["type"] in self.triggers for e in self.context.events)
+
+    def tick(self, now, humans):
+        from backend.agents.station_staff.station import plan_station
+        from backend.rules import load_rules
+        from backend.rules.autonomy import autonomy_for
+        if not self.due(now):
+            return
+        ctx = self.context
+        ctx.now = now
+        saved = deepcopy(self.memory)
+        try:
+            res = plan_station(ctx, self.memory, self.s)
+        except Exception as err:
+            self.memory = saved
+            ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
+            self.errors.append((now, f"{type(err).__name__}: {err}"))
+            return
+        for rid in res["withdrawn"]:                # replaced before anyone answered: the question is withdrawn
+            rec = ctx.saved.get(("recommendations", rid))
+            if rec is not None and rec.get("status") == "pending":
+                rec["status"] = "superseded"
+            if humans:
+                humans.withdraw("station_staff", rid)
+        rules = load_rules()
+        for p in res["proposals"]:
+            self.options[p["id"]] = p
+            verdict = check_only(p, {"now": now, "flights": {}})
+            rec = ctx.saved[("recommendations", p["id"])]
+            rec["rule_check_ok"], rec["rule_check_notes"], rec["rule_ids"] = verdict["result"] == "pass", verdict["reasons"], verdict["rule_ids"]
+            auto = autonomy_for(p["action"], rules)["level"] == "auto"
+            v = {"proposal": serial({k: x for k, x in p.items() if k != "option"}), "option": serial(p.get("option") or {}),
+                 "verdict": verdict, "automatic": auto, "would_need_approval_by": None if auto else rec.get("approver_role"),
+                 "at": now.isoformat()}
+            kind = "rule_check_passed" if verdict["result"] == "pass" else "rule_check_blocked"
+            ctx.outputs.append((kind, serial(v)))
+            ctx._audit_row(kind, "recommendation", p["id"], None, serial(v))
+            self.verdicts.append(v)
+            if verdict["result"] != "pass":
+                rec["status"] = "blocked_by_rule_check"
+                self.memory.pending.pop(p["id"], None)
+                self.publish(now, "station_decision_recorded", {"recommendation": p["id"], "action": p["action"], "approved_by": None,
+                                                                 "waited_min": None, "status": "blocked by the rule check"})
+                if humans:
+                    humans.ask("station_staff", p["id"], p, rec.get("approver_role"), now, False)
+                continue
+            if auto:
+                rec["status"] = "done_automatically"
+                self.apply(p, now)
+            else:
+                rec["status"] = "pending"
+                if humans:
+                    humans.ask("station_staff", p["id"], p, rec.get("approver_role"), now, True)
+
+    def approved(self, q, now):
+        """A person approved: checked again against the rules NOW, then applied (and confirmed back)."""
+        p = self.options.get(q.rec_id)
+        rec = self.context.saved.get(("recommendations", q.rec_id))
+        if p is None or rec is None or rec.get("status") != "pending" or q.rec_id not in self.memory.pending:
+            return None
+        p = {**p, "data_as_of": now}
+        verdict = check_only(p, {"now": now, "flights": {}})
+        if verdict["result"] != "pass":
+            rec["status"] = "expired"
+            self.publish(now, "station_decision_recorded", {"recommendation": q.rec_id, "action": p["action"], "approved_by": q.role,
+                                                             "waited_min": q.answer["waited_min"], "status": "expired"})
+            return {"recommendation": q.rec_id, "agent": "station_staff", "void": verdict["reasons"][:3]}
+        rec["status"] = "approved"
+        self.apply(p, now, q.role, q.answer["waited_min"])
+        return {"recommendation": q.rec_id, "agent": "station_staff", "action": p["action"], "role": q.role,
+                "waited_min": q.answer["waited_min"]}
+
+    def _release(self, old, now, rid):
+        for r in self.active.pop(old, []):
+            self.staff_ledger.append({**r, "at": now.isoformat(), "kind": "release", "recommendation": old, "replaced_by": rid})
+            self.publish(now, "staff_released", {"staff_id": r["staff_id"], "recommendation": old, "replaced_by": rid})
+
+    def apply(self, p, now, approved_by=None, waited=None):
+        k, rid = p["kind"], p["id"]
+        who = approved_by or "automatic"
+        base = {"at": now.isoformat(), "recommendation": rid, "approved_by": who, "waited_min": waited}
+        if k == "gate":
+            if p.get("replaces"):
+                old = next((g for g in reversed(self.gate_ledger) if g["recommendation"] == p["replaces"] and g["kind"] == "assign"), None)
+                if old:
+                    self.gate_ledger.append({**old, **base, "kind": "release", "recommendation": p["replaces"], "replaced_by": rid})
+                    self.publish(now, "gate_released", {"flight_id": old["flight_id"], "gate": old["gate"], "recommendation": p["replaces"]})
+            self.gate_ledger.append({**base, "kind": "assign", "flight_id": p["flight_id"], "gate": p["gate"],
+                                     "remote_stand": bool(p.get("remote")), "from_at": p["from"], "to_at": p["to"]})
+            self.publish(now, "gate_assigned", {"flight_id": p["flight_id"], "gate": p["gate"], "remote_stand": bool(p.get("remote")),
+                                                "from": p["from"], "to": p["to"], "recommendation": rid, "approved_by": who})
+        elif k in ("staff", "wheelchair", "child", "release"):
+            if p.get("replaces"):
+                self._release(p["replaces"], now, rid)
+            rows = []
+            for t in p.get("tasks", []):
+                frm = max(datetime.fromisoformat(t["from"]), now)
+                if frm >= datetime.fromisoformat(t["to"]):
+                    continue
+                row = {**base, "kind": "assign", "staff_id": t["staff_id"], "role": t["role"], "task": t["task"],
+                       "flight_id": t.get("flight_id"), "passenger_id": t.get("passenger_id"), "from_at": frm.isoformat(), "to_at": t["to"]}
+                rows.append(row)
+                self.staff_ledger.append(row)
+                self.publish(now, "staff_assigned", {"staff_id": t["staff_id"], "role": t["role"], "task": t["task"],
+                                                     "flight_id": t.get("flight_id"), "passenger_id": t.get("passenger_id"),
+                                                     "from": frm.isoformat(), "to": t["to"], "recommendation": rid, "approved_by": who})
+            if rows:
+                self.active[rid] = rows
+            if k == "child" and rows:
+                self.publish(now, "child_supervisor_assigned", {"passenger_id": p["passenger_id"], "staff_id": rows[0]["staff_id"],
+                                                                "recommendation": rid, "approved_by": who,
+                                                                "care_decision": p.get("care_decision")})
+                if self.care is not None and p.get("care_decision") is not None:
+                    self.care.close_child(p["care_decision"], rid, rows[0]["staff_id"], who)
+        elif k == "call_in":
+            self.staff_ledger.append({**base, "kind": "call_in", "staff_id": p["staff_id"], "role": p["role"], "task": "called in",
+                                      "flight_id": None, "passenger_id": None, "from_at": p["from"], "to_at": p["to"]})
+            self.publish(now, "staff_called_in", {"staff_id": p["staff_id"], "role": p["role"], "from": p["from"], "to": p["to"],
+                                                  "recommendation": rid, "approved_by": who})
+        elif k == "pause":
+            for sid in p["staff_ids"]:
+                self.staff_ledger.append({**base, "kind": "pause", "staff_id": sid, "role": "ramp", "task": "ramp work paused (lightning)",
+                                          "flight_id": None, "passenger_id": None, "from_at": p["from"], "to_at": p.get("to")})
+            self.publish(now, "ramp_tasks_paused", {"recommendation": rid, "from": p["from"], "staff_ids": p["staff_ids"]})
+        self.publish(now, "station_decision_recorded", {"recommendation": rid, "action": p["action"], "approved_by": who,
+                                                         "waited_min": waited, "status": "approved" if approved_by else "automatic"})
+
+
 class Copilot:
     def __init__(self, now, schedule, passengers, feeds=None, situation_schedule=None, system_health=None, situation_until=None,
-                 stations=None, humans=None, network_rows=None, care_rows=None):
+                 stations=None, humans=None, network_rows=None, care_rows=None, station_rows=None):
         self.store = SharedStore()
         self.context = BufferedContext(now, feeds=feeds, store=self.store,
                                        rows={"flights": deepcopy(schedule), "passengers": deepcopy(passengers),
@@ -252,6 +419,10 @@ class Copilot:
         self.network = NetworkRunner(self.store, network_rows, self.context.feeds) if network_rows else None
         self.care = CareRunner(self.store, care_rows, self.context.feeds) if care_rows else None
         self.vendor_out = []                  # confirmations of what was applied (hotel vendor / supervisor records)
+        self.station_event_id = -10_000_000   # Phase 4f: its own id namespace (no existing event is renumbered)
+        self.station = StationRunner(self.store, station_rows, self.context.feeds, self._publish_station) if station_rows else None
+        if self.station:
+            self.station.care = self.care
         self.settings = communication_settings()
         self.detection = Memory()
         self.fixes = FixMemory()
@@ -295,6 +466,12 @@ class Copilot:
                                   "published_at": None, "type": kind, "station": None, "payload": deepcopy(payload)})
         self.vendor_out.append(("system:network_records", kind, deepcopy(payload)))
 
+    def _publish_station(self, now, kind, payload):
+        self.station_event_id -= 1
+        self.store.events.append({"id": self.station_event_id, "occurred_at": now, "published_at": None, "type": kind,
+                                  "station": "MCI", "payload": deepcopy(payload)})
+        self.vendor_out.append(("system:station_records", kind, deepcopy(payload)))
+
     def recovery_delivery_problems(self, message):
         return recovery_send_problems(message, self.recovery.world)
 
@@ -316,6 +493,12 @@ class Copilot:
                     a = self.network.approvals.answer(self.network.context, self.network.memory, q, now, self._publish_network)
                     if a:
                         human_out.append((actor, "network_" + a["status"], a))
+                continue
+            if q.agent == "station_staff":             # a station approval: re-checked now, then applied and confirmed
+                if self.station:
+                    a = self.station.approved(q, now)
+                    if a:
+                        human_out.append((actor, "human_approved", a))
                 continue
             if q.agent == "passenger_care":            # a care approval: re-checked now, then applied and confirmed
                 if self.care:
@@ -352,6 +535,11 @@ class Copilot:
         if self.care:
             self.care.tick(now, self.humans, publish)
             o, a = self._drain(self.care.context, "passenger_care")
+            outputs, audits = outputs + o, audits + a
+        # 1d. Station & Staff (gates and staff applied to the co-pilot's own ledgers once approved; tarmac care asks and requests)
+        if self.station:
+            self.station.tick(now, self.humans)
+            o, a = self._drain(self.station.context, "station_staff")
             outputs, audits = outputs + o, audits + a
         # 2. Communication: detect, read Situation's picture, plan fixes and messages
         ctx = self.context

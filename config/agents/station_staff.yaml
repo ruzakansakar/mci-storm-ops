@@ -1,87 +1,79 @@
-# CONTRACT: station_staff. Ground staff (gate, ramp, wheelchair, customer service), gates, ramp and deplaning help.
+# CONTRACT: station_staff. Ground staff (gate, ramp, wheelchair, customer service), gates, ramp, tarmac care and deplaning help at MCI.
+# Phase 4f: gate and staff assignments are APPLIED in co-pilot mode once the rule check passes and (where the rules ask) the
+# station manager approves; they go to the co-pilot's own gate_assignments / staff_assignments tables, never to a truth table.
+# Everything else it proposes is a request, a warning or a question for a named person.
 agent: station_staff
-purpose: 'Makes sure the people on the ground can cope: enough staff in the right places, breaks and shift limits respected, and help ready for
-  passengers who need it.'
+phase: 4f
+purpose: 'Makes sure the people on the ground can cope: enough staff in the right places, breaks and shift limits respected, gates for
+  every plane, tarmac deadlines kept, and help ready for passengers who need it.'
+# ------------------------------------------------------------------ WHAT IT READS
+# What was published before the day (schedule, staff roster with shifts and last breaks, station facts, booked passenger counts)
+# and the events up to its time T (flight, tarmac, ramp and terminal events; its own applied assignments). Passengers: counts and
+# ids only, never names or contacts.
 reads:
-  staff:
-  - id
-  - role
-  - station
-  - shift_start
-  - shift_end
-  - last_break
-  - on_duty
-  - as_of
-  stations:
-  - code
-  - name
-  - gates
-  - wheelchair_staff
-  - has_customs
-  - terminal_capacity
-  - people_in_terminal
-  - ramp_open
-  - as_of
-  flights:
-  - id
-  - direction
-  - origin
-  - destination
-  - sched_dep
-  - sched_arr
-  - est_dep
-  - est_arr
-  - status
-  - tarmac_since
-  - diverted_to
-  - pax_total
-  - as_of
-  passenger_groups:
-  - flight_id
-  - segment
-  - count
-  - as_of
-  incidents:
-  - id
-  - kind
-  - status
-  - expected_end_min
-  - expected_end_max
-  - run_id
-  events:
-  - id
-  - occurred_at
-  - type
-  - station
-  - payload
-  - run_id
+  events: [id, occurred_at, type, station, payload]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, aircraft_id, pax_total]
+  staff: [id, role, station, shift_start, shift_end, last_break]
+  stations: [code, name, region, gates, wheelchair_staff, has_customs, terminal_capacity]
+  passenger_groups: [flight_id, segment, count]
+static_reads: [flights, staff, stations, passenger_groups]
+event_feeds:
+  flight_ops:
+    flight_airborne: [flight_id, to, delay_min]
+    flight_holding: [flight_id, expected_landing]
+    flight_diverted: [flight_id, diverted_to]
+    flight_resumed: [flight_id, to]
+    flight_arrived: [flight_id, delay_min, after_diversion]
+    flight_departed: [flight_id]
+    flight_delayed: [flight_id, delay_min, new_departure]
+    flight_delay_updated: [flight_id, delay_min, new_departure]
+    flight_cancelled: [flight_id]
+  station_ops:                         # stand-in for the airport and ramp systems
+    tarmac_started: [flight_id, diverted, ramp_closed]
+    tarmac_ended: [flight_id, minutes, how]
+    ramp_closed: [reason, expected_end]
+    ramp_reopened: [reason]
+    station_status: [people_in_terminal, terminal_capacity, ramp_open]
+  station_records:                     # the co-pilot's own confirmations of what was applied (gate plan, staff roster tool)
+    gate_assigned: [flight_id, gate, remote_stand, from, to, recommendation, approved_by]
+    gate_released: [flight_id, gate, recommendation]
+    staff_assigned: [staff_id, role, task, flight_id, passenger_id, from, to, recommendation, approved_by]
+    staff_released: [staff_id, recommendation, replaced_by]
+    staff_called_in: [staff_id, role, from, to, recommendation, approved_by]
+    ramp_tasks_paused: [recommendation, from, staff_ids]
+    station_decision_recorded: [recommendation, action, approved_by, waited_min, status]
+# Shared state: the latest versions <= T, these fields only.
+shared_reads:
+  situation_assessments:
+    producer: situation
+    fields: [version, assessed_at, status, type, confidence, expected_end_likely, expected_end_latest, end_confidence]
+    heartbeat: true
+  recovery_plans:
+    producer: network_recovery
+    fields: [version, planned_at, delays, cancels]
+    item_fields:
+      delays: [flight_id, new_departure]
+      cancels: [flight_id]
+  care_plans:                          # ONLY the help requests and child supervision (never names, compensation or hotels)
+    producer: passenger_care
+    fields: [version, planned_at, wheelchair_requests, vulnerable]
+    item_fields:
+      wheelchair_requests: [passenger_id, flight_id, itinerary, max_unattended_min, needs]
+      vulnerable: [passenger_id, kind, itinerary, decision]
 writes:
   recommendations:
     mode: insert
-    columns:
-    - incident_id
-    - agent
-    - title
-    - why
-    - options
-    - autonomy
-    - approver_role
-    - deadline
-    - rank
-    - safety_rung
-    - data_as_of
-    - status
-    - run_id
-    - created_at
-    - decision_ids
+    columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status, run_id,
+              created_at, decision_ids]
   events:
     mode: insert
-    types:
-    - staffing_gap_found
-    - break_due
-    - wheelchair_wait_warning
-    - deplaning_options_drafted
-    - human_decision_needed
+    types: [staffing_gap_found, break_due, wheelchair_wait_warning, deplaning_options_drafted, tarmac_deadline_flagged,
+            gate_shortage_found, terminal_crowding_warning, station_plan_drafted, human_decision_needed, agent_heartbeat, agent_error]
+  station_plans:                       # its shared plan, append-only and versioned (shared-state rules)
+    mode: insert
+    columns: [agent_run_id, run_id, version, planned_at, situation_version, recovery_plan_version, care_plan_version, ramp_status,
+              terminal, gates, gate_shortages, staff_shortages, staff_coverage, tarmac, wheelchair_coverage, child_coverage, warnings,
+              breaks, sources, data_as_of, decision_ids]
   audit_log:
     mode: insert
 actions:
@@ -101,21 +93,48 @@ actions:
 - set_bag_priority
 - start_deplaning
 - supervise_child_alone
+# 4f builds these; the others are defined here but not built yet (enabled_in: later), and AgentContext refuses them.
+capabilities:
+- {action: assign_gates, enabled_in: 4f, note: "E03/E10: a gate for every arriving plane; a remote stand with stairs when gates run out (station manager)"}
+- {action: move_gate_agents, enabled_in: 4f, note: "E04: gate agents, ramp crews and customer service to the flights, busiest first, within shift and break limits"}
+- {action: call_in_ground_staff, enabled_in: 4f, note: "E05/E06: start a later shift early when short, within shift and rest limits (station manager)"}
+- {action: request_wheelchair_help, enabled_in: 4f, note: "E07/J04/F09: a named wheelchair agent at every step, never more than 30 min unattended (automatic)"}
+- {action: supervise_child_alone, enabled_in: 4f, note: "J01/J03: a named staff member until the guardian handoff (station manager)"}
+- {action: arrange_food_water, enabled_in: 4f, note: "F02: food and water before 2 h on the tarmac (station manager)"}
+- {action: start_deplaning, enabled_in: 4f, note: "F05: offer deplaning when a gate or stairs and staff are free (station manager)"}
+- {action: arrange_diversion_deplaning, enabled_in: 4f, note: "F08/F11: getting off at a diversion airport (station manager)"}
+- {action: request_airport_resources, enabled_in: 4f, note: "G01/E11: terminal crowding near capacity, or no gate and no stand left (station manager)"}
+- {action: flag_ramp_service_impact, enabled_in: 4f, note: "E09/F12: ramp tasks paused while the ramp is closed for lightning (automatic)"}
+- {action: adjust_checkin_cutoffs, enabled_in: later}
+- {action: contact_partner, enabled_in: later}
+- {action: hold_bags, enabled_in: later}
+- {action: request_rescreening, enabled_in: later}
+- {action: request_service_vehicle, enabled_in: later}
+- {action: set_bag_priority, enabled_in: later}
+# Human only: it may only ask, with the facts.
+human_only:
+- {action: ramp_closure, decided_by: ramp_supervisor, decision: E01}
+- {action: reopen_ramp, decided_by: ramp_supervisor, decision: E02}
+- {action: stop_work_for_staff_safety, decided_by: ramp_supervisor, decision: E12}
+- {action: return_to_gate, decided_by: captain, decision: F06}
+- {action: keep_on_board_exception, decided_by: captain, decision: F07}
 never:
 - Never propose a shift longer than the shift limit, a stretch without a break, a short gap between shifts, or too many days in a row.
 - Never leave a wheelchair passenger waiting alone for more than 30 minutes without raising it.
-- Never decide to keep people on board past the tarmac limit. It lists blockers; the captain decides.
-- Never close the ramp or reopen it. That is human only.
+- Never decide to keep people on board past the tarmac limit. It lists blockers and asks the captain; the captain decides.
+- Never close the ramp or reopen it, and never plan ramp work while it is closed. Closing and reopening are human only.
 - Never edit staff, station or flight records.
-- Never see passenger names or contact details; it counts passengers by group.
+- Never see passenger names or contact details; it counts passengers by group and works with passenger ids only.
 stores:
   temporary:
-    what: Who is where this hour, and the waits it is tracking.
+    what: Who is where this hour, the gates, and the waits it is tracking.
     kept_until: the incident is closed, then deleted
   permanent:
   - table: recommendations
     kept: for the life of the project
   - table: events
+    kept: for the life of the project, append only
+  - table: station_plans
     kept: for the life of the project, append only
   - table: audit_log
     kept: for the life of the project, never edited or deleted
@@ -159,6 +178,12 @@ output:
       type: array
       items:
         type: string
+    flight_id:
+      type: string
+    staff_ids:
+      type: array
+      items:
+        type: string
     decision_ids:
       type: array
       minItems: 1
@@ -189,6 +214,7 @@ escalate_when:
 - Fewer wheelchair staff than wheelchair passengers waiting.
 - A plane has been on the tarmac for 90 minutes with something blocking deplaning.
 - No staff can be found without breaking a shift or break limit.
+- A plane is coming up to the time to start returning to a gate (ask the captain).
 ai_allowed:
   allowed: false
   for: []

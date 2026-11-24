@@ -14,6 +14,9 @@ Situation agent's latest picture (shared state; the expected end stays a suspici
      minus the extra flying, down to the fuel floor) against Situation's end range; warn early and list the alternates that pass.
   d. diverted aircraft (C04), maintenance deadlines (C02), curfews (B13) and the restart order when the stop lifts (B14/Q02).
   e. one version of the plan in recovery_plans (shared, append-only) whenever it changes.
+Phase 4f: it reads Station & Staff's plan (ramp status, gate and staff shortages; shared state) and never proposes a departure
+while the ramp is closed or in a 15-minute slot where the station has no ramp crew or gate agents left to work one more
+departure: such a departure moves to the next slot that can work it, and the delay says why (station_check).
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -105,6 +108,7 @@ class Planner:
         self.lim = _limits(ctx)
         self.buffer = self.lim["crew_duty_buffer_min"]
         self.proposals = []                            # for the (advisory) executor: what the rule check should look at
+        self.station = None                            # Station and Staff plan (Phase 4f), read in plan()
         self.sources = [{"fact": "flight operations events", "source": "flight_ops", "as_of": ctx.feed_last("flight_ops").isoformat()},
                         {"fact": "published schedule, crew roster and fleet", "source": "plan published before the day",
                          "as_of": self.static["flights"][0]["sched_dep"].replace(hour=5, minute=0).isoformat()}]
@@ -372,14 +376,19 @@ class Planner:
                     left[f.destination] = left.get(f.destination, 0) - f.pax
         delays = []
         slot = self.restart_likely
+        used = {}                                             # departures it already placed in each station-constrained slot
         for f in ranked:
             if f in cancels:
                 continue
             new = max(f.est_dep, slot)
+            fit, why = self.station_fit(new, used)
+            if fit != new:                                    # the following departures continue from the slot it moved to
+                slot = max(slot, fit)
+                new = fit
             slot += timedelta(minutes=self.s["plan"]["restart_spacing_min"])
             if new > f.sched_dep:
                 delays.append({"flight_id": f.id, "new_departure": new.isoformat(), "delay_min": int((new - f.sched_dep).total_seconds() // 60),
-                               "protection": self.protection(f, seats)})
+                               "protection": self.protection(f, seats), **({"station_check": why} if why else {})})
         for d in delays:
             f = st.flights[d["flight_id"]]
             need = need_min(f, self.s, self.buffer)
@@ -412,6 +421,37 @@ class Planner:
         return {"delays": delays, "cancels": [{"flight_id": f.id, "pax": f.pax, "destination": f.destination,
                                                "why": "crew" if f.id in stuck else "least protected; seats later today"} for f in cancels],
                 "protection": order, "estimates": est, "seats_by_destination": self._seats(left, cancels)}
+
+    def station_fit(self, t, used):
+        """Phase 4f: the first time from t when the station can work one more departure (ramp open; a ramp crew and gate agents
+        left in that 15-minute slot after the arrivals' work). Slots the station reports no shortage for are not limited."""
+        facts = (self.station or {}).get("facts") or {}
+        if not facts:
+            return t, None
+        notes = []
+        ramp = facts.get("ramp_status") or {}
+        if ramp.get("open") is False and ramp.get("expected_reopen"):
+            reopen = datetime.fromisoformat(ramp["expected_reopen"])
+            if t < reopen:
+                notes.append(f"ramp closed for lightning until about {hhmm(reopen)}")
+                t = reopen
+        caps, ends = {}, {}
+        for s_ in facts.get("staff_shortages") or []:
+            if s_.get("departures_workable") is None:
+                continue
+            a = datetime.fromisoformat(s_["from"])
+            caps[a] = min(caps.get(a, 10 ** 6), int(s_["departures_workable"]))
+            ends[a] = datetime.fromisoformat(s_["to"])
+        for _ in range(len(caps) + 1):
+            a = next((k for k in sorted(caps) if k <= t < ends[k]), None)
+            if a is None or used.get(a, 0) < caps[a]:
+                break
+            notes.append(f"no ramp crew or gate agents free {hhmm(a)}-{hhmm(ends[a])} (station plan v{self.station.get('version')})")
+            t = ends[a]
+        a = next((k for k in caps if k <= t < ends[k]), None)
+        if a is not None:
+            used[a] = used.get(a, 0) + 1
+        return t, "; ".join(notes) or None
 
     def estimate(self, cancelled_ids, seats):
         return estimate_stranded([(fid, self.st.flights[fid].pax, self.st.flights[fid].destination) for fid in cancelled_ids], seats)
@@ -492,6 +532,7 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     events = ctx.read_events()
     pic = ctx.read_shared("situation_assessments")
     p = Planner(ctx, memory, s)
+    p.station = ctx.read_shared("station_plans") if "station_plans" in (ctx.contract.shared_reads or {}) else None
     res = p.run(events, pic)
     warnings = [{"kind": "crew", **{k: w[k] for k in ("flight_id", "role", "illegal_at", "likelihood", "best")}} for w in res["crew"]] + \
                [{"kind": "fuel", **{k: w[k] for k in ("flight_id", "must_leave_by", "likelihood")}} for w in res["fuel"]]
@@ -504,6 +545,7 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     if key != memory.last_key:
         memory.version += 1
         row = {"version": memory.version, "planned_at": ctx.now, "situation_version": (pic or {}).get("version"),
+               "station_plan_version": (p.station or {}).get("version"),
                "delays": res["delays"], "cancels": res["cancels"], "crew_actions": crew_actions, "approval_status": [],
                "hold_divert": res["fuel"], "aircraft_recovery": res["aircraft_recovery"], "restart_order": res["restart_order"],
                "seats_by_destination": res["seats_by_destination"], "warnings": warnings, "estimates": res["estimates"],

@@ -175,6 +175,51 @@ def care_section(copilot):
             '<th>Follows the rules</th></tr>' + (vul or '<tr><td colspan="4">none on an affected flight</td></tr>') + '</table>')
 
 
+def station_section(copilot):
+    """Phase 4f: the Station & Staff agent: tarmac deadlines, gates, staff coverage and limits, wheelchair and child help."""
+    s = copilot.get("station")
+    if not s:
+        return ""
+    t5 = lambda v: (v or "-")[11:16] if isinstance(v, str) and len(v) > 15 else (v or "-")
+    tarmac = "".join(f"<tr><td>{esc(t['flight_id'])}</td><td>{esc(t['station'])}</td><td>{t['minutes']}</td>"
+                     f"<td>{esc(t['status_announcement'])}</td><td>{esc(t['food_and_water'])}</td>"
+                     f"<td>{esc(t5(t['start_return_by_due']))}: {esc(t['start_return_by'])}</td>"
+                     f"<td>{'yes' if t['ok'] else '<b>NO</b>'}</td></tr>" for t in s["tarmac"])
+    a = s.get("a31") or {}
+    wheel = "".join(f"<tr><td>{esc(w['passenger_id'])}</td><td>{esc(w['flight_id'])}</td><td>{esc(t5(w['landed']))}</td>"
+                    f"<td>{esc(', '.join(w['staff']) or '-')}</td><td>{w['longest_unattended_min']}</td></tr>" for w in s["wheelchair"])
+    kids = "".join(f"<tr><td>{esc(k['passenger_id'])}</td><td>{esc(t5(k['landed']))}</td><td>{esc(k['supervisor'] or '-')}</td>"
+                   f"<td>{esc((k['approved_by'] or '-').replace('_', ' '))}</td><td>{esc(t5(k['supervised_from']))}</td>"
+                   f"<td>{esc((k['care_request_status'] or '-').replace('_', ' '))}</td></tr>" for k in s["children"])
+    short = "".join(f"<tr><td>{esc(r.replace('_', ' '))}</td><td>{v['short_by']}</td><td>{esc(t5(v['from']))}</td></tr>"
+                    for r, v in sorted(s["worst_shortage"].items()))
+    asked = ", ".join(f"{q['decision_id']} {t5(q['at'])}" + (f" ({q['flight_id']})" if q['flight_id'] else "") for q in s["asked"])
+    moved = "".join(f"<tr><td>{esc(m['flight_id'])}</td><td>{esc(t5(m['new_departure']))}</td><td>{esc(m['why'])}</td></tr>"
+                    for m in s["network_moved_for_station"][:12])
+    lim, tp = s["limits"], s["terminal_peak"]
+    return ('<h3>Station &amp; Staff</h3>'
+            f'<p>{s["proposals"]} proposals ({s["automatic"]} automatic); rule-check blocks: {s["rule_check_blocks"]}. '
+            f'{s["gate_assignments"]} gate assignments and {s["staff_assignments"]} staff assignments applied (co-pilot tables only), '
+            f'{s["call_ins"]} people called in early. Asked a person (human only): {esc(asked or "nothing")}.</p>'
+            f'<p>Staff limits: {len(s["overlaps"])} double bookings, {len(s["outside_shift"])} jobs outside a shift, '
+            f'{len(s["over_planned_break"])} jobs across a planned break; longest stretch without a break {s["longest_without_break_min"]} '
+            f'min (limit {lim["break_interval_min"]}); longest shift {s["longest_shift_min"]} min (limit {lim["max_shift_min"]}). '
+            f'Ramp work while the ramp was closed: {len(s["ramp_work_in_closure"])}. Terminal peak {tp.get("people")} of '
+            f'{tp.get("capacity")} people; crowding warnings {s["crowding_warnings"]}.</p>'
+            f'<p>A31 ({esc(a.get("flight_id") or "-")}): gate {esc(a.get("gate") or "none")} at landing {esc(t5(a.get("landed")))} '
+            f'(held {esc(t5(a.get("from")))}-{esc(t5(a.get("to")))}, approved by {esc((a.get("approved_by") or "-").replace("_", " "))}).'
+            f' Arrivals with a gate when they landed: {s["arrivals_with_gate_at_landing"]} of {s["arrivals"]}.</p>'
+            '<h4>Tarmac deadlines</h4><table><tr><th>Flight</th><th>Waiting at</th><th>Minutes</th><th>Status by 30 min</th>'
+            '<th>Food and water by 2 h</th><th>Start returning by</th><th>Met or flagged</th></tr>' + tarmac + '</table>'
+            '<h4>Wheelchair help (Passenger Care\'s requests)</h4><table><tr><th>Passenger</th><th>Flight</th><th>Landed</th>'
+            '<th>Wheelchair agent</th><th>Longest unattended (min)</th></tr>' + (wheel or '<tr><td colspan="5">none</td></tr>') +
+            '</table><h4>Children flying alone</h4><table><tr><th>Passenger</th><th>Landed</th><th>Supervisor</th><th>Approved by</th>'
+            '<th>Supervised from</th><th>Passenger Care request</th></tr>' + (kids or '<tr><td colspan="6">none</td></tr>') +
+            '</table><h4>Worst staff shortage by role</h4><table><tr><th>Role</th><th>Short by</th><th>From</th></tr>' + short +
+            '</table><h4>Network Recovery departures moved for the station (first 12)</h4><table><tr><th>Flight</th>'
+            '<th>Proposed departure</th><th>Why</th></tr>' + (moved or '<tr><td colspan="3">none</td></tr>') + '</table>')
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -205,7 +250,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + care_section(copilot) + recovery_messages_section(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + care_section(copilot) + station_section(copilot) + recovery_messages_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \
