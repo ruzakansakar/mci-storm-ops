@@ -68,7 +68,8 @@ writes:
   events:
     mode: insert
     types: [staffing_gap_found, break_due, wheelchair_wait_warning, deplaning_options_drafted, tarmac_deadline_flagged,
-            gate_shortage_found, terminal_crowding_warning, station_plan_drafted, human_decision_needed, agent_heartbeat, agent_error]
+            gate_shortage_found, terminal_crowding_warning, station_plan_drafted, human_decision_needed, agent_heartbeat, agent_error,
+            gate_changed_late]
   station_plans:                       # its shared plan, append-only and versioned (shared-state rules)
     mode: insert
     columns: [agent_run_id, run_id, version, planned_at, situation_version, recovery_plan_version, care_plan_version, ramp_status,

@@ -50,8 +50,9 @@ def test_drafts_are_proposal_checked_and_internal_staff_only():
     pax = memory.drafts[(12, 'passenger', 'PAX0001')]
     crew = memory.drafts[(12, 'crew', 'C35')]
     staff = memory.drafts[(12, 'staff', 'internal')]
-    assert pax['text'] == 'A replacement crew has been assigned to your flight WN1033.'
-    assert crew['text'] == 'Crew C35: you are reassigned to WN1033.'
+    # Phase 5a: the passenger hears the outcome (the departure time), never the internals; the crew hears when to report
+    assert pax['text'] == 'Your flight WN1033 is now expected to leave at 14:15.'
+    assert crew['text'] == 'Crew C35: you are reassigned to WN1033. Please report by 13:15.'
     assert pax['status'] == crew['status'] == 'held'
     assert pax['reason'] == 'waiting for approval of plan v3, proposal 12'
     assert staff['status'] == 'sent' and staff['internal'] and staff['channel'] == 'staff'

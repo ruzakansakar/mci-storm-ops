@@ -28,6 +28,7 @@ def sync_link(ctx, memory):
                     item.update(status=p["status"], decided_at=e["occurred_at"].isoformat())
     memory.link_read_at = ctx.now
     row = deepcopy(memory.plans[-1])
+    row.update(getattr(memory, "basis", None) or {})   # the upstream versions it read last (5a: no stale version recorded)
     active = set()
     for col in ("delays", "cancels", "crew_actions"):
         for item in row[col]:

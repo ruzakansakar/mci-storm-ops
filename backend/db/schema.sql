@@ -487,6 +487,25 @@ CREATE TABLE station_plans (
 CREATE TRIGGER station_plans_append_only BEFORE UPDATE OR DELETE ON station_plans
     FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
+-- Phase 5a: the orchestrator's log, one row a minute (append-only): which agents ran, the shared versions each read and wrote,
+-- proposals, blocks, conflicts, the queue size and the open incidents. Plus what each incident's work is (tags).
+CREATE TABLE orchestrator_log (
+    id      bigserial PRIMARY KEY,
+    run_id  text NOT NULL,
+    at      timestamptz NOT NULL,
+    row     jsonb NOT NULL
+);
+CREATE TRIGGER orchestrator_log_append_only BEFORE UPDATE OR DELETE ON orchestrator_log
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+CREATE TABLE incident_items (
+    id           bigserial PRIMARY KEY,
+    run_id       text NOT NULL,
+    incident_id  bigint REFERENCES incidents(id),
+    kind         text NOT NULL,                 -- recommendation | queue_item | situation_assessments | recovery_plans | ... | message
+    ref          text NOT NULL,
+    at           timestamptz NOT NULL
+);
+
 -- CO-PILOT ONLY (not truth tables, no agent writes them): gates and staff the co-pilot actually assigned, applied by the executor
 -- after the rule check (and, where the rules ask for it, the station manager's approval). Flights, bookings and crews are never
 -- changed; the staff roster itself is never edited.

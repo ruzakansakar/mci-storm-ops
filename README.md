@@ -27,7 +27,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4e | Passenger Care agent (hotels, transport, compensation status, vulnerable passengers, rebooking advice) | **done** |
 | 4e-2 | Network Recovery -> Communication (held drafts, crew drafts, staff notes) | **done** |
 | 4f | Station & Staff agent (tarmac care, gates, ground staff, wheelchair and child help) + link to Network Recovery | **done** |
-| Later | Plain-code orchestrator | planned; no guardrail agent |
+| 5a | Orchestrator, part 1: owns the minute loop, one approval queue, incidents, conflicts between agents, shared-state audit | **done** |
+| Later | Orchestrator, part 2: applying approved actions | planned; no guardrail agent |
 | 7 | API + live updates | |
 | 8 | Front end (milestone 3) | |
 | 9 | AI pieces | |
@@ -616,6 +617,25 @@ The Station & Staff agent looks after the people and the ground at MCI. It sees 
 
 The debug page's comparison section has a "Station & Staff" part: tarmac deadlines, gates, staff coverage and limits,
 wheelchair and child coverage, and the departures Network Recovery moved.
+
+## The orchestrator (Phase 5a)
+
+Plain code, no AI. It owns the co-pilot's minute loop and coordinates; in this part it changes nothing in the world.
+
+- **Every minute** it runs the agents in order (Situation, Network Recovery, Passenger Care, Station & Staff, Communication),
+  each seeing only data up to that minute through its own contract.
+- **One approval queue** for people, across all agents: only proposals the rule check passed, ordered by safety, deadline and
+  passengers affected. Duplicates are merged, routine approvals of one kind (staff call-ins, food and water) are batched into
+  one item, and an item nobody answers in time is escalated to the next role. It counts each role's questions per hour.
+- **Incidents.** It opens one per cause Situation suspects, ranks two at once (safety first), declares recovery and closes
+  them, and tags every proposal, plan version, queue item and message with its incident.
+- **Conflicts between agents** (rebooking onto a flight being cancelled, a departure with no ramp crew or gate, a message the
+  plan contradicts, the same crew, aircraft, gate or staff member twice) are caught, both views logged, and blocked or asked.
+- **Shared-state audit.** It checks every minute that each agent used the newest versions of what it depends on, and logs
+  the minute (orchestrator_log).
+
+The debug page has an "Orchestrator" section: how the agents connected at 14:15, the queue over the day, the conflicts and
+the incidents.
 
 ## Rules for conflicting files
 

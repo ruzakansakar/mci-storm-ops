@@ -411,6 +411,12 @@ class Station:
         stands = [f"R{i + 1}" for i in range(S["remote_stands"])]
         tol = timedelta(minutes=S["conflict_tolerance_min"])
 
+        def holder(gate, a, b, me):
+            return next((o["flight_id"] for o in occ if o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
+                         and (o["kind"] == "overnight" or o["from"] <= a)), None)
+
+        lock = timedelta(minutes=S["lock_before_arrival_min"])
+
         def taken(gate, a, b, me):
             # a plane that lands earlier (or was there overnight) keeps its gate; a later one moves
             return any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
@@ -426,6 +432,19 @@ class Station:
                 continue
             old = st["gates"].get(fid)
             moved = old is not None and old.get("from") is not None and abs(old["from"] - o["from"]) > tol
+            # gate stability (5a): a gate assigned for a plane landing soon changes only for a real conflict
+            locked = old is not None and self.eta.get(fid) is not None and self.eta[fid] - self.now <= lock
+            if locked and not taken(old["gate"], o["from"], o["to"], fid):
+                out.append({"flight_id": fid, "gate": old["gate"], "from": _iso(o["from"]), "to": _iso(o["to"]),
+                            "status": "assigned"})
+                continue
+            late_why = None
+            if locked:
+                late_why = f"{holder(old['gate'], o['from'], o['to'], fid)} is still at {old['gate']} when {fid} lands"
+                if ("late", fid, old["gate"]) not in self.m.asked:
+                    self.m.asked.add(("late", fid, old["gate"]))
+                    self.ctx.record_event("gate_changed_late", {"flight_id": fid, "gate": old["gate"], "why": late_why,
+                                                                "minutes_before_arrival": _mins(self.eta[fid] - self.now)})
             if o["gate"] and not taken(o["gate"], o["from"], o["to"], fid) and not moved:
                 out.append({"flight_id": fid, "gate": o["gate"], "from": _iso(o["from"]), "to": _iso(o["to"]),
                             "status": o["status"]})
@@ -463,7 +482,8 @@ class Station:
                                ("all Southwest gates are taken then: a remote stand with stairs" if remote else
                                 "free from the plane's arrival until its next departure") +
                                ((f"; the same gate for its new time (was {hhmm(old['from'] + timedelta(minutes=5))})"
-                                 if pick == old["gate"] else f"; replaces {old['gate']}, which is taken then") if old else ""),
+                                 if pick == old["gate"] else f"; replaces {old['gate']}, which is taken then") if old else "")
+                               + (f"; late change, a real conflict: {late_why}" if late_why else ""),
                                ["E10" if remote or old else "E03"],
                                {"kind": "gate", "flight_id": fid, "gate": pick, "remote": remote, "from": _iso(o["from"]),
                                 "to": _iso(o["to"]), "replaces": (old or {}).get("rid"),

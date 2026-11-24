@@ -23,10 +23,11 @@ response_min:                          # how long a person takes to answer, draw
 handles:                               # what each simulated person answers. Anything else stays pending (it is listed, not answered)
   customer_service_supervisor: [draft_message, send_mass_message, send_staff_briefing, send_crew_message, escalate_channel_problem,
                                 issue_compensation, arrange_ground_transport, offer_refund]   # 4e: rooms, transport, refund offers
-  network_operations_control: [resolve_source_conflict, delay_flight, cancel_flight]
+  network_operations_control: [resolve_source_conflict, delay_flight, cancel_flight, declare_recovery]   # 5a: A10
   crew_scheduling: [call_in_reserve_crew, swap_crews, deadhead_crew]
   station_manager: [assign_gates, move_gate_agents, call_in_ground_staff, supervise_child_alone, arrange_food_water,
-                    start_deplaning, arrange_diversion_deplaning, request_airport_resources]          # 4f: Station & Staff
+                    start_deplaning, arrange_diversion_deplaning, request_airport_resources,          # 4f: Station & Staff
+                    close_incident, set_incident_priority]                                            # 5a: Q07, T05
   ramp_supervisor: [flag_ramp_service_impact]   # 4f: only if a pause ever needs approval (it is automatic in the rules)
 # Deliberately NOT handled: the human-only decisions (ramp closure E01, reopening E02, stopping work E12: ramp supervisor; returning
 # to a gate F06 and the keep-on-board exception F07: the captain): they are only ever asked, with the facts. rebook_passenger

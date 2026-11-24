@@ -171,7 +171,7 @@ def test_the_rule_check_blocks_staff_over_the_limits_and_ramp_work_while_closed(
 
 def test_simulated_station_people_answer_only_passed_proposals_and_never_human_only(pair):
     co = pair[1].copilot
-    h = co.humans
+    h = co.people                     # the simulated people behind the orchestrator's queue (5a)
     station_q = [q for q in h.questions if q.agent == "station_staff"]
     assert station_q and all(q.action in BUILT for q in station_q)
     assert not [q for q in h.questions if q.action in HUMAN_ONLY]

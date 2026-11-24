@@ -65,7 +65,7 @@ def prepare(ctx, result, situation, memory, settings, screens):
     memory.view = view
     world = _world(ctx, result, view, situation, memory, settings, screens)
     memory.world = world
-    changes = directives(view)
+    changes = directives(view, world["recovery_flights"])
     approvals = {a["proposal_id"]: a for a in ((view or {}).get("facts") or {}).get("approval_status") or []}
     dropped = {receipt[4]: receipt[5] for receipt in getattr(result["state"], "message_receipts", [])
                if receipt[1] == "message_dropped"}

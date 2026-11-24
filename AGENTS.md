@@ -5,7 +5,7 @@ ENVIRONMENT
 Windows, PowerShell, VS Code, Python venv (.venv), PostgreSQL on Neon (cloud, about 50–100 ms per round trip, so batch writes). No Docker. psycopg v3, pytest. Repo: github.com/ruzakansakar/mci-storm-ops.
 
 AGREED ARCHITECTURE (decided by the project owner; do not change)
-- Orchestrator: plain code, no AI. Routes work, runs the rule check on every proposal, catches conflicts between agents, escalates to humans. NOT BUILT YET.
+- Orchestrator: plain code, no AI. Routes work, runs the rule check on every proposal, catches conflicts between agents, escalates to humans. Part 1 (5a: coordination, no world changes) BUILT in backend/orchestrator/.
 - 5 agents: situation (built), communication (built: detect, fix, messages), network_recovery (4d: advisory, built), passenger_care (4e: built), station_staff (4f: built), network_recovery (flights, aircraft AND pilots/flight attendants), station_staff (ground staff, gates, ramp, deplaning help), passenger_care (rebooking, hotels, money, vulnerable passengers).
 - There is NO guardrail agent and NO crew agent. Rule checking is code in backend/rules/check.py, called by the orchestrator. The orchestrator can block but never override; only a named human can override, only where a law rule allows it, and it is logged (backend/rules/override.py).
 - AI is used sparingly: only Situation summaries and Communication message drafts, always with a template fallback. Currently AI is OFF everywhere.
@@ -52,8 +52,8 @@ WORKING RULES
 - The project owner is not a programmer: final replies are plain English, no jargon, in the required format.
 
 BUILD PHASES
-Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear, 4d Network Recovery (advisory), 4e Passenger Care, 4e-2 Network Recovery -> Communication, 4f Station & Staff.
-Next: the orchestrator, API, front end, AI pieces, scale tests, demo.
+Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear, 4d Network Recovery (advisory), 4e Passenger Care, 4e-2 Network Recovery -> Communication, 4f Station & Staff, 5a orchestrator part 1 (coordination).
+Next: orchestrator part 2 (applying approved actions), API, front end, AI pieces, scale tests, demo.
 
 PHASE 4b-2 IMPLEMENTATION
 - backend/agents/communication/fix.py proposes grouped confirmed corrections; critical cases skip settling; stale feeds and open conflicts hold. Policy thresholds are in the Communication settings.
@@ -118,3 +118,14 @@ PHASE 4f IMPLEMENTATION (Station & Staff)
 - Simulated station_manager and ramp_supervisor (own random stream, so existing waits are unchanged). Human-only matters are never answered.
 - Network Recovery reads station_plans (ramp_status, gate_shortages, staff_shortages incl. departures_workable) and places no proposed departure while the ramp is closed or in a slot with no ramp crew or gate agents left (station_check note); recovery_plans records station_plan_version.
 - Live-table freshness is tested on station_staff's contract with stations read live (no agent reads a live table since 4f).
+
+
+PHASE 5a IMPLEMENTATION (orchestrator, part 1: coordination, no world changes)
+- backend/orchestrator/loop.py (Orchestrator, a subclass of the old Copilot so every runner is the same) owns the co-pilot minute loop; simulator/run.py uses it. backend/execution/copilot.py's tick was split into steps (receive, answers, run_agent, communicate); the old loop runs the same steps (tested: same results). Order each minute: answers from the queue, then Situation -> Network Recovery -> Passenger Care -> Station & Staff -> Communication. Settings: config/orchestrator.yaml.
+- One approval queue (backend/orchestrator/queue.py) between every runner and the (simulated) people: blocked proposals are refused and never shown; order = safety rung, deadline, passengers; true duplicates merged; routine kinds batched (station call-ins and food-and-water within 15 min = one item; answered once, applied to each); S06 escalation at human_answer_deadline_min (or the decision's own deadline) alerts the next role (chain in settings; the original person's answer still counts); items per role per hour, flagged over workload_max_per_hour. Simulated people keep their own random streams (orchestrator questions have their own), so answer times are unchanged except where batching removes a question.
+- Incidents (backend/orchestrator/incidents.py; only the orchestrator writes them): A04 from Situation's picture, one per suspected cause (main type + impact.other_suspected_causes, read through the orchestrator's contract); T05 ranking (safety first) asked of the station manager; A10 recovery (network operations control) when Situation says recovery/normal or a cause has not been reported for an hour; Q07 close (station manager) 3 h after recovery when nothing is still with a person, deleting temporary notes (AgentContext.close_incident) and keeping the audit log. Every recommendation (incident_id), queue item, shared version and message is tagged (incident_items table).
+- Conflicts (backend/orchestrator/conflicts.py, shared-state rule 7): rebooking advice onto a flight Network Recovery proposes to cancel (advice blocked); a proposed departure in a slot the station can't work or while the ramp is closed (escalated); a recovery draft the latest plan contradicts (blocked); the same crew, aircraft, gate or staff member twice (the newer waiting proposal blocked, else escalated). Both views logged (agents_disagree) and a queue item for a person.
+- Shared-state audit (backend/orchestrator/audit.py) every minute: the versions each agent read (from its audit rows) against the newest available before it ran, and the versions its new rows record. Fixed a stale chain it found: Network Recovery's approval-status versions now carry the upstream versions it last read. orchestrator_log: one row a minute (append-only).
+- Communication recovery drafts say the outcome ("Your flight WN1033 is now expected to leave at 15:14"), never crew internals; crew drafts include the report time (communication settings recovery.crew_report_before_departure_min, an assumption).
+- Station & Staff gate stability: a gate held for a plane landing within lock_before_arrival_min changes only for a real conflict, logged (gate_changed_late).
+- J01/J03 child supervision, catalog ids and the rest unchanged. Debug page: "Orchestrator" section (connections at 14:15, queue and workload, conflicts, incidents).

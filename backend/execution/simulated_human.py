@@ -42,6 +42,8 @@ class SimulatedHumans:
         self.network_rng.setstate(rng.getstate())  # new questions must not change existing supervisor response times
         self.station_rng = Random()                # Phase 4f: the station manager and ramp supervisor, on their own stream too
         self.station_rng.setstate(rng.getstate())
+        self.orchestrator_rng = Random()           # Phase 5a: the orchestrator's own questions (A10, Q07, T05)
+        self.orchestrator_rng.setstate(rng.getstate())
         self.questions: list[Question] = []
         self.answered_conflicts: dict = {}      # conflict key -> the answer already given (one answer per conflict)
         self.refused_blocked = 0                # proposals it never saw because the rule check blocked them
@@ -58,7 +60,7 @@ class SimulatedHumans:
             return q
         urgent = bool(proposal.get("urgent"))
         lo, hi = self.s["response_min"][role]["urgent" if urgent else "normal"]
-        rng = self.network_rng if agent == "network_recovery" or proposal.get("recovery_message") else             self.station_rng if agent == "station_staff" else self.rng
+        rng = self.network_rng if agent == "network_recovery" or proposal.get("recovery_message") else             self.station_rng if agent == "station_staff" else self.orchestrator_rng if agent == "orchestrator" else self.rng
         q = Question(rec_id, agent, action, role, now, now + timedelta(minutes=rng.randint(lo, hi)), urgent, proposal)
         self.questions.append(q)
         return q

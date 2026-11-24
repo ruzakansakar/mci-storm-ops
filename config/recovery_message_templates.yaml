@@ -1,4 +1,6 @@
 # Fixed drafts: a proposal is not a passenger fact. Only the linked send guard may release them.
+# Phase 5a: a passenger is told the OUTCOME for their flight (its departure time, or that it is cancelled), never the internals
+# (which crew, reserve or transfer). A crew member is told where to go and when to report.
 change_names:
   delay_flight: departure time change
   cancel_flight: cancellation
@@ -8,11 +10,11 @@ change_names:
 passenger:
   delay_flight: "Your flight {flight_id} is now expected to leave at {departure}."
   cancel_flight: "Your flight {flight_id} is cancelled. Please check your latest trip in the app."
-  swap_crews: "A replacement crew has been assigned to your flight {flight_id}."
-  call_in_reserve_crew: "A reserve crew has been assigned to your flight {flight_id}."
-  deadhead_crew: "A replacement crew is being transferred for your flight {flight_id}."
+  swap_crews: "Your flight {flight_id} is now expected to leave at {departure}."
+  call_in_reserve_crew: "Your flight {flight_id} is now expected to leave at {departure}."
+  deadhead_crew: "Your flight {flight_id} is now expected to leave at {departure}."
 crew:
-  swap_crews: "Crew {crew_id}: you are reassigned to {flight_id}."
-  call_in_reserve_crew: "Crew {crew_id}: you are assigned as the reserve crew for {flight_id}."
-  deadhead_crew: "Crew {crew_id}: you are being transferred for {flight_id}."
+  swap_crews: "Crew {crew_id}: you are reassigned to {flight_id}. Please report by {report_by}."
+  call_in_reserve_crew: "Crew {crew_id}: you are assigned as the reserve crew for {flight_id}. Please report by {report_by}."
+  deadhead_crew: "Crew {crew_id}: you are being transferred for {flight_id}. Please report by {report_by}."
 staff: "Internal - {flight_id}: {change} under review; don't give passengers a new time yet."
