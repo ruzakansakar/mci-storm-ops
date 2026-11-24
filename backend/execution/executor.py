@@ -27,8 +27,8 @@ def execute(proposal, world, deliver, record, pending=(), rules=None):
     verdict = check_only(proposal, world, pending, rules)
     record("rule_check_passed" if verdict["result"] == "pass" else "rule_check_blocked",
            {"proposal": proposal, "verdict": verdict})
-    automatic = autonomy_for(proposal.get("action"), rules,
-                             safety_rung=proposal.get("safety_rung"))["level"] == "auto"
+    automatic = autonomy_for(proposal.get("action"), rules, safety_rung=proposal.get("safety_rung"),
+                             rooms=proposal.get("rooms"))["level"] == "auto"
     if verdict["result"] != "pass" or not automatic:
         return {"status": "pending", "verdict": verdict}
     receipt = deliver(proposal)

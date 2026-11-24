@@ -33,6 +33,11 @@ shared_reads:
                                        # which flights and which details disagree, what each side says (no evidence ids), and how
                                        # it was settled; Communication never picks a side itself
     heartbeat: true
+  care_plans:                          # Phase 4e: ONLY the approved hotel / transport details per passenger (never their segment or
+    producer: passenger_care           # what they are owed), so an overnight message can name the hotel once a person approved it
+    fields: [version, planned_at, passengers]
+    item_fields:
+      passengers: [passenger_id, hotel_name, hotel_status, hotel_decision, shuttle, transport, transport_status, transport_decision]
 # Derived lookups (AgentContext), channel TYPES only, never an address, name or booking ref. name -> phase it is switched on in.
 projections:
   passenger_screens: 4b-1            # which screens each passenger has: app/SMS only if on file; gate screen and call center for all

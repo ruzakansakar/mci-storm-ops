@@ -129,7 +129,7 @@ def test_every_template_was_reviewed_and_contains_no_forbidden_word():
     for name, t in T["templates"].items():
         assert t["reviewed_for_promises"], name
         text = " ".join(str(v) for k, v in t.items() if isinstance(v, str))
-        found = forbidden_found(text)
+        found = forbidden_found(text, backed=bool(t.get("requires_approved_decision")))
         assert not found or name == "staff_note", (name, found)
     assert "will contact you about overnight" not in str(T["templates"])        # nobody would actually do it yet
 
@@ -167,9 +167,13 @@ def _delivered(r):
 
 
 def test_no_sent_message_contains_a_promise_blame_or_sensitive_detail(co7):
-    texts = [e["payload"]["text"] for e in _delivered(co7)] + [n["text"] for n in co7.metrics["staff_notes"]]
+    log = {e["id"]: e for e in co7.copilot.messages.log}
+    approved = {e["payload"]["recommendation"] for e in co7.world.events if e["type"] == "care_decision_recorded"
+                and e["payload"].get("approved_by")}
+    texts = [(e["payload"]["text"], log[e["payload"]["message_id"]].get("backed_by") in approved) for e in _delivered(co7)] +             [(n["text"], False) for n in co7.metrics["staff_notes"]]
     assert len(texts) > 100
-    assert not [t for t in texts if forbidden_found(t)]
+    assert not [t for t, backed in texts if forbidden_found(t, backed)]
+    assert any(backed for _, backed in texts)                 # the approved overnight hotel messages
     assert co7.metrics["promises_found"] == 0
 
 
@@ -234,8 +238,11 @@ def test_maya_gets_a_delay_notice_and_an_automatic_cancellation_for_wn3005_soon_
     assert "WN1033" in text and "cancelled" in text and "WN3005" in text and "06:30 on Oct 7" in text
     assert canc[0]["decided"].startswith("automatic")
     assert 14 * 60 + 55 <= canc[0]["t"] <= 15 * 60 + 5                        # within a few minutes of the 14:55 cancellation
-    assert not [m for m in mine if forbidden_found(m["text"])]
-    assert not re.search(r"hotel|money|compensat|voucher|refund", " ".join(m["text"] for m in mine).lower())
+    assert not [m for m in mine if forbidden_found(m["text"], backed=m["type"] in ("overnight_hotel", "overnight_home"))]
+    assert not re.search(r"\$|money|compensat|voucher|refund|meal", " ".join(m["text"] for m in mine).lower())
+    hotel = [m for m in mine if "hotel" in m["text"].lower()]
+    assert all(m["type"] == "overnight_hotel" and m["decided"].startswith("automatic (states a decision a person approved")
+               for m in hotel)                               # a hotel is named only once a person approved the room
 
 
 def test_messages_do_not_change_screens_or_the_world(co7):

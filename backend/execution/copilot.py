@@ -123,9 +123,111 @@ class NetworkRunner:
             self.verdicts.append(v)
 
 
+class CareRunner:
+    """The Passenger Care agent in the minute loop (Phase 4e), after Network Recovery. Each proposal goes through the rule
+    check. Hotel holds and releases within the automatic room limit are APPLIED at once; a room for a named passenger, transport
+    and the refund offer wait for the (simulated) customer service supervisor and are applied once approved. Applying writes to
+    the co-pilot's own hotel_assignments ledger and confirms back as an event (as a hotel vendor would); flights and bookings are
+    never changed. Rebooking advice and child supervision are recorded only."""
+
+    def __init__(self, store, rows, feeds):
+        from backend.agents.passenger_care.care import Memory, clock, load_settings
+        self.s = load_settings()
+        self.context = BufferedContext(None, feeds=feeds, agent="passenger_care", store=store, rows=deepcopy(rows))
+        self.memory = Memory()
+        r = self.s["run"]
+        self.start, self.end = clock(r["day_start"]), clock(r["day_end"])
+        self.every = timedelta(minutes=r["every_min"])
+        self.triggers = set(r["trigger_events"])
+        self.errors, self.verdicts, self.ledger, self.options = [], [], [], {}
+        self.published = []                    # (kind, payload) confirmations, for the world's event log
+
+    def due(self, now) -> bool:
+        if not self.start <= now <= self.end:
+            return False
+        if (now - self.start) % self.every == timedelta(0):
+            return True
+        return any((e.get("published_at") or e["occurred_at"]) == now and e["type"] in self.triggers for e in self.context.events)
+
+    def tick(self, now, humans, publish):
+        from backend.agents.passenger_care.care import plan_care
+        from backend.rules import load_rules
+        from backend.rules.autonomy import autonomy_for
+        if not self.due(now):
+            return
+        ctx = self.context
+        ctx.now = now
+        saved = deepcopy(self.memory)
+        try:
+            res = plan_care(ctx, self.memory, self.s)
+        except Exception as err:
+            self.memory = saved
+            ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
+            self.errors.append((now, f"{type(err).__name__}: {err}"))
+            return
+        rules = load_rules()
+        for p in res["proposals"]:
+            self.options[p["id"]] = p
+            verdict = check_only(p, {"now": now, "flights": {}})
+            rec = ctx.saved[("recommendations", p["id"])]
+            rec["rule_check_ok"], rec["rule_check_notes"], rec["rule_ids"] = verdict["result"] == "pass", verdict["reasons"], verdict["rule_ids"]
+            auto = autonomy_for(p["action"], rules, rooms=p.get("rooms"))["level"] == "auto"
+            v = {"proposal": serial({k: x for k, x in p.items() if k != "option"}), "verdict": verdict, "automatic": auto,
+                 "would_need_approval_by": None if auto else rec.get("approver_role"), "at": now.isoformat()}
+            kind = "rule_check_passed" if verdict["result"] == "pass" else "rule_check_blocked"
+            ctx.outputs.append((kind, v))
+            ctx._audit_row(kind, "recommendation", p["id"], None, v)
+            self.verdicts.append(v)
+            if verdict["result"] != "pass":
+                rec["status"] = "blocked_by_rule_check"
+                if humans:
+                    humans.ask("passenger_care", p["id"], p, rec.get("approver_role"), now, False)
+                continue
+            if auto:
+                rec["status"] = "done_automatically"
+                self.apply(p, now, publish)
+            else:
+                rec["status"] = "pending"
+                if humans and p["kind"] != "advice":         # advice is advisory: recorded, never put to a person to apply
+                    humans.ask("passenger_care", p["id"], p, rec.get("approver_role"), now, True)
+
+    def approved(self, q, now, publish):
+        """A person approved: checked again against the rules NOW, then applied (and confirmed back)."""
+        p = self.options.get(q.rec_id)
+        rec = self.context.saved.get(("recommendations", q.rec_id))
+        if p is None or rec is None or rec.get("status") != "pending":
+            return None
+        p = {**p, "data_as_of": now}
+        verdict = check_only(p, {"now": now, "flights": {}})
+        if verdict["result"] != "pass":
+            rec["status"] = "expired"
+            return {"agent": "passenger_care", "recommendation": q.rec_id, "void": verdict["reasons"][:3]}
+        rec["status"] = "approved"
+        self.apply(p, now, publish, q.role, q.answer["waited_min"])
+        return {"agent": "passenger_care", "recommendation": q.rec_id, "action": p["action"], "role": q.role,
+                "waited_min": q.answer["waited_min"]}
+
+    def apply(self, p, now, publish, approved_by=None, waited=None):
+        k = p["kind"]
+        base = {"run_at": now.isoformat(), "recommendation": p["id"], "approved_by": approved_by, "waited_min": waited}
+        if k in ("hold", "release"):
+            self.ledger.append({**base, "kind": k, "hotel_id": p["hotel_id"], "rooms": p["rooms"], "passenger_id": None,
+                                "accessible": False})
+            publish("hotel_rooms_held" if k == "hold" else "hotel_rooms_released",
+                    {"hotel_id": p["hotel_id"], "rooms": p["rooms"], "accessible": False, "recommendation": p["id"]})
+        elif k == "assign":
+            pid = p["passenger_ids"][0]
+            self.ledger.append({**base, "kind": "assign", "hotel_id": p["hotel_id"], "rooms": 1, "passenger_id": pid,
+                                "accessible": bool(p.get("accessible"))})
+            publish("hotel_room_assigned", {"passenger_id": pid, "hotel_id": p["hotel_id"], "recommendation": p["id"],
+                                            "approved_by": approved_by, "waited_min": waited})
+        publish("care_decision_recorded", {"recommendation": p["id"], "action": p["action"], "passenger_ids": p.get("passenger_ids", []),
+                                           "approved_by": approved_by or "automatic", "waited_min": waited})
+
+
 class Copilot:
     def __init__(self, now, schedule, passengers, feeds=None, situation_schedule=None, system_health=None, situation_until=None,
-                 stations=None, humans=None, network_rows=None):
+                 stations=None, humans=None, network_rows=None, care_rows=None):
         self.store = SharedStore()
         self.context = BufferedContext(now, feeds=feeds, store=self.store,
                                        rows={"flights": deepcopy(schedule), "passengers": deepcopy(passengers),
@@ -133,6 +235,8 @@ class Copilot:
         self.situation = SituationRunner(self.store, situation_schedule or schedule, system_health or [], self.context.feeds,
                                          situation_until)
         self.network = NetworkRunner(self.store, network_rows, self.context.feeds) if network_rows else None
+        self.care = CareRunner(self.store, care_rows, self.context.feeds) if care_rows else None
+        self.vendor_out = []                  # confirmations of what was applied (hotel vendor / supervisor records)
         self.settings = communication_settings()
         self.detection = Memory()
         self.fixes = FixMemory()
@@ -171,8 +275,17 @@ class Copilot:
         human_out = []
         # 0. people answer what is due. A conflict answer is published first, so Situation sees it this very minute.
         approved_now = []
+        def publish(kind, payload):
+            self._publish(now, kind, payload)
+            self.vendor_out.append(("system:care_records", kind, deepcopy(payload)))
         for q in (self.humans.due(now) if self.humans else []):
             actor = f"simulated_human:{q.role}"
+            if q.agent == "passenger_care":            # a care approval: re-checked now, then applied and confirmed
+                if self.care:
+                    a = self.care.approved(q, now, publish)
+                    if a:
+                        human_out.append((actor, "human_approved", a))
+                continue
             if q.action == "resolve_source_conflict":
                 for a in q.answer["conflicts"]:
                     if a.get("repeat"):
@@ -197,6 +310,11 @@ class Copilot:
         if self.network:
             self.network.tick(now)
             o, a = self._drain(self.network.context, "network_recovery")
+            outputs, audits = outputs + o, audits + a
+        # 1c. Passenger Care (hotel holds and approved rooms are applied to the co-pilot's own ledger; the rest waits or advises)
+        if self.care:
+            self.care.tick(now, self.humans, publish)
+            o, a = self._drain(self.care.context, "passenger_care")
             outputs, audits = outputs + o, audits + a
         # 2. Communication: detect, read Situation's picture, plan fixes and messages
         ctx = self.context
@@ -265,13 +383,13 @@ class Copilot:
             verdict = check_only(option, world)
             actor = f"simulated_human:{q.role}"
             if verdict["result"] != "pass":
-                human_out.append((actor, "human_approved", {"recommendation": q.rec_id, "action": q.action, "role": q.role,
+                human_out.append((actor, "human_approved", {"agent": q.agent, "recommendation": q.rec_id, "action": q.action, "role": q.role,
                                                             "waited_min": q.answer["waited_min"], "void": verdict["reasons"][:3]}))
                 withdraw(self.messages, q.rec_id, "approved too late: the truth had changed; redrafted")
                 self._set_status("communication", q.rec_id, "expired")
                 self.voided.append(q.rec_id)
                 continue
-            human_out.append((actor, "human_approved", {"recommendation": q.rec_id, "action": q.action, "role": q.role,
+            human_out.append((actor, "human_approved", {"agent": q.agent, "recommendation": q.rec_id, "action": q.action, "role": q.role,
                                                         "waited_min": q.answer["waited_min"]}))
             receipt = deliver(option)
             if isinstance(receipt, dict) and receipt.get("accepted") is False:
@@ -284,7 +402,8 @@ class Copilot:
             self._set_status("communication", q.rec_id, "approved")
             self.waits.append((option["messages"][0]["type"] if option.get("messages") else q.action, q.answer["waited_min"]))
         out2, aud2 = self._drain(ctx, "communication")
-        return outputs + out2 + human_out, audits + aud2
+        vendor, self.vendor_out = self.vendor_out, []
+        return outputs + out2 + human_out + vendor, audits + aud2
 
     def _after(self, ctx, proposal, outcome, now):
         saved = ctx.saved[("recommendations", proposal["id"])]

@@ -96,11 +96,23 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             "stations": [dict(x) for x in data["stations"]],
             "later_capacity": [dict(x) for x in data["later_capacity"]], "route_tiers": [dict(x) for x in data["route_tiers"]],
             "passenger_groups": [{k: g[k] for k in ("flight_id", "segment", "count")} for g in data["passenger_groups"]]}
+        care_rows = {                                      # published before the day; names only for passengers it works on
+            "flights": [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "priority")}
+                        for f in data["flights"]],
+            "passengers": [{k: p.get(k) for k in ("id", "full_name", "booking_ref", "segment", "final_destination", "lives_locally",
+                                                  "loyalty_tier", "contact_channels")} for p in data["passengers"]],
+            "hotels": [dict(h) for h in data["hotels"]],
+            "transport_options": [{"name": t["name"], "capacity": t["capacity"], "hourly_rate_usd": t["hourly"],
+                                   "per_trip_rate_usd": t["per_trip"]} for t in data["transport"]],
+            "hotel_rate_tiers": [{"tier": t["tier"], "radius_miles": t["radius"], "hotel_count": t["count"], "rate_usd": t["rate"]}
+                                 for t in data["hotel_tiers"]],
+            "later_capacity": [dict(x) for x in data["later_capacity"]]}
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
                           stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
-                          network_rows=network_rows, **(copilot_options or {}))
+                          network_rows=network_rows, care_rows=care_rows, **(copilot_options or {}))
         from backend.contracts import load_contracts
-        agent_types = {t for a in ("situation", "network_recovery", "communication") for t in load_contracts()[a].event_types}
+        agent_types = {t for a in ("situation", "network_recovery", "passenger_care", "communication")
+                       for t in load_contracts()[a].event_types}
         channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
         channels.msg_rng = random.Random(f"messages:{scenario}:{seed}")
     every = cfg["day"]["write_every_min"]
@@ -131,14 +143,17 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             published = [{"occurred_at": at(e["t"]), "type": e["type"], "station": e.get("station"),
                           "published_at": at(delivered) if (delivered := (late_delivery(e) if late_delivery else e.get("published_t"))) is not None else None,
                           "payload": e["payload"]} for e in world.events[event_cursor:]
-                         if e["type"] in agent_types]           # each agent's context cuts these to its own contract
+                         if e["type"] in agent_types and e.get("actor") == "simulator"]
+            # each agent's context cuts these to its own contract. Agents' outputs, people's answers and the care records
+            # reach the shared store directly when they happen (so nothing is counted twice).
             event_cursor = len(world.events)
             outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_messages(t, p) if p.get("messages")
                                            else channels.deliver_fix(t, p))
             from backend.execution.copilot import serial
             for agent, kind, payload in outputs:
                 world.events.append({"t": t, "type": kind,
-                                     "actor": "simulated_human" if agent.startswith("simulated_human") else "agent", "actor_name": agent,
+                                     "actor": "simulated_human" if agent.startswith("simulated_human") else
+                                     "system" if agent.startswith("system:") else "agent", "actor_name": agent,
                                      "station": None, "payload": serial(payload), "incident": False})
             for a in audits:
                 world.audit_rows.append({"t": t, "actor": "agent", "actor_name": a["agent"], "what": a["what"],
@@ -158,6 +173,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     if copilot:
         from simulator.network_metrics import network_metrics
         metrics["network"] = network_metrics(world, copilot, data)
+        from simulator.care_metrics import care_metrics
+        from simulator.comparison import focus_passenger
+        metrics["care"] = care_metrics(world, copilot, data, focus_passenger(data))
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
@@ -169,6 +187,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             writer.save_proposals(copilot.situation.context)
             if copilot.network:
                 writer.save_proposals(copilot.network.context)
+            if copilot.care:
+                writer.save_proposals(copilot.care.context)
+                writer.save_hotel_ledger(copilot.care.ledger)
             writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)
     return result

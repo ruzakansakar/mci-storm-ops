@@ -1,118 +1,63 @@
 # CONTRACT: passenger_care. Rebooking, hotels, money and vulnerable passengers. One of two agents allowed to see names.
+# Phase 4e: hotel holds and approved room assignments are APPLIED in co-pilot mode (to hotel_assignments, never to a truth
+# table); everything else it proposes is advisory or waits for a person.
 agent: passenger_care
+phase: 4e
 purpose: 'Proposes how to look after each affected passenger: a new flight, a hotel or a trip home, meals, and what they are owed.'
+# ------------------------------------------------------------------ WHAT IT READS
+# The data published before the day (schedule, passenger list, hotels and their free rooms at the start of the day, transport,
+# rate tiers, later capacity) and the events up to its time T (trip records, cancellations, strandings, misconnects, people's
+# decisions, the hotel vendor's confirmations). Names, booking refs and contacts ONLY for the passengers it declares it is
+# working on (AgentContext.working_on); everything else is by passenger id.
 reads:
-  passengers:
-  - id
-  - full_name
-  - booking_ref
-  - segment
-  - final_destination
-  - lives_locally
-  - overnight
-  - loyalty_tier
-  - contact_channels
-  - as_of
-  bookings:
-  - passenger_id
-  - seq
-  - flight_id
-  - status
-  - as_of
-  bags:
-  - tag
-  - passenger_id
-  - routing
-  - current_location
-  - status
-  - as_of
-  flights:
-  - id
-  - direction
-  - origin
-  - destination
-  - sched_dep
-  - sched_arr
-  - est_dep
-  - est_arr
-  - status
-  - cancel_reason
-  - controllable
-  - pax_total
-  - as_of
-  passenger_groups:
-  - flight_id
-  - segment
-  - count
-  - rebooked
-  - refunded
-  - need_hotel
-  - as_of
-  later_capacity:
-  - destination
-  - scheduled_flights
-  - later_flights
-  - open_seats_later
-  - next_later_departure
-  - connection_alternative
-  - as_of
-  hotels:
-  - id
-  - name
-  - station
-  - rooms_total
-  - rooms_available
-  - rooms_held
-  - rate_usd
-  - distance_miles
-  - shuttle
-  - bus_capacity
-  - last_checkin
-  - as_of
-  transport_options:
-  - name
-  - capacity
-  - hourly_rate_usd
-  - per_trip_rate_usd
-  hotel_rate_tiers:
-  - tier
-  - radius_miles
-  - hotel_count
-  - rate_usd
-  incidents:
-  - id
-  - kind
-  - status
-  - controllable
-  - expected_end_min
-  - expected_end_max
-  - run_id
+  events: [id, occurred_at, type, station, payload]
+  flights: [id, direction, origin, destination, sched_dep, sched_arr, priority]
+  passengers: [id, full_name, booking_ref, segment, final_destination, lives_locally, loyalty_tier, contact_channels]
+  hotels: [id, name, station, rooms_total, rooms_available, rate_usd, distance_miles, shuttle, bus_capacity, last_checkin, use_preference]
+  transport_options: [name, capacity, hourly_rate_usd, per_trip_rate_usd]
+  hotel_rate_tiers: [tier, radius_miles, hotel_count, rate_usd]
+  later_capacity: [destination, later_flights, open_seats_later, next_later_departure]
+static_reads: [flights, passengers, hotels, transport_options, hotel_rate_tiers, later_capacity]
+event_feeds:
+  reservations:
+    trip_record_updated: [passenger_id, itinerary, status, destination]
+  flight_ops:
+    flight_cancelled: [flight_id, reason]
+    flight_delayed: [flight_id, delay_min, new_departure]
+    flight_delay_updated: [flight_id, delay_min, new_departure]
+    flight_departed: [flight_id]
+    next_day_flight_created: [flight_id, route, departs]
+  passenger_ops:
+    passenger_stranded_overnight: [passenger_id, lives_locally, from_flight, rebooked_to, departs]
+    missed_connection: [passenger_id, flight_id, rebooked_to]
+  decisions:                           # people's answers (e.g. A03: was it within Southwest's control?)
+    human_decision_recorded: [decision_id, conflict_key, flight_id, answer_side, decided_by_role, answered_at]
+  care_ops:                            # the hotel vendor's and the supervisor's confirmations of what was applied
+    hotel_rooms_held: [hotel_id, rooms, accessible, recommendation]
+    hotel_room_assigned: [passenger_id, hotel_id, recommendation, approved_by, waited_min]
+    hotel_rooms_released: [hotel_id, rooms]
+    care_decision_recorded: [recommendation, action, passenger_ids, approved_by, waited_min]
+# Shared state: the latest Situation and Network Recovery versions <= T, these fields only.
+shared_reads:
+  situation_assessments:
+    producer: situation
+    fields: [version, assessed_at, status, type, confidence, expected_end_likely, expected_end_latest, end_confidence]
+    heartbeat: true
+  recovery_plans:
+    producer: network_recovery
+    fields: [version, planned_at, seats_by_destination, cancels, delays]
 writes:
   recommendations:
     mode: insert
-    columns:
-    - incident_id
-    - agent
-    - title
-    - why
-    - options
-    - autonomy
-    - approver_role
-    - deadline
-    - rank
-    - safety_rung
-    - data_as_of
-    - status
-    - run_id
-    - created_at
-    - decision_ids
+    columns: [incident_id, agent, title, why, options, autonomy, approver_role, deadline, rank, safety_rung, data_as_of, status,
+              run_id, created_at, decision_ids]
   events:
     mode: insert
-    types:
-    - care_plan_drafted
-    - passenger_owed_calculated
-    - hotel_hold_proposed
-    - human_decision_needed
+    types: [care_plan_drafted, passenger_owed_calculated, hotel_hold_proposed, human_decision_needed, agent_heartbeat, agent_error]
+  care_plans:                          # its shared plan, append-only and versioned (shared-state rules)
+    mode: insert
+    columns: [agent_run_id, run_id, version, planned_at, situation_version, recovery_plan_version, passengers, hotels, costs,
+              vulnerable, wheelchair_requests, rebooking_advice, sources, data_as_of, decision_ids]
   audit_log:
     mode: insert
 actions:
@@ -135,6 +80,27 @@ actions:
 - reroute_bags
 - supervise_child_alone
 - waive_change_fees
+# 4e builds these; the others are defined here but not built yet (enabled_in: later), and AgentContext refuses them.
+capabilities:
+- {action: hold_hotel_rooms, enabled_in: 4e, note: "M01/M02/M03/M06/M09: blocks of rooms, automatic up to max_rooms (autonomy.yaml)"}
+- {action: release_hotel_rooms, enabled_in: 4e, note: "M10: release holds nobody needs"}
+- {action: issue_compensation, enabled_in: 4e, note: "N04 a room for a named passenger (approval); N03/N05 only once a person decided A03"}
+- {action: arrange_ground_transport, enabled_in: 4e, note: "M04 locals home, M05 vans sized from transport_options (approval)"}
+- {action: offer_refund, enabled_in: 4e, note: "N02/K07: the legal floor, always offered (approval)"}
+- {action: supervise_child_alone, enabled_in: 4e, note: "J01/J03: staff supervision + guardian, never a hotel alone (station manager)"}
+- {action: rebook_passenger, enabled_in: 4e, note: "K01/K03/K05/J02: ADVISORY better rebooking; bookings are never changed here"}
+- {action: arrange_terminal_care, enabled_in: later}
+- {action: contact_partner, enabled_in: later}
+- {action: deliver_bags, enabled_in: later}
+- {action: file_mishandled_bag_report, enabled_in: later}
+- {action: handle_disability_complaint, enabled_in: later}
+- {action: hold_seat, enabled_in: later}
+- {action: identify_misconnects, enabled_in: later}
+- {action: manage_standby, enabled_in: later}
+- {action: report_mobility_device_issue, enabled_in: later}
+- {action: request_wheelchair_help, enabled_in: later, note: "J04 belongs to Station & Staff; 4e writes the request into care_plans"}
+- {action: reroute_bags, enabled_in: later}
+- {action: waive_change_fees, enabled_in: later}
 never:
 - Never promise or pay money that is not approved. Compensation is calculated and proposed; a supervisor approves it.
 - Never rebook a child flying alone onto a connection or an international flight, and never send one to a hotel alone.

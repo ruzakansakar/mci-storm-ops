@@ -19,11 +19,14 @@ def templates() -> dict:
 INFORM = ("cancellation_rebooking", "cancellation_only", "overnight_notice", "rebooking")
 
 
-def forbidden_found(text: str) -> list[str]:
-    """Every forbidden word or phrase in a sent text (promises, blame, sensitive details). Must always be empty."""
+def forbidden_found(text: str, backed: bool = False) -> list[str]:
+    """Every forbidden word or phrase in a sent text (promises, blame, sensitive details). Must always be empty. A message backed
+    by a decision a person APPROVED (e.g. the room Passenger Care arranged) may name that hotel: those words are not a promise
+    nobody approved. Blame and sensitive details are never allowed."""
     T = templates()
     body = text.replace(T["staff_allowed_sentence"], "")
-    return [w for g in ("promises", "blame", "sensitive") for w in T["forbidden"][g]
+    groups = ("blame", "sensitive") if backed else ("promises", "blame", "sensitive")
+    return [w for g in groups for w in T["forbidden"][g]
             if re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", body.lower())]
 
 
@@ -51,7 +54,10 @@ def message_metrics(world, copilot, focus, cancellations: dict, screens: dict) -
             blocked.update(r.split(" (")[0][:70] for r in e["payload"]["reasons"])
         if e["type"] == "rule_check_blocked" and "messages" in (e["payload"].get("proposal") or {}):
             blocked.update("rule check: " + r.split(": ", 1)[-1][:60] for r in e["payload"]["verdict"]["reasons"])
-    promises = [{"message_id": e["payload"]["message_id"], "found": forbidden_found(e["payload"]["text"])}
+    approved = {p["recommendation"] for p in (e["payload"] for e in world.events if e["type"] == "care_decision_recorded")
+                if p.get("approved_by")}
+    backed = lambda mid: (log.get(mid) or {}).get("backed_by") in approved
+    promises = [{"message_id": e["payload"]["message_id"], "found": forbidden_found(e["payload"]["text"], backed(e["payload"]["message_id"]))}
                 for e in delivered + [{"payload": {"message_id": s["payload"]["message_id"], "text": s["payload"]["text"]}}
                                       for s in staff]]
     promises = [p for p in promises if p["found"]]
@@ -85,7 +91,8 @@ def message_metrics(world, copilot, focus, cancellations: dict, screens: dict) -
         lg = log.get(p["message_id"], {})
         maya.append({"t": e["t"], "channel": p["channel"], "type": p["type"], "text": p["text"],
                      "decided": f"approved by {lg['approved_by'].replace('_', ' ')} after {lg['waited_min']:.0f} min"
-                     if lg.get("approved_by") else "automatic (restates the confirmed truth)"})
+                     if lg.get("approved_by") else "automatic (states a decision a person approved: "
+                     f"recommendation {lg['backed_by']})" if lg.get("backed_by") else "automatic (restates the confirmed truth)"})
     types = Counter(e["payload"]["type"] for e in delivered)
     return {
         "messages_delivered": len(delivered), "messages_by_type": dict(types),

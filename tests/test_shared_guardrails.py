@@ -49,14 +49,14 @@ def test_g01_every_fact_needs_a_source_and_an_as_of_time(db):
 
 
 def test_g02_old_data_is_refused_by_the_context_and_by_the_rule_check(db):
-    # an agent that reads a live table (passenger_care reads flights with their as_of time); since 4d network_recovery reads
-    # only the plan published before the day plus events, whose freshness is checked by feed heartbeats instead
-    ctx = ctx_for("passenger_care", db, now=NOW + timedelta(days=1))
-    ctx.read("flights", ["id"], limit=1)
-    action = "arrange_ground_transport"
+    # an agent that reads a live table (station_staff reads stations with their as_of time); since 4d/4e Network Recovery and
+    # Passenger Care read only what was published before the day plus events, whose freshness the feed heartbeats check
+    ctx = ctx_for("station_staff", db, now=NOW + timedelta(days=1))
+    ctx.read("stations", ["code"], limit=1)
+    action = "adjust_checkin_cutoffs"
     ready(ctx, action)
     with pytest.raises(StaleDataError):
-        ctx.propose(action, good_output("passenger_care", action))
+        ctx.propose(action, good_output("station_staff", action))
     old = {"agent": "network_recovery", "action": "delay_flight", "decision_ids": ["B02"], "data_as_of": NOW - timedelta(minutes=5)}
     assert check(old, [], {"now": NOW})["result"] == "block"
 

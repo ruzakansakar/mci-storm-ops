@@ -437,19 +437,21 @@ def test_network_recovery_is_refused_passenger_names_and_truth_writes(db):
 # ------------------------------------------------------------------ stale data
 
 def test_stale_data_is_refused_and_fresh_data_is_accepted(db):
-    agent = "passenger_care"
+    # an agent that reads a LIVE table (station_staff reads stations with their as_of time). Since 4d/4e Network Recovery and
+    # Passenger Care read only data published before the day plus events; their freshness is the feeds' heartbeats.
+    agent, action = "station_staff", "adjust_checkin_cutoffs"
     limit = CONTRACTS[agent].max_data_age_sec
     probe = ctx_for(agent, db)
-    probe.read("hotels", ["id"], limit=1)
+    probe.read("stations", ["code"], limit=1)
     as_of = probe.oldest_as_of
-    out = good_output(agent, "rebook_passenger")
+    out = good_output(agent, action)
     fresh = ctx_for(agent, db, now=as_of + timedelta(seconds=limit))
-    fresh.read("hotels", ["id"], limit=1)
-    assert fresh.propose("rebook_passenger", out)
+    fresh.read("stations", ["code"], limit=1)
+    assert fresh.propose(action, out)
     stale = ctx_for(agent, db, now=as_of + timedelta(seconds=limit + 1))
-    stale.read("hotels", ["id"], limit=1)
+    stale.read("stations", ["code"], limit=1)
     with pytest.raises(StaleDataError, match="old"):
-        stale.propose("rebook_passenger", out)
+        stale.propose(action, out)
 
 
 def test_temporary_notes_are_deleted_when_the_incident_closes(db):

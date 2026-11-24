@@ -97,6 +97,20 @@ templates:
     do_now: "Your new booking is confirmed, so you don't need to do anything to keep it."
     sms_do_now: "Your new booking is confirmed."
 
+  overnight_hotel:                     # O14: the APPROVED room for tonight (an approved decision backs the word "hotel"); automatic
+    reviewed_for_promises: true
+    requires_approved_decision: true   # only ever sent with backed_by = the approved room (the fact check refuses it otherwise)
+    know: "Your hotel for tonight is {hotel}."
+    dont_know: "Nothing else about your trip has changed so far."
+    do_now: "{transport_sentence}"
+
+  overnight_home:                      # O14: the APPROVED ride home for a local passenger; automatic
+    reviewed_for_promises: true
+    requires_approved_decision: true
+    know: "A ride home tonight has been arranged for you."
+    dont_know: "Nothing else about your trip has changed so far."
+    do_now: "A contracted car will take you home. Please be back at the airport in time for your flight."
+
   overnight_notice:                    # O14: the trip now continues tomorrow (needs approval)
     reviewed_for_promises: true
     know: "Your trip now continues tomorrow. You are booked on {new_flight}, leaving Kansas City at {dep_time} on {dep_date}."
@@ -124,6 +138,9 @@ correct:                               # the "correct information" sentence insi
   diverted: "Your flight {flight} to {city} has been diverted to {diverted_city}."
   confirmed: "Your flight {flight} to {city} is going ahead as booked."
 
+transport_sentence:
+  shuttle: "Please take the {hotel} shuttle from the airport."
+  van: "A van will take you from the airport to the hotel."
 channel_names: {app: Southwest app, sms: text messages}
 status_words: {delayed: delayed, cancelled: cancelled, diverted: diverted, overnight: continuing tomorrow, confirmed: on schedule}
 

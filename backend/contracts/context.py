@@ -308,7 +308,7 @@ class AgentContext:
 
     def _with_run_ids(self, table, values, mode):
         """Rows of an agent's own table carry its replay id and the run it read, filled in here (the agent never sees the run)."""
-        if table in ("mismatches", "recovery_plans") and mode == "insert":
+        if table in ("mismatches", "recovery_plans", "care_plans") and mode == "insert":
             return {**values, "agent_run_id": self.run_id, "run_id": self.source_run_id}
         return values
 

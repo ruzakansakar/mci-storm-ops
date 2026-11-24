@@ -122,6 +122,14 @@ def _claim_problems(c: dict, pid: str | None, world: dict) -> list[str]:
     elif k == "wrong_shown":
         if world.get("was_shown_wrong", {}).get((pid, c["channel"])) != c["status"]:
             out.append(f"corrects a {c['channel']} that did not show '{c['status']}'")
+    elif k == "care_hotel":
+        e = (world.get("care") or {}).get(pid) or {}
+        if e.get("hotel_status") != "approved" or e.get("hotel_name") != c.get("name") or e.get("hotel_decision") != c.get("decision"):
+            out.append(f"names the hotel '{c.get('name')}' but no approved room there is on record for this passenger")
+    elif k == "care_transport":
+        e = (world.get("care") or {}).get(pid) or {}
+        if e.get("transport") != c.get("value"):
+            out.append(f"describes transport '{c.get('value')}' that is not what was arranged")
     elif k in ("name", "next_update", "city"):
         pass                                             # checked below (names) or our own commitment (next update)
     else:

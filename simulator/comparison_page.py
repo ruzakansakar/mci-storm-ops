@@ -144,6 +144,36 @@ def network_section(copilot):
             '<th>Actually diverted</th><th>Minutes ahead</th><th>Safe alternates</th></tr>' + fuel + '</table>')
 
 
+def care_section(copilot):
+    """Phase 4e: the Passenger Care agent: who needed care overnight, hotels used, costs, Maya's care plan and message."""
+    c = copilot.get("care")
+    if not c:
+        return ""
+    rows = "".join(f"<tr><td>{esc(e['passenger_id'])}</td><td>{'home' if e['local'] else esc(e['hotel_name'] or '-')}</td>"
+                   f"<td>{esc(e['hotel_status'] or '-')}</td><td>{esc(e['transport'] or '-')} ({esc(e['transport_status'] or '-')})</td>"
+                   f"<td>{esc(e['compensation'] or '-')}</td></tr>" for e in c["overnight"])
+    hotels = "".join(f"<tr><td>{esc(h['name'])}</td><td>{h['rooms_available']}</td><td>{h['held']}</td><td>{h['released']}</td>"
+                     f"<td>{h['assigned']}</td></tr>" for h in c["hotels_used"])
+    vul = "".join(f"<tr><td>{esc(v['passenger_id'])}</td><td>{esc(v['kind'].replace('_', ' '))}</td><td>{esc(v['plan'])}</td>"
+                  f"<td>{'yes' if v['follows_the_rules'] else '<b>NO</b>'}</td></tr>" for v in c["vulnerable"])
+    m = c.get("maya") or {}
+    cost = c.get("costs") or {}
+    return ('<h3>Passenger Care</h3>'
+            f'<p>{c["proposals"]} proposals; rule-check blocks: {c["rule_check_blocks"]} (none applied). Rooms held '
+            f'{c["rooms_held"]}, assigned {c["rooms_assigned"]}. Costs committed ${cost.get("committed_usd", 0):,} (pending '
+            f'${cost.get("pending_usd", 0):,}) against a cap of ${cost.get("cap_usd", 0):,}. Still waiting for a person at day end: '
+            f'{esc(", ".join(f"{k} {v}" for k, v in c["pending_at_day_end"].items()) or "nothing")}.</p>'
+            '<h4>Maya Torres</h4><p>' + esc(f"Hotel: {m.get('hotel_name')} ({m.get('hotel_status')}, approved by "
+                                             f"{(m.get('approved_by') or '-').replace('_', ' ')} after {m.get('waited_min')} min); "
+                                             f"transport: {m.get('transport')}; compensation: {m.get('compensation')}") +
+            '</p><p>Her overnight message: <i>' + esc(c.get("maya_overnight_message") or "none") + '</i></p>'
+            '<h4>Overnight passengers</h4><table><tr><th>Passenger</th><th>Tonight</th><th>Room</th><th>Transport</th>'
+            '<th>Compensation</th></tr>' + rows + '</table>'
+            '<h4>Hotels used</h4><table><tr><th>Hotel</th><th>Free at start</th><th>Held</th><th>Released</th><th>Assigned</th></tr>'
+            + hotels + '</table><h4>Children alone and wheelchair users</h4><table><tr><th>Passenger</th><th>Kind</th><th>Plan</th>'
+            '<th>Follows the rules</th></tr>' + (vul or '<tr><td colspan="4">none on an affected flight</td></tr>') + '</table>')
+
+
 def section(today, copilot):
     rows = "".join(f"<tr><th>{label}</th><td>{esc(show(today.get(key)))}</td>"
                    f"<td>{esc(show(copilot.get(key)))}</td></tr>" for key, label in METRICS)
@@ -174,7 +204,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) +         care_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \
