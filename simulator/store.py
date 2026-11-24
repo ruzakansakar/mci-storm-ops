@@ -86,7 +86,9 @@ class Writer:
         from backend.contracts.shared_state import SHARED
         jsonish = {"flight_controllability", "impact", "conflicts", "stale_sources", "evidence", "delays", "cancels", "crew_actions",
                    "hold_divert", "aircraft_recovery", "restart_order", "seats_by_destination", "warnings", "estimates", "sources",
-                   "passengers", "hotels", "costs", "vulnerable", "wheelchair_requests", "rebooking_advice", "approval_status"}
+                   "passengers", "hotels", "costs", "vulnerable", "wheelchair_requests", "rebooking_advice", "approval_status",
+                   "ramp_status", "terminal", "gates", "gate_shortages", "staff_shortages", "staff_coverage", "tarmac",
+                   "wheelchair_coverage", "child_coverage", "breaks"}
         for table, meta in SHARED.items():
             rows = store.records.get(table) or []
             if not rows:
@@ -108,6 +110,22 @@ class Writer:
                             "recommendation, approved_by, waited_min) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                             [(self.run_id, r["run_at"], r["kind"], r["hotel_id"], r["rooms"], r["passenger_id"], r["accessible"],
                               r["recommendation"], r["approved_by"], r["waited_min"]) for r in ledger])
+
+    def save_station_ledgers(self, gates, staff):
+        """The gates and staff the co-pilot actually assigned (its own tables; never truth tables, never the roster)."""
+        with self.conn.cursor() as cur:
+            if gates:
+                cur.executemany("INSERT INTO gate_assignments (run_id, at, kind, flight_id, gate, remote_stand, from_at, to_at, "
+                                "recommendation, approved_by, waited_min) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                [(self.run_id, r["at"], r["kind"], r["flight_id"], r["gate"], r["remote_stand"], r["from_at"],
+                                  r["to_at"], r["recommendation"], r["approved_by"], r["waited_min"]) for r in gates])
+            if staff:
+                cur.executemany("INSERT INTO staff_assignments (run_id, at, kind, staff_id, role, task, flight_id, passenger_id, "
+                                "from_at, to_at, recommendation, approved_by, waited_min) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                [(self.run_id, r["at"], r["kind"], r["staff_id"], r["role"], r["task"], r.get("flight_id"),
+                                  r.get("passenger_id"), r.get("from_at"), r.get("to_at"), r["recommendation"], r["approved_by"],
+                                  r["waited_min"]) for r in staff])
 
     def _new_flights(self, cur, world):
         """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""

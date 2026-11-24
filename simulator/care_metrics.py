@@ -43,7 +43,7 @@ def care_metrics(world, copilot, data, focus) -> dict | None:
     for r in recs:
         if r.get("status") == "pending":
             key = {"rebook_passenger": "rebooking advice (advisory, never applied)",
-                   "supervise_child_alone": "child supervision (station manager not simulated)"}.get(r.get("_action"), r.get("_action"))
+                   "supervise_child_alone": "child supervision (waiting for Station & Staff)"}.get(r.get("_action"), r.get("_action"))
             pending[key] = pending.get(key, 0) + 1
     waits = [v for v in (e.get("waited_min") for e in latest.values()) if v is not None]
     final = plans[-1] if plans else {}

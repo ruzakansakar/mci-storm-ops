@@ -25,7 +25,8 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4b-3 | Communication messages + conflict holds that clear (evidence or a person) | **done** |
 | 4d | Network Recovery agent (advisory: crews, delays/cancellations, hold or divert, recovery) | **done** |
 | 4e | Passenger Care agent (hotels, transport, compensation status, vulnerable passengers, rebooking advice) | **done** |
-| Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
+| 4e-2 | Network Recovery -> Communication (held drafts, crew drafts, staff notes) | **done** |
+| 4f | Station & Staff agent (tarmac care, gates, ground staff, wheelchair and child help) + link to Network Recovery | **done** |
 | Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
 | 8 | Front end (milestone 3) | |
@@ -588,6 +589,34 @@ Run these after pytest has finished: pytest rebuilds the database. Seed 7's C35 
 C35 plus an internal staff note. Approval does not apply that swap, so the passenger and crew drafts are never sent.
 The draft omits a report-by time because the proposal does not supply one.
 
+## Station & Staff (Phase 4f)
+
+The Station & Staff agent looks after the people and the ground at MCI. It sees passenger ids and counts only, never names.
+
+- **Tarmac care.** For every plane waiting on the ground (at MCI or at a diversion airport) it works out the legal deadlines:
+  a status announcement by 30 minutes, food and water by 2 hours, and the time to start returning before 3 hours (4 hours
+  international). Each is met or flagged in time; food and water and offers to get off are proposed to the station manager.
+  Returning to a gate and keeping people on board longer are the captain's decisions: the agent only asks, with the facts.
+- **Gates.** A gate for every plane arriving in the next hour, kept from landing until its next departure. If a plane's time
+  moves, the gate is re-planned. When gates run out it proposes a remote stand with stairs, then asks the airport.
+- **Staff.** Gate agents, ramp crews and customer service go to each flight's work, busiest flights first. Nobody is booked
+  for two jobs at once, outside their shift, or across a planned break, and every assignment carries the ground-staff limits
+  for the rule check. When short, it proposes starting a later shift early (station manager). No ramp work is planned while the
+  ramp is closed for lightning, and work already assigned is paused automatically.
+- **Wheelchair help and children alone.** Every wheelchair passenger in Passenger Care's plan gets a named wheelchair agent at
+  arrival, connection and deplaning (never more than 30 minutes unattended). A child flying alone gets a named staff member
+  until the guardian collects them (station manager); this closes Passenger Care's request.
+- **Ramp and terminal.** Closing or reopening the ramp is the ramp supervisor's call: it only asks. It warns when the terminal
+  nears its capacity.
+- **What is applied.** In co-pilot mode, approved (or automatic) gates and staff go to the co-pilot's own gate_assignments and
+  staff_assignments tables. Flights, bookings, crews and the staff roster are never changed.
+- **The link to Network Recovery.** Network Recovery reads the station's ramp status and gate and staff shortages and never
+  proposes a departure while the ramp is closed or in a 15-minute slot with no ramp crew or gate agents left; such a departure
+  moves to the next slot that can work it, with the reason.
+
+The debug page's comparison section has a "Station & Staff" part: tarmac deadlines, gates, staff coverage and limits,
+wheelchair and child coverage, and the departures Network Recovery moved.
+
 ## Rules for conflicting files
 
 - The Daily Operating Schedule wins for times, destinations, aircraft type, passenger totals and priority.
@@ -605,6 +634,7 @@ backend/seed/load.py       writes the rows into PostgreSQL
 backend/rules/             safety ladder, crew, tarmac and airport checks, who decides, compensation
 backend/contracts/         agent contracts: loader, AgentContext, feed heartbeats, the orchestrator's review plumbing
 backend/agents/situation/  the Situation agent (state_at, assess, run)
+backend/agents/station_staff/ the Station & Staff agent (station.py)
 config/agent_settings/     settings for each agent (every number an assumption)
 chaos/                     chaos testing: generator, judge, pages, calibration (config/chaos.yaml, config/chaos_scoring.yaml)
 config/decisions.yaml      the decision catalog

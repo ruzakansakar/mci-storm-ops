@@ -416,6 +416,7 @@ CREATE TABLE recovery_plans (
     cancels                jsonb NOT NULL DEFAULT '[]'::jsonb,
     crew_actions           jsonb NOT NULL DEFAULT '[]'::jsonb,
     approval_status        jsonb NOT NULL DEFAULT '[]'::jsonb,
+    station_plan_version   int,                                  -- Phase 4f: the Station and Staff plan version it used
     hold_divert            jsonb NOT NULL DEFAULT '[]'::jsonb,
     aircraft_recovery      jsonb NOT NULL DEFAULT '[]'::jsonb,
     restart_order          jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -455,6 +456,70 @@ CREATE TABLE care_plans (
 );
 CREATE TRIGGER care_plans_append_only BEFORE UPDATE OR DELETE ON care_plans
     FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+-- Phase 4f: the Station & Staff agent's plan (shared state, append-only, versioned; only station_staff writes it).
+CREATE TABLE station_plans (
+    id                     bigserial PRIMARY KEY,
+    agent_run_id           text NOT NULL,
+    run_id                 text,
+    version                int NOT NULL,
+    planned_at             timestamptz NOT NULL,
+    situation_version      int,
+    recovery_plan_version  int,
+    care_plan_version      int,
+    ramp_status            jsonb NOT NULL DEFAULT '{}'::jsonb,
+    terminal               jsonb NOT NULL DEFAULT '{}'::jsonb,
+    gates                  jsonb NOT NULL DEFAULT '[]'::jsonb,
+    gate_shortages         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    staff_shortages        jsonb NOT NULL DEFAULT '[]'::jsonb,
+    staff_coverage         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    tarmac                 jsonb NOT NULL DEFAULT '[]'::jsonb,
+    wheelchair_coverage    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    child_coverage         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    warnings               jsonb NOT NULL DEFAULT '[]'::jsonb,
+    breaks                 jsonb NOT NULL DEFAULT '[]'::jsonb,   -- planned breaks per staff member (never later than the rule)
+    sources                jsonb NOT NULL DEFAULT '[]'::jsonb,
+    data_as_of             timestamptz,
+    decision_ids           text[] NOT NULL,
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (agent_run_id, version)
+);
+CREATE TRIGGER station_plans_append_only BEFORE UPDATE OR DELETE ON station_plans
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+-- CO-PILOT ONLY (not truth tables, no agent writes them): gates and staff the co-pilot actually assigned, applied by the executor
+-- after the rule check (and, where the rules ask for it, the station manager's approval). Flights, bookings and crews are never
+-- changed; the staff roster itself is never edited.
+CREATE TABLE gate_assignments (
+    id             bigserial PRIMARY KEY,
+    run_id         text NOT NULL,
+    at             timestamptz NOT NULL,
+    kind           text NOT NULL CHECK (kind IN ('assign', 'release')),
+    flight_id      text NOT NULL,
+    gate           text NOT NULL,
+    remote_stand   boolean NOT NULL DEFAULT false,
+    from_at        timestamptz,
+    to_at          timestamptz,
+    recommendation int,
+    approved_by    text,
+    waited_min     numeric(6,1)
+);
+CREATE TABLE staff_assignments (
+    id             bigserial PRIMARY KEY,
+    run_id         text NOT NULL,
+    at             timestamptz NOT NULL,
+    kind           text NOT NULL CHECK (kind IN ('assign', 'release', 'call_in', 'pause')),
+    staff_id       text NOT NULL,
+    role           text NOT NULL,
+    task           text NOT NULL,
+    flight_id      text,
+    passenger_id   text,
+    from_at        timestamptz,
+    to_at          timestamptz,
+    recommendation int,
+    approved_by    text,
+    waited_min     numeric(6,1)
+);
 
 -- CO-PILOT ONLY (not a truth table, no agent writes it): hotel rooms the co-pilot actually held and assigned, applied by the
 -- executor after the rule check (and, for an assignment, a person's approval). Flights and bookings are never changed.

@@ -107,11 +107,18 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             "hotel_rate_tiers": [{"tier": t["tier"], "radius_miles": t["radius"], "hotel_count": t["count"], "rate_usd": t["rate"]}
                                  for t in data["hotel_tiers"]],
             "later_capacity": [dict(x) for x in data["later_capacity"]]}
+        station_rows = {                                   # published before the day: schedule, roster, station facts, counts
+            "flights": [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "aircraft_id",
+                                               "pax_total")} for f in data["flights"]],
+            "staff": [{k: x.get(k) for k in ("id", "role", "station", "shift_start", "shift_end", "last_break")} for x in data["staff"]],
+            "stations": [{k: x.get(k) for k in ("code", "name", "region", "gates", "wheelchair_staff", "has_customs", "terminal_capacity")}
+                         for x in data["stations"]],
+            "passenger_groups": [{k: g[k] for k in ("flight_id", "segment", "count")} for g in data["passenger_groups"]]}
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
                           stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
-                          network_rows=network_rows, care_rows=care_rows, **(copilot_options or {}))
+                          network_rows=network_rows, care_rows=care_rows, station_rows=station_rows, **(copilot_options or {}))
         from backend.contracts import load_contracts
-        agent_types = {t for a in ("situation", "network_recovery", "passenger_care", "communication")
+        agent_types = {t for a in ("situation", "network_recovery", "passenger_care", "station_staff", "communication")
                        for t in load_contracts()[a].event_types}
         channels.fix_rng = random.Random(f"corrections:{scenario}:{seed}")
         channels.msg_rng = random.Random(f"messages:{scenario}:{seed}")
@@ -180,6 +187,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         from simulator.comparison import focus_passenger
         metrics["care"] = care_metrics(world, copilot, data, focus_passenger(data))
         metrics["recovery_messages"] = copilot.recovery.history
+        from simulator.station_metrics import station_metrics
+        from backend.execution.copilot import serial as _serial
+        metrics["station"] = _serial(station_metrics(world, copilot, data))
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
@@ -194,6 +204,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             if copilot.care:
                 writer.save_proposals(copilot.care.context)
                 writer.save_hotel_ledger(copilot.care.ledger)
+            if copilot.station:
+                writer.save_proposals(copilot.station.context)
+                writer.save_station_ledgers(copilot.station.gate_ledger, copilot.station.staff_ledger)
             writer.save_shared(copilot.store)
         writer.finish(sc, metrics, mode, until)
     return result

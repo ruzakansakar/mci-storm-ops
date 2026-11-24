@@ -37,6 +37,7 @@ event_feeds:
     hotel_room_assigned: [passenger_id, hotel_id, recommendation, approved_by, waited_min]
     hotel_rooms_released: [hotel_id, rooms]
     care_decision_recorded: [recommendation, action, passenger_ids, approved_by, waited_min]
+    child_supervisor_assigned: [passenger_id, staff_id, recommendation, approved_by, care_decision]   # Station & Staff (4f)
 # Shared state: the latest Situation and Network Recovery versions <= T, these fields only.
 shared_reads:
   situation_assessments:
@@ -90,7 +91,7 @@ capabilities:
 - {action: issue_compensation, enabled_in: 4e, note: "N04 a room for a named passenger (approval); N03/N05 only once a person decided A03"}
 - {action: arrange_ground_transport, enabled_in: 4e, note: "M04 locals home, M05 vans sized from transport_options (approval)"}
 - {action: offer_refund, enabled_in: 4e, note: "N02/K07: the legal floor, always offered (approval)"}
-- {action: supervise_child_alone, enabled_in: 4e, note: "J01/J03: staff supervision + guardian, never a hotel alone (station manager)"}
+- {action: supervise_child_alone, enabled_in: 4e, note: "J01/J03: staff supervision + guardian, never a hotel alone; a request for Station & Staff, closed when it names the supervisor (4f)"}
 - {action: rebook_passenger, enabled_in: 4e, note: "K01/K03/K05/J02: ADVISORY better rebooking; bookings are never changed here"}
 - {action: arrange_terminal_care, enabled_in: later}
 - {action: contact_partner, enabled_in: later}

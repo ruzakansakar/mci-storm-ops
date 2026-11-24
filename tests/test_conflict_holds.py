@@ -210,7 +210,8 @@ def test_on_a_real_conflict_day_a_person_answers_situation_closes_it_and_the_hol
 
 def test_simulated_people_only_ever_approved_what_the_rule_check_passed(conflict_day):
     _, _, co = conflict_day
-    saved = {"communication": co.copilot.context.saved, "passenger_care": co.copilot.care.context.saved}
+    saved = {"communication": co.copilot.context.saved, "passenger_care": co.copilot.care.context.saved,
+             "station_staff": co.copilot.station.context.saved}
     approved = [(e["payload"]["agent"], e["payload"]["recommendation"]) for e in co.world.events if e["type"] == "human_approved"
                 and not e["payload"].get("void")]
     assert approved and all(saved[a][("recommendations", r)]["rule_check_ok"] for a, r in approved)

@@ -19,18 +19,19 @@ RULE_CHECK_COLUMNS = {"rule_check_ok", "rule_check_notes", "rule_ids"}   # only 
 TRUTH_TABLES = {
     "stations", "aircraft", "crews", "flights", "passenger_groups", "passengers", "bookings", "bags", "hotels", "staff",
     "later_capacity", "route_tiers", "transport_options", "hotel_rate_tiers", "channel_views", "system_health",
-    "decisions", "actions", "metric_runs", "data_issues", "hotel_assignments",
+    "decisions", "actions", "metric_runs", "data_issues", "hotel_assignments", "gate_assignments", "staff_assignments",
 }
 # The only tables an agent can write to: proposals, its own events, the audit log, and (orchestrator only) incidents.
 WRITABLE_TABLES = {"recommendations", "events", "audit_log", "incidents", "incident_events", "situation_assessments", "mismatches",
-                   "recovery_plans", "care_plans"}
+                   "recovery_plans", "care_plans", "station_plans"}
 OWN_TABLES = {"situation_assessments": {"situation"},      # shared state: only its owner writes it
               "recovery_plans": {"network_recovery"},      # shared state (Phase 4d): the Network Recovery agent's plan
               "care_plans": {"passenger_care"},            # shared state (Phase 4e): the Passenger Care agent's plan
+              "station_plans": {"station_staff"},          # shared state (Phase 4f): the Station & Staff agent's plan
               "mismatches": {"communication"}}             # what the channels show wrongly: only communication records it
 # Build phases in order. A contract may name, per action, the phase it is switched on in (capabilities: action -> enabled_in);
 # AgentContext refuses an action whose phase has not come yet.
-PHASES = ("4b-1", "4b-2", "4b-3", "4c", "4d", "4e", "later")   # "later": defined in the contract, not built yet
+PHASES = ("4b-1", "4b-2", "4b-3", "4c", "4d", "4e", "4f", "later")   # "later": defined in the contract, not built yet
 # Derived lookups an agent may ask AgentContext for, by name. Each reveals channel TYPES only (never an address, name or ref).
 PROJECTIONS = {"passenger_screens": "which of the four screens each passenger has (app/SMS only if on file)",
                "contact_channel_types": "which supported channel types one passenger has (app, sms, email)"}

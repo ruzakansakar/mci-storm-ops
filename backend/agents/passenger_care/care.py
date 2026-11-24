@@ -66,7 +66,7 @@ class Memory:
 def _state(events):
     """What has happened by T, from the events only."""
     st = {"trips": {}, "cancelled": {}, "stranded": {}, "misconnect": {}, "next_day": {}, "departed": set(), "a03": {},
-          "held": {}, "held_accessible": {}, "released": {}, "assigned": {}, "approved": {}}
+          "held": {}, "held_accessible": {}, "released": {}, "assigned": {}, "approved": {}, "child_supervisor": {}}
     for e in sorted(events, key=lambda e: (e["occurred_at"], e["id"])):
         p, typ = e.get("payload") or {}, e["type"]
         if typ == "trip_record_updated" and p.get("passenger_id"):
@@ -96,6 +96,8 @@ def _state(events):
             st["assigned"][p["passenger_id"]] = p
         elif typ == "care_decision_recorded" and p.get("recommendation") is not None:
             st["approved"][p["recommendation"]] = p
+        elif typ == "child_supervisor_assigned" and p.get("passenger_id"):     # Station & Staff named the supervisor (4f)
+            st["child_supervisor"][p["passenger_id"]] = p
     return st
 
 
@@ -373,16 +375,21 @@ class Care:
                 rid = self.propose(("child", pid, overnight), "supervise_child_alone", f"Supervise child flying alone ({pid})",
                                    plan, [{"id": f"child-{pid}", "summary": plan, "cost_usd": 0}], ["J01"] + (["J03"] if overnight else []),
                                    {"kind": "child", "option": opt}, pids=[pid])
-                e.update(child_plan=plan, child_decision=rid, hotel_status=e.get("hotel_status") or "no hotel (child alone)")
-                out.append({"passenger_id": pid, "kind": "child_alone", "plan": plan, "decision": rid,
+                sup = self.st["child_supervisor"].get(pid)
+                e.update(child_plan=plan, child_decision=rid, hotel_status=e.get("hotel_status") or "no hotel (child alone)",
+                         child_status=f"supervised by staff member {sup['staff_id']} (approved by {sup.get('approved_by')})" if sup
+                         else "waiting for Station & Staff to name the supervisor")
+                out.append({"passenger_id": pid, "kind": "child_alone", "plan": plan, "decision": rid, "itinerary": list(e["itinerary"]),
+                            "staff_supervisor": sup["staff_id"] if sup else None,
                             "rebooking_rule": "nonstop or same plane only, never international"})
             elif seg == "wheelchair":
                 from backend.rules.safety import limits_for
-                req = {"passenger_id": pid, "flight_id": e["flight_id"],
+                req = {"passenger_id": pid, "flight_id": e["flight_id"] or (e["itinerary"] or [None])[0],
+                       "itinerary": list(e["itinerary"]),
                        "max_unattended_min": limits_for(self.ctx.rules)["wheelchair"]["unattended_max_min"],
                        "needs": "help at every step; accessible room if overnight", "for": "station_staff (J04)"}
                 wheel.append(req)
-                out.append({"passenger_id": pid, "kind": "wheelchair", "plan": req["needs"],
+                out.append({"passenger_id": pid, "kind": "wheelchair", "plan": req["needs"], "itinerary": list(e["itinerary"]),
                             "accessible_room": e.get("accessible_room", False)})
         return out, wheel
 
@@ -450,7 +457,7 @@ def plan_care(ctx, memory: Memory | None = None, settings: dict | None = None) -
     c = Care(ctx, memory, s)
     res = c.run(events, sit, rec)
     key = (tuple(sorted((e["passenger_id"], e.get("hotel_status"), e.get("transport_status"), e.get("compensation"),
-                         e.get("rebooking_advice")) for e in res["passengers"])), tuple((h["hotel_id"], h["held"], h["assigned"]) for h in res["hotels"]))
+                         e.get("rebooking_advice"), e.get("child_status")) for e in res["passengers"])), tuple((h["hotel_id"], h["held"], h["assigned"]) for h in res["hotels"]))
     wrote = False
     if key != memory.last_key:
         memory.version += 1

@@ -67,7 +67,9 @@ FAMILY_ROLES = {
     "J": {"customer_service_supervisor"}, "O": {"customer_service_supervisor"},
 }
 EXCEPTIONS = {"F09": {"station_manager", "ramp_supervisor"}, "J04": {"station_manager", "ramp_supervisor"},
-              "J08": {"station_manager", "ramp_supervisor"}, "Q02": {"network_operations_control"}, "Q04": {"network_operations_control"},
+              "J08": {"station_manager", "ramp_supervisor"},
+              # Phase 4f: the station manager approves the staff member who supervises a child alone (autonomy.yaml approver)
+              "J01": {"station_manager"}, "J03": {"station_manager"}, "Q02": {"network_operations_control"}, "Q04": {"network_operations_control"},
               "O10": {"corporate_communications"}}
 
 
