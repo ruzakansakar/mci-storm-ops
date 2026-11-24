@@ -42,6 +42,18 @@ SHARED["recovery_plans"] = {                      # Phase 4d: the Network Recove
     "confidences": [],
     "conflict_keys": [],
 }
+SHARED["care_plans"] = {                          # Phase 4e: the Passenger Care agent's plan
+    "producer": "passenger_care",
+    "version": "version",
+    "time": "planned_at",
+    "sources": ["sources", "data_as_of"],
+    "suspected": {},
+    "confidences": [],
+    "conflict_keys": [],
+    # the most a reader may see of each passenger's entry (never the segment, the compensation or anything sensitive)
+    "item_keys": {"passengers": ["passenger_id", "hotel_name", "hotel_status", "hotel_decision", "shuttle", "transport",
+                                 "transport_status", "transport_decision"]},
+}
 # fields no reader contract may list, with the reason
 NEVER_SHARED = {
     ("situation_assessments", "flight_controllability"): "it decides compensation: usable only once a human has approved it "
@@ -72,6 +84,10 @@ def validate_shared_reads(reader: str, shared_reads: dict, tables: dict) -> None
         for k in spec.get("conflict_fields") or []:
             if k not in meta["conflict_keys"]:
                 raise SharedStateError(f"{reader}: may not read conflict detail '{k}'")
+        for col, keys in (spec.get("item_fields") or {}).items():
+            for k in keys:
+                if k not in meta.get("item_keys", {}).get(col, []):
+                    raise SharedStateError(f"{reader}: may not read {table}.{col}.{k}")
 
 
 def visible(rows: list[dict], table: str, now: datetime) -> dict | None:
@@ -101,6 +117,11 @@ def project(row: dict | None, table: str, spec: dict) -> dict | None:
         elif f == "conflicts":
             keys = spec.get("conflict_fields") or ["key"]
             out["facts"]["conflicts"] = [{k: c[k] for k in keys if k in c} for c in (row.get("conflicts") or [])]
+        elif f in (spec.get("item_fields") or {}):            # a list of entries: only the listed keys of each
+            keys = spec["item_fields"][f]
+            out["facts"][f] = [{k: e[k] for k in keys if k in e} for e in (row.get(f) or [])]
+        elif f in meta.get("item_keys", {}):
+            out["facts"][f] = []                                 # entries whose keys the reader's contract does not list
         else:
             out["facts"][f] = row.get(f)
     return out

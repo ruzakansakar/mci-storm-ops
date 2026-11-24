@@ -24,6 +24,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4c | Shared state: Communication reads the Situation agent's picture; app/SMS screens only for passengers who have them | **done** |
 | 4b-3 | Communication messages + conflict holds that clear (evidence or a person) | **done** |
 | 4d | Network Recovery agent (advisory: crews, delays/cancellations, hold or divert, recovery) | **done** |
+| 4e | Passenger Care agent (hotels, transport, compensation status, vulnerable passengers, rebooking advice) | **done** |
 | Later | Network Recovery (including crews), Passenger Care, Station & Staff | planned |
 | Later | Plain-code orchestrator | planned; no guardrail agent |
 | 7 | API + live updates | |
@@ -541,6 +542,27 @@ What it does, every 5 minutes and whenever something important is reported:
 
 `python -m chaos.judge_network` scores it on seed 7 plus 5 fresh random days (`reports/chaos/network.html`). Cancellations and
 stranded passengers for the plan are estimates, because the plan is not applied.
+
+## Passenger Care (Phase 4e)
+
+The Passenger Care agent looks after passengers whose flights are cancelled, who miss a connection, or who are stranded
+overnight. Children flying alone and wheelchair users on an affected flight come first.
+
+- **Overnight.** Local passengers go home by contracted car. Everyone else gets a hotel room: rooms are held in blocks early
+  (automatic up to 40 rooms, then a supervisor), and each passenger's room is approved by the customer service supervisor. The
+  hotel is picked by rooms left, Southwest's preference, shuttle, distance, last check-in and rate. Wheelchair users get an
+  accessible room, and unused rooms are released.
+- **Money.** The legal refund is always offered. Southwest's own commitments (meal, $75 voucher, the hotel) are only given once
+  a person has decided the cause was within Southwest's control. Until then they show as "pending the supervisor's
+  controllability decision", and nothing is promised. Costs are tracked against a cap.
+- **Children alone** stay with staff and their guardian is called; they are never sent to a hotel alone and are only rebooked
+  nonstop. **Wheelchair users** get help requests written down for Station & Staff (the next agent).
+- **Rebooking advice:** a better flight than today's, where the Network Recovery plan shows seats. It is advice only; bookings
+  are never changed.
+- **What is applied.** In co-pilot mode, room holds and approved rooms are applied to the co-pilot's own hotel_assignments
+  table. Flights and bookings are never changed.
+- **The overnight message.** Once a room is approved, the Communication agent tells the passenger which hotel and how to get
+  there, with no money mentioned.
 
 ## Rules for conflicting files
 

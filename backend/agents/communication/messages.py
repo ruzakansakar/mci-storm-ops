@@ -28,12 +28,13 @@ from backend.settings import TZ
 # automatic: restating confirmed facts (including a cancellation with its confirmed new flight). Approval: anything beyond
 # confirmed facts (options, overnight arrangements, correcting an earlier wrong message), and any batch over the mass limit.
 AUTO_TYPES = {"first_notice", "delay_update", "diverted_update", "still_delayed", "no_change", "cancellation_rebooking",
-              "rebooking"}
+              "rebooking", "overnight_hotel", "overnight_home"}   # the last two state a decision a person already approved
 APPROVAL_TYPES = {"cancellation_only", "overnight_notice", "correction"}
 AIRBORNE_TYPES = {"first_notice", "no_change", "delay_update", "still_delayed"}   # the "what to do now" is about landing
 DECISION = {"first_notice": ["O01", "O02", "O05", "O06"], "delay_update": ["O07", "O02", "O05", "O06"],
             "still_delayed": ["O07", "O02", "O05", "O06"], "diverted_update": ["O13", "O02", "O05", "O06"],
-            "no_change": ["O07", "O02", "O05", "O06"],
+            "no_change": ["O07", "O02", "O05", "O06"], "overnight_hotel": ["O14", "O05", "O06"],
+            "overnight_home": ["O14", "O05", "O06"],
             "cancellation_rebooking": ["O14", "O05", "O06"], "cancellation_only": ["O14", "O05", "O06"],
             "overnight_notice": ["O14", "O05", "O06"], "rebooking": ["O14", "O05", "O06"], "correction": ["O04", "O05", "O06"],
             "staff_note": ["O08", "O05"]}
@@ -57,6 +58,8 @@ class MessageMemory:
     staff_at: datetime | None = None
     incident_version: int | None = None
     cities: dict | None = None                             # station code -> city name (published reference data)
+    care: dict = field(default_factory=dict)               # pid -> approved hotel / transport details (Passenger Care's plan)
+    care_told: set = field(default_factory=set)            # (pid, decision) overnight details already sent
     receipts_done: int = 0                                 # message receipts already looked at
     released: list = field(default_factory=list)           # (pid, promised by, when) "next update" no longer needed
     promised: dict = field(default_factory=dict)           # pid -> the "next update by" time last promised (ISO)
@@ -145,10 +148,11 @@ def _next_flight(trip, flights):
     return None
 
 
-def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, next_time=None, wrong=None):
+def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, next_time=None, wrong=None, care=None):
     """One message (or None if there is nothing true to say). Every stated fact gets a claim."""
     f = flight_facts(st)
     w = Writer(cities)
+    backed = None
     end_sentence, end_claim = _end(pic, S, channel, st.t)
     values = {"end": end_sentence}
     claims = [{"kind": "trip_status", "status": trip["status"]}]
@@ -196,6 +200,23 @@ def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, n
                 values["old_flight"] = w.flight(f, old[0])
                 values["city"] = w.city(f[old[0]]["destination"])
                 claims += [{"kind": "flight_status", "flight": old[0], "status": "cancelled"}]
+    elif kind in ("overnight_hotel", "overnight_home"):
+        care = (care or {}).get(pid) or {}
+        T = templates()
+        if kind == "overnight_hotel":
+            if care.get("hotel_status") != "approved" or not care.get("hotel_name"):
+                return None
+            shuttle = care.get("shuttle") == "Yes" and "shuttle" in (care.get("transport") or "")
+            values.update(hotel=care["hotel_name"], transport_sentence=T["transport_sentence"]["shuttle" if shuttle else "van"]
+                          .format(hotel=care["hotel_name"]))
+            claims += [{"kind": "care_hotel", "name": care["hotel_name"], "decision": care.get("hotel_decision")},
+                       {"kind": "care_transport", "value": care.get("transport")}]
+            backed = care.get("hotel_decision")
+        else:
+            if care.get("transport_status") != "approved":
+                return None
+            claims += [{"kind": "care_transport", "value": care.get("transport"), "decision": care.get("transport_decision")}]
+            backed = care.get("transport_decision")
     elif kind == "correction":
         T = templates()
         status = trip["status"]
@@ -240,9 +261,12 @@ def draft(kind, pid, channel, trip, prev, st, pic, S, cities, first_name=None, n
         key = ("connection" if later else "final") + ("_sms" if channel == "sms" else "")
         do_now = T["airborne"][key].format(land_city=w.city(f[up]["destination"]))
     text, parts = w.render(kind, channel, values, next_sentence, first_name, do_now)
-    return {"type": kind, "passenger_id": pid, "channel": channel, "text": text, "parts": parts, "claims": claims + w.claims,
+    out = {"type": kind, "passenger_id": pid, "channel": channel, "text": text, "parts": parts, "claims": claims + w.claims,
             "trip_version": trip["at"].isoformat(),
             "trip_facts": {"itinerary": list(trip["itinerary"]), "status": trip["status"]}}   # what it says about the trip
+    if backed is not None:
+        out["backed_by"] = backed                          # the approved decision that allows naming a hotel or a ride
+    return out
 
 
 def waiting_on_incident(trip, f, pic=None, S=None, now=None) -> bool:
@@ -311,7 +335,11 @@ def check_world(st, view, mem, first_names=None, working_on=()):
             "trip_versions": {pid: t["at"].isoformat() for pid, t in st.truth.items()},
             "was_shown_wrong": {(pid, ch): v["status"] for (pid, ch), v in st.shown.items()
                                 if pid in st.truth and v["status"] != st.truth[pid]["status"]},
-            "approved": set(), "working_on": set(working_on), "first_names": dict(first_names or {}),
+            "care": dict(getattr(mem, "care", {}) or {}),
+            "approved": {d for e in (getattr(mem, "care", {}) or {}).values() for d, ok in
+                         ((e.get("hotel_decision"), e.get("hotel_status") == "approved"),
+                          (e.get("transport_decision"), e.get("transport_status") == "approved")) if ok and d is not None},
+            "working_on": set(working_on), "first_names": dict(first_names or {}),
             "other_names": set((first_names or {}).values())}
 
 
@@ -330,6 +358,9 @@ def plan_messages(ctx, result, view, mem: MessageMemory, settings: dict, screens
     pic = view.picture
     f = flight_facts(st)
     settle = timedelta(minutes=S["settle_min"])
+    if "care_plans" in (ctx.contract.shared_reads or {}):
+        care = ctx.read_shared("care_plans")             # audited with the version read
+        mem.care = {e["passenger_id"]: e for e in ((care or {}).get("facts") or {}).get("passengers") or []}
     withdrawn, wanted = [], []
     open_wrong = {}
     for x in result["findings"]:
@@ -376,6 +407,13 @@ def plan_messages(ctx, result, view, mem: MessageMemory, settings: dict, screens
                 mem.next_due[pid] = None                    # nothing left to wait for: the flight left or the trip settled
         if kind is None and pid not in mem.notified and abnormal and affected(trip, f, pic, settings["messages"], now):
             kind = "first_notice"
+        if kind is None:                                 # Passenger Care's approved room or ride, once each
+            c = mem.care.get(pid) or {}
+            if c.get("hotel_status") == "approved" and (pid, c.get("hotel_decision")) not in mem.care_told:
+                kind = "overnight_hotel"
+            elif c.get("transport_status") == "approved" and "home" in (c.get("transport") or "") and \
+                    (pid, c.get("transport_decision")) not in mem.care_told:
+                kind = "overnight_home"
         if kind is None:
             for ch in chans:
                 x = open_wrong.get((pid, ch))
@@ -409,7 +447,7 @@ def plan_messages(ctx, result, view, mem: MessageMemory, settings: dict, screens
         due = now + timedelta(minutes=S["interval_min"])
         margin = S["mass_promise_margin_min"] if per_kind[kind] > S["mass_message_passengers"] else 0
         nxt_time = hhmm(due + timedelta(minutes=margin)) if waiting_on_incident(trip, f, pic, S, now) else None
-        m = draft(kind, pid, ch, trip, mem.seen_snap[pid], st, pic, S, mem.cities, first.get(pid), nxt_time, wrong)
+        m = draft(kind, pid, ch, trip, mem.seen_snap[pid], st, pic, S, mem.cities, first.get(pid), nxt_time, wrong, mem.care)
         if m is None:
             if changed:
                 mem.seen_version[pid], mem.seen_snap[pid] = trip["at"], _snap(trip)
@@ -445,6 +483,9 @@ def plan_messages(ctx, result, view, mem: MessageMemory, settings: dict, screens
             mem.seen_version[pid], mem.seen_snap[pid] = trip["at"], _snap(trip)
         if kind == "correction":
             mem.corrected.add((pid, ch, wrong["since"]))
+        if kind in ("overnight_hotel", "overnight_home"):
+            c = mem.care.get(pid) or {}
+            mem.care_told.add((pid, c.get("hotel_decision") if kind == "overnight_hotel" else c.get("transport_decision")))
     drafts += _resends(ctx, st, mem, S, screens, world)
     staff = _staff_note(ctx, st, view, mem, S, world, withdrawn)
     if staff:
@@ -568,7 +609,7 @@ def _propose(ctx, drafts, mem, S, view):
                 mem.by_id[m["id"]] = m
                 mem.log.append({"id": m["id"], "rec": rid, "action": action, "type": m["type"], "passenger_id": m["passenger_id"],
                                 "channel": m["channel"], "text": m["text"], "created": m["created"], "status": "proposed",
-                                "resend_of": m.get("resend_of")})
+                                "resend_of": m.get("resend_of"), "backed_by": m.get("backed_by")})
             if option["requested_level"] == "needs_approval":
                 for m in group:
                     mem.pending[m["passenger_id"] or "staff"] = {"rec": rid, "version": m["trip_version"], "type": m["type"],

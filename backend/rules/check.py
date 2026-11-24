@@ -78,7 +78,7 @@ def check(proposal: dict, pending_proposals: list[dict] | None = None, world: di
     if action and not known:
         block(f"'{action}' is not a listed action, so only a human decides it", ["unlisted_action_is_human_only"], "station_manager")
     elif known:
-        level = autonomy_for(action, rules, safety_rung=rung)
+        level = autonomy_for(action, rules, safety_rung=rung, rooms=proposal.get("rooms"))
         if level["level"] == "human_only":
             block(f"'{action}' is a human-only decision ({level['approver']}); the co-pilot can only show facts",
                   [f"action_{action}"], level["approver"])

@@ -85,7 +85,8 @@ class Writer:
         agent run id, '<run id>:situation', so they never mix with a standalone replay of the today run."""
         from backend.contracts.shared_state import SHARED
         jsonish = {"flight_controllability", "impact", "conflicts", "stale_sources", "evidence", "delays", "cancels", "crew_actions",
-                   "hold_divert", "aircraft_recovery", "restart_order", "seats_by_destination", "warnings", "estimates", "sources"}
+                   "hold_divert", "aircraft_recovery", "restart_order", "seats_by_destination", "warnings", "estimates", "sources",
+                   "passengers", "hotels", "costs", "vulnerable", "wheelchair_requests", "rebooking_advice"}
         for table, meta in SHARED.items():
             rows = store.records.get(table) or []
             if not rows:
@@ -97,6 +98,16 @@ class Writer:
                     f"VALUES (%s, %s, {', '.join(['%s'] * len(cols))})",
                     [[f"{self.run_id}:{meta['producer']}", self.run_id] + [Jsonb(r[c]) if c in jsonish else r[c] for c in cols]
                      for r in rows])
+
+    def save_hotel_ledger(self, ledger):
+        """The rooms the co-pilot actually held, assigned and released (its own table; never a truth table)."""
+        if not ledger:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany("INSERT INTO hotel_assignments (run_id, at, kind, hotel_id, rooms, passenger_id, accessible, "
+                            "recommendation, approved_by, waited_min) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            [(self.run_id, r["run_at"], r["kind"], r["hotel_id"], r["rooms"], r["passenger_id"], r["accessible"],
+                              r["recommendation"], r["approved_by"], r["waited_min"]) for r in ledger])
 
     def _new_flights(self, cur, world):
         """Next-day flights the simulator had to create (INSERT only, before anything refers to them)."""

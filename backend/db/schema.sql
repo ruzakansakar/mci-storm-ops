@@ -430,6 +430,47 @@ CREATE TABLE recovery_plans (
 CREATE TRIGGER recovery_plans_append_only BEFORE UPDATE OR DELETE ON recovery_plans
     FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
+-- The Passenger Care agent's plan (shared state, Phase 4e): who needs care and what (hotel, transport, compensation status,
+-- vulnerable-passenger plans, rebooking advice), with approval status and cost. Append-only and versioned.
+CREATE TABLE care_plans (
+    id                     bigserial PRIMARY KEY,
+    agent_run_id           text NOT NULL,
+    run_id                 text,
+    version                int NOT NULL,
+    planned_at             timestamptz NOT NULL,
+    situation_version      int,
+    recovery_plan_version  int,
+    passengers             jsonb NOT NULL DEFAULT '[]'::jsonb,
+    hotels                 jsonb NOT NULL DEFAULT '[]'::jsonb,
+    costs                  jsonb NOT NULL DEFAULT '{}'::jsonb,
+    vulnerable             jsonb NOT NULL DEFAULT '[]'::jsonb,
+    wheelchair_requests    jsonb NOT NULL DEFAULT '[]'::jsonb,   -- for Station & Staff (next agent)
+    rebooking_advice       jsonb NOT NULL DEFAULT '[]'::jsonb,   -- advisory: bookings are not changed
+    sources                jsonb NOT NULL DEFAULT '[]'::jsonb,
+    data_as_of             timestamptz,
+    decision_ids           text[] NOT NULL,
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (agent_run_id, version)
+);
+CREATE TRIGGER care_plans_append_only BEFORE UPDATE OR DELETE ON care_plans
+    FOR EACH ROW EXECUTE FUNCTION refuse_change();
+
+-- CO-PILOT ONLY (not a truth table, no agent writes it): hotel rooms the co-pilot actually held and assigned, applied by the
+-- executor after the rule check (and, for an assignment, a person's approval). Flights and bookings are never changed.
+CREATE TABLE hotel_assignments (
+    id            bigserial PRIMARY KEY,
+    run_id        text NOT NULL,
+    at            timestamptz NOT NULL,
+    kind          text NOT NULL CHECK (kind IN ('hold', 'assign', 'release')),
+    hotel_id      text NOT NULL,
+    rooms         int NOT NULL,
+    passenger_id  text,
+    accessible    boolean NOT NULL DEFAULT false,
+    recommendation int,
+    approved_by   text,
+    waited_min    numeric(6,1)
+);
+
 -- ============================================================ CHECKING & MEASURING
 
 -- Written by the communication agent only (its own rows; it may update their status, never another agent's or run's).

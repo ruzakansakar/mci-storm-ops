@@ -6,7 +6,7 @@ Windows, PowerShell, VS Code, Python venv (.venv), PostgreSQL on Neon (cloud, ab
 
 AGREED ARCHITECTURE (decided by the project owner; do not change)
 - Orchestrator: plain code, no AI. Routes work, runs the rule check on every proposal, catches conflicts between agents, escalates to humans. NOT BUILT YET.
-- 5 agents: situation (built), communication (built: detect, fix, messages), network_recovery (4d: advisory, built), network_recovery (flights, aircraft AND pilots/flight attendants), station_staff (ground staff, gates, ramp, deplaning help), passenger_care (rebooking, hotels, money, vulnerable passengers).
+- 5 agents: situation (built), communication (built: detect, fix, messages), network_recovery (4d: advisory, built), passenger_care (4e: built), network_recovery (flights, aircraft AND pilots/flight attendants), station_staff (ground staff, gates, ramp, deplaning help), passenger_care (rebooking, hotels, money, vulnerable passengers).
 - There is NO guardrail agent and NO crew agent. Rule checking is code in backend/rules/check.py, called by the orchestrator. The orchestrator can block but never override; only a named human can override, only where a law rule allows it, and it is logged (backend/rules/override.py).
 - AI is used sparingly: only Situation summaries and Communication message drafts, always with a template fallback. Currently AI is OFF everywhere.
 
@@ -52,8 +52,8 @@ WORKING RULES
 - The project owner is not a programmer: final replies are plain English, no jargon, in the required format.
 
 BUILD PHASES
-Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear, 4d Network Recovery (advisory).
-Next: Passenger Care (reads recovery_plans seats), Station & Staff, then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
+Done: 1 data, 2 rules, 3 simulator, rule catalog + contracts + decision catalog, 4a Situation agent (tested on about 220 chaos days), 4b-1 Communication detection, 4b-2 Communication fixes + co-pilot mode, 4c shared state (Situation -> Communication) + channel data fix, 4b-3 messages + conflict holds that clear, 4d Network Recovery (advisory), 4e Passenger Care.
+Next: Station & Staff (reads care_plans wheelchair requests), then the remaining agents one at a time, then the orchestrator, API, front end, AI pieces, scale tests, demo.
 
 PHASE 4b-2 IMPLEMENTATION
 - backend/agents/communication/fix.py proposes grouped confirmed corrections; critical cases skip settling; stale feeds and open conflicts hold. Policy thresholds are in the Communication settings.
@@ -95,3 +95,10 @@ PHASE 4d IMPLEMENTATION (Network Recovery, ADVISORY)
 - New shared table recovery_plans (append-only, versioned; SHARED registry; estimates travel as suspicions). Contract phase 4d; PHASES gained 4c, 4d, "later" (= defined, not built).
 - chaos/judge_network.py: crew warning lead times vs real crew time-outs, illegal proposals, fuel warning lead vs real diversions, plan vs today cancellations and an ESTIMATE of stranded passengers (same method both sides). Page: reports/chaos/network.html; debug page "Network Recovery" section.
 - Communication: a passenger on a diverted plane waiting at the diversion airport is told "Your flight is waiting at <city>. Please stay with the crew; we'll update you when it continues." (fact-checked).
+
+PHASE 4e IMPLEMENTATION (Passenger Care)
+- backend/agents/passenger_care/care.py: who needs care (cancelled, misconnect, overnight from trip records; children alone and wheelchair users on affected flights); hotels (blocks held early: automatic up to autonomy max_rooms, now enforced by the rule check and executor via rooms=; one room per passenger needs the supervisor; accessible rooms; last check-in; release after 22:00); transport (hotel shuttle, vans sized from transport_options, Uber XL home for locals: approval); compensation via backend/rules/compensation.py (legal floor always offered; Southwest commitments only after a person decides A03, until then "pending the supervisor's controllability decision" + an N01 question; goodwill approval only); vulnerable (J01/J03 staff supervision + guardian, never a hotel alone; wheelchair help requests written to care_plans for Station & Staff, J04); rebooking advice (K01/K03/K05/J02, advisory). Settings: config/agent_settings/passenger_care.yaml.
+- Shared table care_plans (versioned; records situation_version and recovery_plan_version). Co-pilot-only table hotel_assignments (holds/assignments/releases actually applied; not a truth table; no agent writes it). Applied changes are confirmed back as care_ops events.
+- Communication reads care_plans (only hotel/transport details, item_fields) and sends overnight_hotel / overnight_home messages automatically once a person approved the room or ride; the message carries backed_by (the approved decision), the only way the word "hotel" passes the fact check. Money is never mentioned.
+- Simulated supervisor also handles issue_compensation, arrange_ground_transport and offer_refund; never A03; supervise_child_alone stays pending (station manager not simulated).
+- Fixed: agents' outputs, people's answers and care records are no longer fed back into the shared store a second time (only simulator events are published from the world log).

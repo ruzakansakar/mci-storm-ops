@@ -1,0 +1,30 @@
+# Settings for the Passenger Care agent (backend/agents/passenger_care/). Phase 4e. Every number is a class-project assumption.
+# The agent reads only this file, its contract's tables and events, and the shared Situation and Network Recovery pictures.
+
+run:
+  every_min: 5                         # assumption: plan care every 5 simulated minutes
+  day_start: "05:00"                   # assumption
+  day_end: "23:59"                     # assumption
+  trigger_events: [trip_record_updated, flight_cancelled, passenger_stranded_overnight, missed_connection,
+                   hotel_room_assigned, care_decision_recorded, human_decision_recorded]
+
+hotels:
+  preference_order: [Passenger preferred, Mixed, Crew preferred]   # assumption: Southwest's own use_preference labels, best first
+  shuttle_order: ["Yes", "Limited"]    # assumption: a full shuttle beats a limited one
+  spare_rooms: 2                       # assumption: hold this many rooms beyond the people who need one now (more may follow)
+  accessible_rooms_per_hotel: 2        # assumption: rooms suitable for a wheelchair user per hotel (the hotel list doesn't say)
+  travel_to_hotel_min: 45              # assumption: from being told to reaching the hotel (for its last check-in, M06)
+  release_after: "22:00"               # assumption: release held rooms nobody was assigned to after this time (M10)
+
+transport:
+  van_hours: 1                         # assumption: a van with driver is booked for one hour per hotel run
+  uber_for_locals: "Uber XL (contracted, up to 10 miles)"   # assumption: locals go home by contracted Uber XL (M04)
+  shuttle_fits_if: "Yes"               # assumption: a hotel shuttle marked "Yes" carries our group; "Limited" needs a van
+
+money:
+  cost_cap_usd: 25000                  # assumption: the most this incident's care may commit without escalating (tracked, N08)
+  nights: 1                            # assumption: one hotel night per stranded passenger
+
+rebooking:
+  min_lead_min: 60                     # assumption: only advise a flight leaving at least this long from now
+  vulnerable_first: true               # K03: children alone and wheelchair users get scarce seats first
