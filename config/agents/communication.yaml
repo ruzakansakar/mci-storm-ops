@@ -25,6 +25,15 @@ static_reads: [flights, passengers, stations]  # published before the day; none 
 # and NOT evidence (internals). Suspected cause and expected end arrive as suspicions with their confidence, never as facts.
 # Freshness: Situation's heartbeat (each run), not the age of its last version. Every read is in the audit log with its version.
 shared_reads:
+  recovery_plans:
+    producer: network_recovery
+    fields: [version, planned_at, delays, cancels, crew_actions, approval_status]
+    item_fields:
+      delays: [proposal_id, flight_id, new_departure]
+      cancels: [proposal_id, flight_id]
+      crew_actions: [proposal_id, flight_id, action, crew_id, role, report_by]
+      approval_status: [proposal_id, plan_version, status, role, rule_check_ok, decided_at]
+    heartbeat: true
   situation_assessments:
     producer: situation
     fields: [version, assessed_at, status, type, likely_cause, confidence, expected_end_earliest, expected_end_likely,
@@ -46,6 +55,11 @@ projections:
 # The feeds it listens to. Only the payload fields listed here reach the agent: the simulator's record of WHY a copy was late
 # (lag_min, cause_if_late) and the message texts are stripped. The only failure signal is a delivery receipt, as a real system has.
 event_feeds:
+  crew_ops:
+    reserve_crew_assigned: [flight_id, crew_id, role, reserve_id]
+    crew_reassigned: [flight_id, crew_id, role]
+  decisions:
+    recovery_action_applied: [proposal_id, plan_version, action, flight_id, new_departure, crew_id, role, report_by]
   reservations:                      # stand-in for the passenger service system: each tracked passenger's trip record (the truth)
     trip_record_updated: [passenger_id, itinerary, status, destination, bag_routing]
   flight_ops:                        # stand-in for Southwest's operations systems (for "is this flight cancelled", departure times)
@@ -82,7 +96,8 @@ writes:
     types: [mismatch_detected, mismatch_cleared, delivery_failure_detected, communication_summary, human_decision_needed,
             agent_error, message_drafted, message_held_for_approval, channel_fix_held, conflict_hold_cleared,
             situation_unavailable, situation_available_again, situation_cannot_assess, agents_disagree,
-            message_blocked, message_held, message_withdrawn, message_sent, staff_note_published, conflict_escalated]
+            message_blocked, message_held, message_withdrawn, message_sent, staff_note_published, conflict_escalated,
+            recovery_message_drafted, recovery_message_held, recovery_message_sent, recovery_message_discarded]
   audit_log:
     mode: insert
 

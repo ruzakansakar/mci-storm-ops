@@ -564,6 +564,30 @@ overnight. Children flying alone and wheelchair users on an affected flight come
 - **The overnight message.** Once a room is approved, the Communication agent tells the passenger which hotel and how to get
   there, with no money mentioned.
 
+## Network Recovery → Communication (4e-2)
+
+Communication reads only the proposed delays, cancellations, crew actions and approval status allowed by its contract.
+It prepares passenger and crew messages immediately, with their originating plan version and proposal number. Internal
+staff notes can say a change is under review; they never go to passenger channels.
+
+In co-pilot mode, simulated network operations control and crew scheduling answer only proposals that passed the rule
+check. Approval is recorded but does not change flights or crews. A draft stays held as **approved, waiting to take effect**
+until an operational application confirmation and current flight/crew records agree with it. Crew messages also retain
+O09's supervisor approval. Changed facts cause a new draft; rejection or supersession discards the old one. Passenger
+messages are checked again before delivery. Every draft, hold, send and discard is recorded through AgentContext and audited.
+
+The paired debug page includes the full history, exact text, status and originating plan version:
+
+```powershell
+python -m simulator.run --seed 7 --scenario a31_storm --mode today
+python -m simulator.run --seed 7 --scenario a31_storm --mode copilot
+python -m simulator.report --run-id a31_storm-s7-today
+```
+
+Run these after pytest has finished: pytest rebuilds the database. Seed 7's C35 swap produces held drafts for Maya and
+C35 plus an internal staff note. Approval does not apply that swap, so the passenger and crew drafts are never sent.
+The draft omits a report-by time because the proposal does not supply one.
+
 ## Rules for conflicting files
 
 - The Daily Operating Schedule wins for times, destinations, aircraft type, passenger totals and priority.

@@ -415,6 +415,7 @@ CREATE TABLE recovery_plans (
     delays                 jsonb NOT NULL DEFAULT '[]'::jsonb,
     cancels                jsonb NOT NULL DEFAULT '[]'::jsonb,
     crew_actions           jsonb NOT NULL DEFAULT '[]'::jsonb,
+    approval_status        jsonb NOT NULL DEFAULT '[]'::jsonb,
     hold_divert            jsonb NOT NULL DEFAULT '[]'::jsonb,
     aircraft_recovery      jsonb NOT NULL DEFAULT '[]'::jsonb,
     restart_order          jsonb NOT NULL DEFAULT '[]'::jsonb,

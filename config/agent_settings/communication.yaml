@@ -89,3 +89,6 @@ summary_every_min: 15                  # assumption: a communication_summary eve
 
 ai:
   enabled: false                       # no AI in 4b-1
+
+recovery:
+  producer_max_age_min: 10             # assumption: hold recovery sends if the planner stops running

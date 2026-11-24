@@ -12,9 +12,13 @@ from datetime import datetime, timedelta
 from backend.agents.communication.detect import Memory, load_settings as communication_settings, scan
 from backend.agents.communication.fix import FixMemory, propose_fixes
 from backend.agents.communication.messages import MessageMemory, check_world, plan_messages, sent, withdraw
+from backend.agents.communication.recovery import (RecoveryMemory, prepare as prepare_recovery, mark_sent as recovery_sent,
+                                                   hold_for_supervisor, discard as discard_recovery)
 from backend.agents.communication.situation_view import SituationView, escalate_holds, held_fields, read_situation
 from backend.contracts.buffered import BufferedContext, SharedStore
 from backend.execution.executor import check_only, execute
+from backend.execution.network_approval import NetworkApprovals
+from backend.rules.recovery_message import send_problems as recovery_send_problems
 
 
 def serial(value):
@@ -86,6 +90,8 @@ class NetworkRunner:
         self.every = timedelta(minutes=r["every_min"])
         self.triggers = set(r["trigger_events"])
         self.errors, self.verdicts = [], []
+        self.approvals = NetworkApprovals()
+        self.humans, self.publish = None, None
 
     def due(self, now) -> bool:
         if not self.start <= now <= self.end:
@@ -95,6 +101,13 @@ class NetworkRunner:
         return any((e.get("published_at") or e["occurred_at"]) == now and e["type"] in self.triggers for e in self.context.events)
 
     def tick(self, now):
+        from backend.agents.network_recovery.communication_link import sync_link
+        self.context.now = now
+        self._plan_tick(now)
+        statuses = sync_link(self.context, self.memory)
+        self.approvals.ask(statuses, self.humans, now)
+
+    def _plan_tick(self, now):
         from backend.agents.network_recovery.plan import plan
         if not self.due(now):
             return
@@ -121,6 +134,8 @@ class NetworkRunner:
             ctx.outputs.append((kind, v))
             ctx._audit_row(kind, "recommendation", p["id"], None, v)          # every pass and block is in the audit log too
             self.verdicts.append(v)
+            if self.publish:
+                self.approvals.reviewed(ctx, p, verdict, self.publish)
 
 
 class CareRunner:
@@ -242,8 +257,14 @@ class Copilot:
         self.fixes = FixMemory()
         self.view = SituationView()           # what Communication knows from Situation (its working context)
         self.messages = MessageMemory()
+        self.recovery = RecoveryMemory()
+        self.recovery_crew_answers = {}       # retain O09 approval while a source is temporarily stale
         self.humans = humans                  # simulated people (backend/execution/simulated_human.py); None = nobody answers
+        if self.network:
+            self.network.humans = humans
+            self.network.publish = self._publish_network
         self.event_id = 0
+        self.network_event_id = 0             # separate namespace: approval traffic cannot renumber existing source evidence
         self.executions = []
         self.proposals = []
         self.message_options = {}             # recommendation id -> the message proposal
@@ -268,6 +289,15 @@ class Copilot:
         if rec is not None:
             rec["status"] = status
 
+    def _publish_network(self, kind, payload):
+        self.network_event_id -= 1
+        self.store.events.append({"id": self.network_event_id, "occurred_at": self.network.context.now,
+                                  "published_at": None, "type": kind, "station": None, "payload": deepcopy(payload)})
+        self.vendor_out.append(("system:network_records", kind, deepcopy(payload)))
+
+    def recovery_delivery_problems(self, message):
+        return recovery_send_problems(message, self.recovery.world)
+
     def tick(self, now, published, deliver):
         for event in published:
             self.event_id += 1
@@ -280,6 +310,13 @@ class Copilot:
             self.vendor_out.append(("system:care_records", kind, deepcopy(payload)))
         for q in (self.humans.due(now) if self.humans else []):
             actor = f"simulated_human:{q.role}"
+            if q.agent == "network_recovery":
+                if self.network:
+                    self.network.context.now = now
+                    a = self.network.approvals.answer(self.network.context, self.network.memory, q, now, self._publish_network)
+                    if a:
+                        human_out.append((actor, "network_" + a["status"], a))
+                continue
             if q.agent == "passenger_care":            # a care approval: re-checked now, then applied and confirmed
                 if self.care:
                     a = self.care.approved(q, now, publish)
@@ -401,9 +438,66 @@ class Copilot:
             sent(self.messages, option, now, approved_by=q.role, waited_min=q.answer["waited_min"])
             self._set_status("communication", q.rec_id, "approved")
             self.waits.append((option["messages"][0]["type"] if option.get("messages") else q.action, q.answer["waited_min"]))
+        # Recovery drafts are separate from existing passenger updates. Approval never applies the underlying action.
+        ready = prepare_recovery(ctx, result, self.view, self.recovery, self.settings, self.detection.screens or {})
+        for q in approved_now:
+            if q.proposal.get("recovery_message") and q.role == "customer_service_supervisor":
+                decision = q.answer.get("decision")
+                if decision in ("approved", "rejected"):
+                    self.recovery_crew_answers[q.rec_id] = decision
+                    payload = {"recommendation": q.rec_id, "decision": decision, "role": q.role,
+                               "plan_version": q.proposal["messages"][0]["plan_version"]}
+                    ctx._audit_row("recovery_crew_message_" + decision, "recommendation", q.rec_id, None, payload)
+                    human_out.append(("simulated_human:" + q.role, "recovery_crew_message_" + decision, payload))
+        crew_approved = {rid for rid, decision in self.recovery_crew_answers.items() if decision == "approved"}
+        crew_rejected = {q.rec_id for q in approved_now if q.proposal.get("recovery_message")
+                         and q.answer.get("decision") == "rejected"}
+        for item in self.recovery.drafts.values():
+            rid = item.get("recommendation")
+            if rid in crew_rejected:
+                discard_recovery(ctx, self.recovery, item, "O09 message rejected")
+            if rid and item["status"] == "discarded":
+                self._set_status("communication", rid, "expired")
+                if self.humans:
+                    self.humans.withdraw("communication", rid)
+        for item in ready:
+            if item["status"] == "held":
+                self._send_recovery(ctx, item, now, deliver, item.get("recommendation") in crew_approved)
         out2, aud2 = self._drain(ctx, "communication")
         vendor, self.vendor_out = self.vendor_out, []
         return outputs + out2 + human_out + vendor, audits + aud2
+
+    def _send_recovery(self, ctx, item, now, deliver, crew_approved=False):
+        if item.get("recommendation") and not crew_approved:
+            return
+        action = "send_status_update" if item["audience"] == "passenger" else "send_crew_message"
+        output = {"title": "Approved recovery message", "why": "Approval and current operational records agree",
+                  "data_as_of": now.isoformat(), "options": [], "sources": item["sources"],
+                  "decision_ids": item["decision_ids"], "findings": [], "messages": [deepcopy(item)]}
+        rid = item.get("recommendation") or ctx.propose(action, output)
+        proposal = {"id": rid, "agent": "communication", "action": action, "data_as_of": now,
+                    "requested_level": "auto" if action == "send_status_update" else "needs_approval",
+                    "decision_ids": item["decision_ids"], "messages": [deepcopy(item)], "recovery_message": True}
+        verdict = check_only(proposal, self.recovery.world)
+        rec = ctx.saved[("recommendations", rid)]
+        rec.update(rule_check_ok=verdict["result"] == "pass", rule_check_notes=verdict["reasons"], rule_ids=verdict["rule_ids"])
+        ctx._audit_row("recovery_message_rule_check", "recommendation", rid, None,
+                       {"plan_version": item["plan_version"], "verdict": verdict})
+        if verdict["result"] != "pass":
+            rec["status"] = "blocked_by_rule_check"
+            return
+        if item["audience"] == "crew" and not crew_approved:
+            item["recommendation"] = rid
+            rec["status"] = "pending"
+            hold_for_supervisor(ctx, self.recovery, item)
+            if self.humans:
+                self.humans.ask("communication", rid, proposal, "customer_service_supervisor", now, True)
+            return
+        # The network decision is the approval gate on this link; no operational action is executed here.
+        receipt = deliver(proposal)
+        if not isinstance(receipt, dict) or receipt.get("accepted") is not False:
+            rec["status"] = "approved"
+            recovery_sent(ctx, self.recovery, item)
 
     def _after(self, ctx, proposal, outcome, now):
         saved = ctx.saved[("recommendations", proposal["id"])]

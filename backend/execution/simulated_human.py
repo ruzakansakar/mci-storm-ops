@@ -9,6 +9,7 @@ co-pilot can be tested end to end. Used ONLY in co-pilot mode (the simulator's m
 """
 from dataclasses import dataclass, field
 from datetime import timedelta
+from random import Random
 
 import yaml
 
@@ -37,6 +38,8 @@ class SimulatedHumans:
     def __init__(self, rng, window, settings: dict | None = None):
         self.s = settings or load_settings()
         self.rng, self.window = rng, window
+        self.network_rng = Random()
+        self.network_rng.setstate(rng.getstate())  # new questions must not change existing supervisor response times
         self.questions: list[Question] = []
         self.answered_conflicts: dict = {}      # conflict key -> the answer already given (one answer per conflict)
         self.refused_blocked = 0                # proposals it never saw because the rule check blocked them
@@ -53,7 +56,8 @@ class SimulatedHumans:
             return q
         urgent = bool(proposal.get("urgent"))
         lo, hi = self.s["response_min"][role]["urgent" if urgent else "normal"]
-        q = Question(rec_id, agent, action, role, now, now + timedelta(minutes=self.rng.randint(lo, hi)), urgent, proposal)
+        rng = self.network_rng if agent == "network_recovery" or proposal.get("recovery_message") else self.rng
+        q = Question(rec_id, agent, action, role, now, now + timedelta(minutes=rng.randint(lo, hi)), urgent, proposal)
         self.questions.append(q)
         return q
 
