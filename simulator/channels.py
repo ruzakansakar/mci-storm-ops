@@ -46,6 +46,8 @@ class Channels:
         self.msg_rng = None                                    # co-pilot messages: their own random stream (screens unaffected)
         self.mqueue = []                                       # heap of (due, seq, message) on the way
         self.mseq = 0
+        self.recovery_guard = None           # delivery-time approval + operational-truth check
+        self.recovery_rng = None
 
     # ---------------------------------------------------------------- truth changed
 
@@ -196,6 +198,13 @@ class Channels:
         out = []
         for m in proposal["messages"]:
             pid, ch = m["passenger_id"], m["channel"]
+            recovery = m.get("type") == "recovery_plan"
+            if recovery and (self.recovery_guard is None or self.recovery_guard(m)):
+                return {"accepted": False, "reason": "recovery approval or operational facts changed"}
+            if recovery and ch == "crew":
+                self.events.append({"t": t, "type": "crew_message_delivered", "actor_name": "crew tools", "payload": dict(m)})
+                out.append(m["id"])
+                continue
             if ch == "staff":
                 self.events.append({"t": t, "type": "staff_note_published", "actor_name": "staff tools",
                                     "payload": {"message_id": m["id"], "text": m["text"], "to": ["gate agents", "call center"]}})
@@ -208,21 +217,37 @@ class Channels:
                 return {"accepted": False, "reason": "authoritative trip changed before dispatch"}
             c = self.cfg["channels"][ch]
             extra = min(self.cfg["load"]["extra_cap_min"], c["per_100_changes_min"] * self.load(t) / 100)
-            lag = max(1, round(c["base_min"] + extra + self.msg_rng.uniform(0, c["jitter_min"])))
-            fails = self.msg_rng.random() < c["fail_chance"]
+            if recovery and self.recovery_rng is None:
+                from random import Random
+                self.recovery_rng = Random()
+                self.recovery_rng.setstate(self.msg_rng.getstate())
+            rng = self.recovery_rng if recovery else self.msg_rng
+            lag = max(1, round(c["base_min"] + extra + rng.uniform(0, c["jitter_min"])))
+            fails = rng.random() < c["fail_chance"]
             self.mseq += 1
             heapq.heappush(self.mqueue, (t + lag, self.mseq, {"t": t, "pid": pid, "ch": ch, "m": m, "fails": fails,
                                                                "told": told, "rec": proposal.get("id")}))
             out.append(m["id"])
         return {"accepted": True, "queued_at": t, "messages": out}
 
-    def apply_messages(self, t):
+    def apply_messages(self, t, recovery_only=False):
+        deferred = []
         while self.mqueue and self.mqueue[0][0] <= t:
-            _, _, q = heapq.heappop(self.mqueue)
+            entry = heapq.heappop(self.mqueue)
+            _, _, q = entry
             m, pid, ch = q["m"], q["pid"], q["ch"]
+            recovery = m.get("type") == "recovery_plan"
+            if recovery != recovery_only:
+                deferred.append(entry)
+                continue
             base = {"passenger_id": pid, "channel": ch, "message_id": m["id"]}
+            if recovery:
+                base.update(plan_version=m["plan_version"], proposal_id=m["proposal_id"])
             told = q["told"]
-            if told and (list(self.truth[pid]["itinerary"]) != told["itinerary"] or self.truth[pid]["status"] != told["status"]):
+            if recovery and (self.recovery_guard is None or self.recovery_guard(m)):
+                self.events.append({"t": t, "type": "message_dropped", "actor_name": f"channel:{ch}",
+                                    "payload": {**base, "reason": "recovery approval or operational facts changed", "type": m["type"]}})
+            elif told and (list(self.truth[pid]["itinerary"]) != told["itinerary"] or self.truth[pid]["status"] != told["status"]):
                 self.events.append({"t": t, "type": "message_dropped", "actor_name": f"channel:{ch}",
                                     "payload": {**base, "reason": "the trip changed before it arrived", "type": m["type"]}})
             elif q["fails"]:
@@ -232,6 +257,8 @@ class Channels:
                 self.events.append({"t": t, "type": "message_delivered", "actor_name": f"channel:{ch}",
                                     "payload": {**base, "type": m["type"], "text": m["text"], "queued_at": q["t"],
                                                 "recommendation": q["rec"]}})
+        for entry in deferred:
+            heapq.heappush(self.mqueue, entry)
 
     # ---------------------------------------------------------------- measuring
 

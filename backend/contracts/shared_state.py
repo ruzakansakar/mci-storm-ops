@@ -41,6 +41,12 @@ SHARED["recovery_plans"] = {                      # Phase 4d: the Network Recove
     "suspected": {"estimates": None},              # estimates (e.g. passengers stranded) are not facts: no confidence column
     "confidences": [],
     "conflict_keys": [],
+    "item_keys": {
+        "delays": ["proposal_id", "flight_id", "new_departure", "delay_min", "protection", "crew_legal"],
+        "cancels": ["proposal_id", "flight_id", "destination", "pax", "why"],
+        "crew_actions": ["proposal_id", "flight_id", "action", "crew_id", "role", "report_by"],
+        "approval_status": ["proposal_id", "plan_version", "status", "role", "rule_check_ok", "decided_at"],
+    },
 }
 SHARED["care_plans"] = {                          # Phase 4e: the Passenger Care agent's plan
     "producer": "passenger_care",

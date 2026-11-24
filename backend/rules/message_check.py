@@ -14,7 +14,7 @@ import yaml
 
 from backend.settings import ROOT
 
-MESSAGE_ACTIONS = {"send_status_update", "draft_message", "send_mass_message", "send_staff_briefing"}
+MESSAGE_ACTIONS = {"send_status_update", "draft_message", "send_mass_message", "send_staff_briefing", "send_crew_message"}
 FLIGHT = re.compile(r"\bWN\d{3,4}\b")
 TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
 DATE = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2}\b")
@@ -152,6 +152,9 @@ def _hhmm(v) -> str:
 
 def message_problems(m: dict, world: dict) -> list[str]:
     """Everything wrong with one message (empty = it may be sent)."""
+    if m.get("type") == "recovery_plan":
+        from backend.rules.recovery_message import send_problems
+        return send_problems(m, world)
     T, S = templates(), settings()
     text, pid, channel, claims = m.get("text") or "", m.get("passenger_id"), m.get("channel"), m.get("claims") or []
     staff = m.get("type") == "staff_note"

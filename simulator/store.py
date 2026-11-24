@@ -86,7 +86,7 @@ class Writer:
         from backend.contracts.shared_state import SHARED
         jsonish = {"flight_controllability", "impact", "conflicts", "stale_sources", "evidence", "delays", "cancels", "crew_actions",
                    "hold_divert", "aircraft_recovery", "restart_order", "seats_by_destination", "warnings", "estimates", "sources",
-                   "passengers", "hotels", "costs", "vulnerable", "wheelchair_requests", "rebooking_advice"}
+                   "passengers", "hotels", "costs", "vulnerable", "wheelchair_requests", "rebooking_advice", "approval_status"}
         for table, meta in SHARED.items():
             rows = store.records.get(table) or []
             if not rows:

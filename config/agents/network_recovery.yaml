@@ -20,6 +20,9 @@ reads:
   passenger_groups: [flight_id, segment, count]       # booked counts per group: no passenger ids, no names
 static_reads: [flights, aircraft, crews, stations, later_capacity, route_tiers, passenger_groups]   # published before the day
 event_feeds:
+  decisions:
+    network_proposal_reviewed: [proposal_id, action, flight_id, new_departure, crew_id, crew_role, role, rule_check_ok]
+    network_approval_recorded: [proposal_id, plan_version, status, role, decided_at]
   flight_ops:
     flight_delayed: [flight_id, delay_min, new_departure, pax]
     flight_delay_updated: [flight_id, delay_min, new_departure, pax]
@@ -57,7 +60,7 @@ writes:
   recovery_plans:                      # its shared plan, append-only and versioned (shared-state rules)
     mode: insert
     columns: [agent_run_id, run_id, version, planned_at, situation_version, delays, cancels, crew_actions, hold_divert,
-              aircraft_recovery, restart_order, seats_by_destination, warnings, estimates, sources, data_as_of, decision_ids]
+              aircraft_recovery, restart_order, seats_by_destination, warnings, estimates, sources, data_as_of, decision_ids, approval_status]
   audit_log:
     mode: insert
 actions:

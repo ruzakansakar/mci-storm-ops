@@ -96,6 +96,19 @@ def test_advisory_nothing_applied_world_identical_and_other_agents_unchanged(pai
     assert without.metrics["passenger_minutes_of_disagreement"] == co.metrics["passenger_minutes_of_disagreement"]
     strip = lambda r: [{k: v for k, v in x.items() if k not in ("agent_run_id",)} for x in r.copilot.store.records["situation_assessments"]]
     assert strip(without) == strip(co)                       # Situation's versions are the same with or without it
+    def messages(r):
+        result = []
+        for item in r.copilot.messages.log:
+            m = {k: v for k, v in item.items() if k != "rec"}
+            if m.get("backed_by"):
+                # Without network advice, Care inserts fewer recommendations. Resolve its approval reference rather
+                # than comparing unrelated storage numbers; the actual approved decision must still be identical.
+                rec = r.copilot.care.context.saved[("recommendations", m["backed_by"])]
+                assert rec["status"] == "approved"
+                m["backed_by"] = {k: rec[k] for k in ("_action", "title", "options")}
+            result.append(m)
+        return result
+    assert messages(without) == messages(co)                 # including Maya's existing text, channel and timing
 
 
 def test_recovery_plans_are_versioned_shared_and_estimates_stay_estimates(pair):
@@ -108,3 +121,38 @@ def test_recovery_plans_are_versioned_shared_and_estimates_stay_estimates(pair):
     view = project(with_est[-1], "recovery_plans", {"fields": ["version", "planned_at", "cancels", "estimates"]})
     assert "estimates" in view["suspected"] and view["suspected"]["estimates"]["suspected"] is True
     assert view["suspected"]["estimates"]["value"]["label"].startswith("estimate")
+
+
+def test_seed7_c35_drafts_are_held_then_discarded_without_application(pair):
+    co = pair[1].copilot
+    assert not co.network.errors
+    history = [d for d in co.recovery.history if d['flight_id'] == 'WN1033' and d['change'].get('crew_id') == 'C35']
+    pax = [d for d in history if d.get('passenger_id') == 'PAX0001']
+    crew = [d for d in history if d.get('crew_id') == 'C35']
+    staff = [d for d in history if d['audience'] == 'staff']
+    assert {d['plan_version'] for d in history} and len({d['plan_version'] for d in history}) == 1
+    for items in (pax, crew):
+        assert items[0]['status'] == 'drafted'
+        assert any(d['status'] == 'held' and d['reason'].startswith('waiting for approval of plan v') for d in items)
+        assert any(d['status'] == 'held' and d['reason'] == 'approved, waiting to take effect' for d in items)
+        assert items[-1]['status'] == 'discarded' and items[-1]['reason'] == 'superseded'
+        assert not any(d['status'] == 'sent' for d in items)
+    assert staff[-1]['status'] == 'sent' and staff[-1]['internal']
+    assert not any(d['status'] == 'sent' and d['audience'] != 'staff' for d in co.recovery.history)
+    assert pair[1].metrics['passenger_minutes_of_disagreement'] == 6180
+    approvals = [e for e in pair[1].world.events if e['type'] == 'network_approved']
+    assert approvals and all(e['payload']['applied'] is False for e in approvals)
+    assert not any(e['type'] == 'recovery_action_applied' for e in pair[1].world.events)
+
+
+def test_recovery_lifecycle_is_audited_and_visible_on_report(pair):
+    from simulator.recovery_messages_page import section
+    co = pair[1]
+    history = co.copilot.recovery.history
+    records = [a['after']['payload'] for a in co.world.audit_rows if a['actor_name'] == 'communication'
+               and a['entity_type'] == 'events' and (a.get('after') or {}).get('type', '').startswith('recovery_message_')]
+    assert records == history
+    html = section(co.metrics)
+    for d in history:
+        assert f"v{d['plan_version']}" in html
+    assert 'PAX0001' in html and 'C35' in html and 'discarded' in html and 'approved, waiting to take effect' in html

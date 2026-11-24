@@ -292,7 +292,8 @@ class Planner:
             out2 = _out(title, summary, self.now, [_opt(f"{best['kind']}-{best['crew_id']}", title, [f.id], 0, 1.0)], dec2, [f.id], f.pax,
                         reserves=[best["crew_id"]] if best["kind"] == "reserve" else [], sources=self.sources)
             self.propose(("act", f.id, role, best["crew_id"]), best["action"], out2,
-                         {"flight_id": f.id, "option": best["facts"], "assign": {"crew_ids": [best["crew_id"]]}}, recheck=False)
+                         {"flight_id": f.id, "option": best["facts"], "assign": {"crew_ids": [best["crew_id"]]},
+                          "crew_id": best["crew_id"], "crew_role": role}, recheck=False)
         elif role == "pilot":
             self.ask(("D02", f.id), "D02", {"flight_id": f.id, "crew_id": w["crew_id"], "illegal_at": w["illegal_at"]},
                      "No legal reserve, swap or deadhead: only the captain and crew scheduling can decide a duty extension.")
@@ -392,7 +393,8 @@ class Planner:
             out = _out(f"Delay {f.id} to {hhmm(new)}", f"stop expected to end {hhmm(self.end_likely)}; protection {d['protection']}",
                        self.now, [_opt(f"delay-{f.id}", f"{f.id} to {hhmm(new)}", [f.id], f.pax, d["protection"])], ["B02"],
                        [f.id], f.pax, sources=self.sources)
-            self.propose(("delay", f.id, hhmm(new)), "delay_flight", out, {"flight_id": f.id, "option": facts}, recheck=False)
+            self.propose(("delay", f.id, hhmm(new)), "delay_flight", out,
+                         {"flight_id": f.id, "option": facts, "new_departure": d["new_departure"]}, recheck=False)
         for f in cancels:
             out = _out(f"Cancel {f.id} (to {f.destination})", "least protected in the stop window; its passengers fit on later flights "
                        "today" if f.id not in stuck else "its flight attendants will run out of legal duty and no legal option exists",
@@ -496,13 +498,13 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     crew_actions = [{"flight_id": w["flight_id"], "role": w["role"], "best": w["best"],
                      "option": next((o for o in w["options"] if o["legal"]), None)} for w in res["crew"]]
     key = (tuple((d["flight_id"], d["new_departure"][:16]) for d in res["delays"]), tuple(c["flight_id"] for c in res["cancels"]),
-           tuple((c["flight_id"], c["role"], c["best"]) for c in crew_actions), tuple((w["kind"], w["flight_id"], w["likelihood"]) for w in warnings),
+           tuple((c["flight_id"], c["role"], c["best"], (c["option"] or {}).get("crew_id")) for c in crew_actions), tuple((w["kind"], w["flight_id"], w["likelihood"]) for w in warnings),
            tuple(a["aircraft_id"] for a in res["aircraft_recovery"]), bool(res["restart_order"]))
     wrote = False
     if key != memory.last_key:
         memory.version += 1
         row = {"version": memory.version, "planned_at": ctx.now, "situation_version": (pic or {}).get("version"),
-               "delays": res["delays"], "cancels": res["cancels"], "crew_actions": crew_actions,
+               "delays": res["delays"], "cancels": res["cancels"], "crew_actions": crew_actions, "approval_status": [],
                "hold_divert": res["fuel"], "aircraft_recovery": res["aircraft_recovery"], "restart_order": res["restart_order"],
                "seats_by_destination": res["seats_by_destination"], "warnings": warnings, "estimates": res["estimates"],
                "sources": p.sources, "data_as_of": ctx.now, "decision_ids": sorted({"B02", "B06", "D01"} | (

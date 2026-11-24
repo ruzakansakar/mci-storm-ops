@@ -147,8 +147,11 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             # each agent's context cuts these to its own contract. Agents' outputs, people's answers and the care records
             # reach the shared store directly when they happen (so nothing is counted twice).
             event_cursor = len(world.events)
+            channels.recovery_guard = copilot.recovery_delivery_problems
             outputs, audits = copilot.tick(at(t), published, lambda p: channels.deliver_messages(t, p) if p.get("messages")
                                            else channels.deliver_fix(t, p))
+            # Recovery deliveries wait for this minute's published facts and approval versions before their final check.
+            channels.apply_messages(t, recovery_only=True)
             from backend.execution.copilot import serial
             for agent, kind, payload in outputs:
                 world.events.append({"t": t, "type": kind,
@@ -176,6 +179,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         from simulator.care_metrics import care_metrics
         from simulator.comparison import focus_passenger
         metrics["care"] = care_metrics(world, copilot, data, focus_passenger(data))
+        metrics["recovery_messages"] = copilot.recovery.history
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint

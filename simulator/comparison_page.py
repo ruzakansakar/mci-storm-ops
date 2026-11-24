@@ -1,6 +1,7 @@
 """Self-contained comparison section shared by simulator and chaos pages."""
 import html
 import json
+from simulator.recovery_messages_page import section as recovery_messages_section
 
 METRICS = [
     ("peak_passengers_disagreeing", "Peak passengers with a wrong screen"),
@@ -204,7 +205,7 @@ def section(today, copilot):
         by_mode.append('<table><tr><th>Time</th><th>App</th><th>SMS</th><th>Gate</th><th>Call center</th></tr>' + ''.join(body) + '</table>')
     return '<section id="comparison"><h2>Today vs with co-pilot</h2><p><b style="color:#b23a48">Today</b> / ' \
         '<b style="color:#087f8c">With co-pilot</b>: passengers whose screens disagree with confirmed truth.</p>' + chart + \
-        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) +         care_section(copilot) + \
+        '<table><tr><th>Measure</th><th>Today</th><th>With co-pilot</th></tr>' + rows + '</table>' + maya_table(today, copilot) + situation_strip(copilot) + messages_section(copilot) + network_section(copilot) + care_section(copilot) + recovery_messages_section(copilot) + \
         '<p>Catch-up timing covers completed versions only. Replaced and unfinished versions are listed separately. ' \
         'Push counts include extra corrections and resends; ordinary system copies are unchanged. A merged correction has ' \
         'separate trip and baggage delivery components, each subject to normal delays and failures.</p>' + \

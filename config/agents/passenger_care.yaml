@@ -46,6 +46,9 @@ shared_reads:
   recovery_plans:
     producer: network_recovery
     fields: [version, planned_at, seats_by_destination, cancels, delays]
+    item_fields:                       # preserve its existing plan fields under the nested whitelist
+      delays: [flight_id, new_departure, delay_min, protection, crew_legal]
+      cancels: [flight_id, destination, pax, why]
 writes:
   recommendations:
     mode: insert

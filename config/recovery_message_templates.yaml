@@ -1,0 +1,18 @@
+# Fixed drafts: a proposal is not a passenger fact. Only the linked send guard may release them.
+change_names:
+  delay_flight: departure time change
+  cancel_flight: cancellation
+  swap_crews: crew swap
+  call_in_reserve_crew: reserve crew assignment
+  deadhead_crew: crew transfer
+passenger:
+  delay_flight: "Your flight {flight_id} is now expected to leave at {departure}."
+  cancel_flight: "Your flight {flight_id} is cancelled. Please check your latest trip in the app."
+  swap_crews: "A replacement crew has been assigned to your flight {flight_id}."
+  call_in_reserve_crew: "A reserve crew has been assigned to your flight {flight_id}."
+  deadhead_crew: "A replacement crew is being transferred for your flight {flight_id}."
+crew:
+  swap_crews: "Crew {crew_id}: you are reassigned to {flight_id}."
+  call_in_reserve_crew: "Crew {crew_id}: you are assigned as the reserve crew for {flight_id}."
+  deadhead_crew: "Crew {crew_id}: you are being transferred for {flight_id}."
+staff: "Internal - {flight_id}: {change} under review; don't give passengers a new time yet."
