@@ -1,0 +1,96 @@
+# Live human-in-the-loop mode (simulator/live.py, backend/execution/live_human.py, backend/api/live.py).
+# The world is simulated; the agents run on it minute by minute; the user answers every question a person must answer.
+# Every number is a class-project assumption (marked), chosen for a person watching in real time.
+
+clock:
+  live_from: "11:00"              # assumption: 05:00 to here runs instantly with the simulated people (the morning is decided)
+  speed_idle: 5                   # assumption: simulated minutes per real second while nothing waits for the user
+  speed_pending: 0.1667           # assumption: simulated minutes per real second while something waits (1 minute per 6 s)
+  speed_min: 0.01                 # assumption: the slowest speed the user may set (sim-min per real second)
+  speed_max: 60                   # assumption: the fastest speed the user may set (the agents may still be slower than this)
+  heartbeat_timeout_s: 20         # assumption: pause on its own if no client asked for the state for this long
+  poll_s: 0.25                    # assumption: how often a paused session checks for resume (real seconds)
+  write_every_min: 5              # assumption: save the live tables every this many simulated minutes (and on every decision)
+
+decisions:
+  wait_choices_min: [10, 15]      # the brief: a question can be put off for 10 or 15 minutes
+  urgent_within_min: 10           # assumption: a question is urgent if marked urgent, safety or legal, or due within this
+  reason_max_chars: 500           # assumption: a rejection reason is short plain text
+
+# PRIORITY (higher first). Safety or legal first, then the earliest deadline, then passengers affected. The weights keep that
+# order strict: one minute of deadline (deadline / horizon = 0.25) is worth more than the whole passenger part (0.2).
+priority:
+  safety_legal: 60                # assumption: points for a safety or legal question
+  deadline: 30                    # assumption: points for a deadline due now, falling to 0 at the horizon
+  deadline_horizon_min: 120       # assumption: deadlines further away than this all count the same
+  passengers: 0.2                 # assumption: points for passengers affected (at the cap), below one deadline minute
+  passengers_cap: 300             # assumption: more passengers than this count the same
+  safety_legal_decisions:         # decisions that are about safety or the law (config/decisions.yaml)
+    fuel: [B08, B09]
+    crew_legality: [D01, D02, D03, D04, D08, D10, D11]
+    tarmac_3h: [F01, F02, F05, F06, F07, F08, F11]
+    unaccompanied_minors: [J01, J03]
+    wheelchair_passengers: [E07, J04]
+  safety_rung_max: 4              # the safety ladder: rungs 1-4 (life, injury, legal, crew legality) count as safety or legal
+
+# WAIT IS BLOCKED when another open question depends on this one. A question for flight F of the kind on the left depends on a
+# still-open question for F of a kind on the right (plus version provenance: a plan built on a still-open proposal).
+depends_on:
+  call_in_reserve_crew: [delay_flight, cancel_flight]
+  swap_crews: [delay_flight, cancel_flight]
+  deadhead_crew: [delay_flight, cancel_flight]
+  flag_crew_legality: [delay_flight, cancel_flight]
+  rebook_passenger: [delay_flight, cancel_flight]
+  draft_message: [delay_flight, cancel_flight]
+  send_status_update: [delay_flight, cancel_flight]
+  send_mass_message: [delay_flight, cancel_flight]
+  send_crew_message: [delay_flight, cancel_flight, call_in_reserve_crew, swap_crews, deadhead_crew]
+  issue_compensation: [cancel_flight]
+  arrange_ground_transport: [cancel_flight]
+  hold_hotel_rooms: [cancel_flight]
+  offer_refund: [cancel_flight]
+  assign_gates: [delay_flight, cancel_flight]
+  move_gate_agents: [delay_flight, cancel_flight]
+
+# What happens if the user says no for good (plain words; {flight}, {n}, {who}, {crew} are filled in). Used only when known.
+consequences:
+  delay_flight: "{flight} keeps its published time; today's process decides what happens to it (it may be held, thinned or cancelled)"
+  cancel_flight: "{flight} is not cancelled by the co-pilot; it will be delayed instead"
+  cancel_flight_no_alternative: "{flight} cannot fly legally; today's process will cancel it"
+  call_in_reserve_crew: "{flight} may be cancelled: its {who} run out of legal duty and today's process picks the crew"
+  swap_crews: "{flight} may be cancelled: its {who} run out of legal duty and today's process picks the crew"
+  deadhead_crew: "{flight} may be cancelled: its {who} run out of legal duty and today's process picks the crew"
+  rebook_passenger: "{n} passengers are not moved to {flight} by the co-pilot; today's rebooking process handles them"
+  issue_compensation: "the co-pilot arranges no room or payment for {n} passengers; the airport desk handles them as today"
+  arrange_ground_transport: "the co-pilot arranges no transport for {n} passengers; the airport desk handles them as today"
+  hold_hotel_rooms: "no hotel rooms are held now; rooms may be gone when passengers need them"
+  offer_refund: "{n} passengers are not offered a refund by the co-pilot"
+  draft_message: "{n} passengers do not get this message; their screens stay as they are until another update"
+  send_status_update: "{n} passengers do not get this message; their screens stay as they are until another update"
+  send_mass_message: "{n} passengers do not get this message; their screens stay as they are until another update"
+  send_crew_message: "the crew is not told by the co-pilot; crew scheduling tells them as today"
+  assign_gates: "{flight} gets no co-pilot gate; today's gate process assigns one"
+  move_gate_agents: "{flight} gets no co-pilot staff plan; today's staffing process handles it"
+  extend_crew_duty: "{flight}'s pilots get no extension; if no legal crew is found, today's process decides (it may cancel {flight})"
+  human_only: "nothing is decided; today's process handles it"
+  default: "the co-pilot does not do this; today's process handles it"
+
+# HUMAN-ONLY decisions (decided_by level human_only, e.g. D02): put to the user as the named person. The rule check still runs;
+# only its "human-only: the co-pilot can only show facts" block is expected (any other block keeps it from the user). The duty
+# manager never answers these and they cannot be handed off. The catalog's joint roles go to the queue role that holds them.
+human_only:
+  roles:
+    captain_and_crew_scheduling: crew_scheduling       # the brief: D02 (extend crew duty) goes to crew scheduling
+    dispatcher_and_captain: network_operations_control # assumption: dispatch sits in network operations control
+    airport_police_and_station_manager: station_manager  # assumption: the station manager is the airline's side of it
+  expected_blocks: [agent_contract]                    # plus action_<action>: the rules saying the co-pilot may not do it itself
+
+destinations:
+  staff_roles:                    # a staff member's roster role -> the destination key shown on a decision's flowchart
+    gate_agent: gate_agents
+    ramp: ramp
+    customer_service: counter
+    wheelchair: wheelchair_agents
+
+focus:
+  random_day: most_trip_changes   # a random day follows the tracked passenger with the most trip changes so far (picked once)

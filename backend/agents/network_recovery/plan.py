@@ -111,6 +111,7 @@ class Planner:
         self.proposals = []                            # for the (advisory) executor: what the rule check should look at
         self.station = None                            # Station and Staff plan (Phase 4f), read in plan()
         self.inv, self.held, self.guards_last = {}, {}, {}   # fix-seats: seat inventory at T and seats held / promised
+        self.rejected = set()                          # live mode: (action, flight, crew) a person rejected for good (else empty)
         self.sources = [{"fact": "flight operations events", "source": "flight_ops", "as_of": ctx.feed_last("flight_ops").isoformat()},
                         {"fact": "published schedule, crew roster and fleet", "source": "plan published before the day",
                          "as_of": self.static["flights"][0]["sched_dep"].replace(hour=5, minute=0).isoformat()}]
@@ -121,6 +122,8 @@ class Planner:
         if key in self.m.proposed and (not recheck or self.now - self.m.proposed[key] < timedelta(
                 minutes=self.s["plan"]["recheck_proposal_min"])):
             return None
+        if self.rejected and (action, facts.get("flight_id"), facts.get("crew_id")) in self.rejected:
+            return None                                # live mode: a person said no to exactly this; never asked again
         if action in self.ctx.contract.required_checks:
             for name in self.ctx.contract.required_checks[action]:
                 self.ctx.run_check(name, facts.get("option") or {})
@@ -274,7 +277,7 @@ class Planner:
         return option
 
     def _propose_crew(self, f, role, w, opts, need):
-        legal = [o for o in opts if o["legal"]]
+        legal = [o for o in opts if o["legal"] and (o["action"], f.id, o["crew_id"]) not in self.rejected]   # live: next option
         who = "pilots" if role == "pilot" else "flight attendants"
         dec = ["D01"] if role == "pilot" else ["D08"]
         summary = (f"{f.id}'s {who} ({w['crew_id']}) run out of legal duty at {hhmm(datetime.fromisoformat(w['illegal_at']))}; "
@@ -414,6 +417,8 @@ class Planner:
             for f in [x for x in window if x.id in stuck] + list(reversed(ranked)):
                 if len(cancels) >= budget or f in cancels:
                     continue
+                if ("cancel_flight", f.id, None) in self.rejected:
+                    continue                    # live mode: a person said no to cancelling it, so it is delayed instead
                 no_alt = self.no_alternative(f, stuck)
                 if not no_alt and not self.not_a_guess(f):
                     continue                    # no cancelling on a guess: not held by the incident, and the end is uncertain
@@ -604,6 +609,8 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     p.inv = inventory(events)
     care = ctx.read_shared("care_plans") if "care_plans" in (ctx.contract.shared_reads or {}) else None
     p.held = held_by_advice(((care or {}).get("facts") or {}).get("rebooking_advice"))
+    from backend.rules.rejections import final_rejections
+    p.rejected = final_rejections(events, "network_recovery")     # live mode only (no such event in any other mode)
     memory.basis = {"situation_version": (pic or {}).get("version"), "station_plan_version": (p.station or {}).get("version")}
     res = p.run(events, pic)
     warnings = [{"kind": "crew", **{k: w[k] for k in ("flight_id", "role", "illegal_at", "likelihood", "best")}} for w in res["crew"]] + \

@@ -48,9 +48,12 @@ def check_mode(mode: str):
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
              data: dict | None = None, writer=None, on_flush=None, prebuilt=None, run_id: str | None = None,
-             on_tick=None, feeds=None, source_overlay=(), late_delivery=None, copilot_options=None) -> Result:
+             on_tick=None, feeds=None, source_overlay=(), late_delivery=None, copilot_options=None, humans=None,
+             on_ready=None) -> Result:
     """Play the day. With a writer, results are saved in batches; without one it all stays in memory.
-    on_tick(t, world, channels): called at the end of every simulated minute (test harnesses read the answer key there)."""
+    on_tick(t, world, channels): called at the end of every simulated minute (test harnesses read the answer key there).
+    humans(simulated_people) -> the people the co-pilot asks (live mode: the user in the loop in front of the simulated ones);
+    on_ready(world, channels, copilot, comparison, recorder): called once before the first minute (live mode)."""
     check_mode(mode)
     cfg = load_config()
     data = data if data is not None else build()
@@ -85,7 +88,8 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         system_health = [{"system": s_, "status": "up", "last_heartbeat": AS_OF, "note": "simulated stand-in for the official system"}
                          for s_ in sorted(set(SOR.values()))]                      # as backend/seed/load.py seeds it
         from backend.execution.simulated_human import SimulatedHumans
-        humans = SimulatedHumans(random.Random(f"humans:{scenario}:{seed}"), lambda *a: _window(world, *a))
+        simulated = SimulatedHumans(random.Random(f"humans:{scenario}:{seed}"), lambda *a: _window(world, *a))
+        people = humans(simulated) if humans else simulated
         network_rows = {                                   # the plan published before the day (start-of-day values only)
             "flights": [{k: f.get(k) for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr", "aircraft_id",
                                                "crew_id", "priority", "pax_total")} for f in data["flights"]],
@@ -115,7 +119,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
                          for x in data["stations"]],
             "passenger_groups": [{k: g[k] for k in ("flight_id", "segment", "count")} for g in data["passenger_groups"]]}
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
-                          stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
+                          stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=people,
                           network_rows=network_rows, care_rows=care_rows, station_rows=station_rows, **(copilot_options or {}),
                           **({"apply_port": world.apply_decision, "pending_port": world.set_pending} if mode == "orchestrated" else {}))
         world.orchestrated = mode == "orchestrated"     # approved co-pilot decisions replace today's process decisions
@@ -134,6 +138,8 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     if world.publish_seats:
         world.t = start
         world.publish_all_seats()
+    if on_ready:
+        on_ready(world, channels, copilot, comparison, recorder)
     for t in SimClock(start, until).ticks():
         world.step(t)
         for e in source_overlay:
@@ -169,6 +175,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             for agent, kind, payload in outputs:
                 world.events.append({"t": t, "type": kind,
                                      "actor": "simulated_human" if agent.startswith("simulated_human") else
+                                     agent if agent.startswith("human:") else      # live mode: the person in the loop
                                      "system" if agent.startswith("system:") else "agent", "actor_name": agent,
                                      "station": None, "payload": serial(payload), "incident": False})
             for a in audits:

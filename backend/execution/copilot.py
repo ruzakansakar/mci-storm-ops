@@ -249,6 +249,18 @@ class CareRunner:
         return {"agent": "passenger_care", "recommendation": q.rec_id, "action": p["action"], "role": q.role,
                 "waited_min": q.answer["waited_min"]}
 
+    def rejected(self, q, now):
+        """A person said no (live mode): nothing is applied. No care_decision_recorded is published, because Passenger Care reads
+        any decision record as an approval; the recommendation is closed as rejected."""
+        rec = self.context.saved.get(("recommendations", q.rec_id))
+        if rec is None or rec.get("status") != "pending":
+            return None
+        rec["status"] = "rejected"
+        self.context._audit_row("care_rejected", "recommendation", q.rec_id, None,
+                                {"role": q.role, "reason": q.answer.get("reason"), "at": now.isoformat()})
+        return {"agent": "passenger_care", "recommendation": q.rec_id, "action": q.action, "role": q.role,
+                "waited_min": q.answer["waited_min"], "status": "rejected"}
+
     def close_child(self, care_decision, station_rec, staff_id, approved_by):
         """Station & Staff's supervisor for this child was approved and assigned: the request is done (Phase 4f)."""
         rec = self.context.saved.get(("recommendations", care_decision))
@@ -375,6 +387,19 @@ class StationRunner:
         self.apply(p, now, q.role, q.answer["waited_min"])
         return {"recommendation": q.rec_id, "agent": "station_staff", "action": p["action"], "role": q.role,
                 "waited_min": q.answer["waited_min"]}
+
+    def rejected(self, q, now):
+        """A person said no (live mode): nothing is applied; the decision record says rejected (Station & Staff then drops it)."""
+        p = self.options.get(q.rec_id)
+        rec = self.context.saved.get(("recommendations", q.rec_id))
+        if p is None or rec is None or rec.get("status") != "pending":
+            return None
+        rec["status"] = "rejected"
+        self.memory.pending.pop(q.rec_id, None)
+        self.publish(now, "station_decision_recorded", {"recommendation": q.rec_id, "action": p["action"], "approved_by": None,
+                                                         "waited_min": q.answer["waited_min"], "status": "rejected"})
+        return {"recommendation": q.rec_id, "agent": "station_staff", "action": p["action"], "role": q.role,
+                "waited_min": q.answer["waited_min"], "status": "rejected"}
 
     def _release(self, old, now, rid):
         for r in self.active.pop(old, []):
@@ -550,7 +575,8 @@ class Copilot:
         approved_now = []
         publish = self.care_publish(now)
         for q in due:
-            actor = f"simulated_human:{q.role}"
+            actor = getattr(q, "actor", None) or f"simulated_human:{q.role}"     # live mode: "human:<role>"
+            no = q.answer.get("decision") == "rejected"
             if q.agent == "network_recovery":
                 if self.network:
                     self.network.context.now = now
@@ -560,17 +586,21 @@ class Copilot:
                 continue
             if q.agent == "station_staff":             # a station approval: re-checked now, then applied and confirmed
                 if self.station:
-                    a = self.station.approved(q, now)
+                    a = self.station.rejected(q, now) if no else self.station.approved(q, now)
                     if a:
-                        human_out.append((actor, "human_approved", a))
+                        human_out.append((actor, "decision_rejected" if no else "human_approved", a))
                 continue
             if q.agent == "passenger_care":            # a care approval: re-checked now, then applied and confirmed
                 if self.care:
-                    a = self.care.approved(q, now, publish)
+                    a = self.care.rejected(q, now) if no else self.care.approved(q, now, publish)
                     if a:
-                        human_out.append((actor, "human_approved", a))
+                        human_out.append((actor, "decision_rejected" if no else "human_approved", a))
                 continue
-            if q.action == "resolve_source_conflict":
+            if no and q.action in ("resolve_source_conflict", "escalate_channel_problem"):
+                human_out.append((actor, "decision_rejected", {"recommendation": q.rec_id, "agent": q.agent, "action": q.action,
+                                                               "role": q.role, "waited_min": q.answer["waited_min"]}))
+                self._set_status(q.agent, q.rec_id, "rejected")   # no side is picked; the conflict stays open (held as before)
+            elif q.action == "resolve_source_conflict":
                 for a in q.answer["conflicts"]:
                     if a.get("repeat"):
                         continue
@@ -653,9 +683,15 @@ class Copilot:
             if option is None or self.context.saved.get(("recommendations", q.rec_id), {}).get("status") != "pending":
                 continue
             # every claim is checked again against the truth NOW, so the data behind it is as of now
+            actor = getattr(q, "actor", None) or f"simulated_human:{q.role}"
+            if q.answer.get("decision") == "rejected":             # live mode: a person said no; the message is never sent
+                human_out.append((actor, "decision_rejected", {"agent": q.agent, "recommendation": q.rec_id, "action": q.action,
+                                                               "role": q.role, "waited_min": q.answer["waited_min"]}))
+                withdraw(self.messages, q.rec_id, f"rejected by {q.role}")
+                self._set_status("communication", q.rec_id, "rejected")
+                continue
             option = {**option, "data_as_of": now}
             verdict = check_only(option, world)
-            actor = f"simulated_human:{q.role}"
             if verdict["result"] != "pass":
                 human_out.append((actor, "human_approved", {"agent": q.agent, "recommendation": q.rec_id, "action": q.action, "role": q.role,
                                                             "waited_min": q.answer["waited_min"], "void": verdict["reasons"][:3]}))
@@ -685,7 +721,8 @@ class Copilot:
                     payload = {"recommendation": q.rec_id, "decision": decision, "role": q.role,
                                "plan_version": q.proposal["messages"][0]["plan_version"]}
                     ctx._audit_row("recovery_crew_message_" + decision, "recommendation", q.rec_id, None, payload)
-                    human_out.append(("simulated_human:" + q.role, "recovery_crew_message_" + decision, payload))
+                    human_out.append((getattr(q, "actor", None) or "simulated_human:" + q.role, "recovery_crew_message_" + decision,
+                                      payload))
         crew_approved = {rid for rid, decision in self.recovery_crew_answers.items() if decision == "approved"}
         crew_rejected = {q.rec_id for q in approved_now if q.proposal.get("recovery_message")
                          and q.answer.get("decision") == "rejected"}
