@@ -44,11 +44,12 @@ class Orchestrator(Copilot):
     """The co-pilot's minute loop, owned by the orchestrator. The agents and their runners are the same; the orchestrator runs
     them in order and adds the queue, incidents, conflicts and the shared-state audit around them."""
 
-    def __init__(self, *args, apply_port=None, **kwargs):
+    def __init__(self, *args, apply_port=None, pending_port=None, **kwargs):
         from backend.contracts.decisions import load_decisions
         from backend.rules import load_rules
         super().__init__(*args, **kwargs)
         self.apply_port = apply_port                    # Phase 5b: orchestrated mode carries out approved decisions
+        self.pending_port = pending_port                # fix-seats: the world's thinning waits for these
         self.applied_log = []
         if self.care is not None:
             self.care.ask_advice = apply_port is not None   # rebooking advice becomes a decision a person approves
@@ -146,6 +147,14 @@ class Orchestrator(Copilot):
         row.update(queue=len(self.queue.ordered()), incidents=[{"id": i.id, "kind": i.kind, "status": i.status, "rank": i.rank}
                                                                 for i in self.incidents.all if i.status != "resolved"])
         self.log.append(row)
+        if self.pending_port is not None:               # co-pilot delays / cancellations still waiting for a person
+            day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            pending = {}
+            for i in self.queue.ordered():
+                fid = i.facts.get("flight_id") or (i.members[0][2].get("flight_id") if i.members else None)
+                if i.agent == "network_recovery" and i.action in ("delay_flight", "cancel_flight") and fid:
+                    pending[fid] = max(pending.get(fid, 0), int((i.deadline - day0).total_seconds() // 60))
+            self.pending_port(pending)
         self.octx.write("orchestrator_log", {"at": now, "row": serial(row)})
         o, a = self._drain(self.octx, "orchestrator")
         return outputs + o, audits + a

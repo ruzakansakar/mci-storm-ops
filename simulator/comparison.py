@@ -6,7 +6,8 @@ from statistics import median
 
 FIELDS = ("itinerary", "status", "destination", "bag_routing")
 # what the channels did with co-pilot messages: deliveries, not world truth
-DELIVERY_EVENTS = {"message_delivered", "message_dropped", "staff_note_published"}
+DELIVERY_EVENTS = {"message_delivered", "message_dropped", "staff_note_published",
+                   "seats_updated"}          # fix-seats: a published copy of the seat inventory, not a change to the world
 
 
 def snapshot(row):

@@ -21,6 +21,7 @@ static_reads: [flights, passengers, hotels, transport_options, hotel_rate_tiers,
 event_feeds:
   reservations:
     trip_record_updated: [passenger_id, itinerary, status, destination]
+    seats_updated: [flight_id, seats, booked, sellable]   # fix-seats: the seat inventory (the same helper as Network Recovery)
   flight_ops:
     flight_cancelled: [flight_id, reason]
     flight_delayed: [flight_id, delay_min, new_departure]

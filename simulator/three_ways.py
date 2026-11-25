@@ -37,5 +37,7 @@ def mode_summary(world, metrics, copilot, focus) -> dict:
             "busiest_role_per_hour": max(peak.items(), key=lambda kv: kv[1]) if peak else None,
             "hotel_rooms": care.get("rooms_assigned"), "care_cost_usd": (care.get("costs") or {}).get("committed_usd"),
             "ground_waits": len(getattr(world, "ground_waits", [])),
+            "thinning_waits": len(getattr(world, "thin_waits", [])),
+            "thinning_waits_replaced": sum(1 for w in getattr(world, "thin_waits", []) if (w.get("outcome") or "").startswith("replaced")),
             "maya": {"status": trip.get("status"), "itinerary": list(trip.get("itinerary") or []), "legs": legs,
                      "message": trip.get("message"), "told": told}}

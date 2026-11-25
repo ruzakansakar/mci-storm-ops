@@ -161,6 +161,11 @@ physics:
     departure: {ramp: [3, 25], gate_agent: [1, 30]}   # people, minutes before pushback
     arrival: {ramp: [3, 20], gate_agent: [1, 15]}     # people, minutes after landing
 
+# ------------------------------------------------------------------ ORCHESTRATED MODE (fix-seats)
+orchestrated:
+  wait_for_pending_recommendation: true   # assumption: the ops team waits for a pending recommendation (until its deadline)
+                                          # before today's schedule thinning cancels the same flight
+
 # ------------------------------------------------------------------ TODAY'S BEHAVIOUR (no co-pilot)
 # Simple fixed rules that stand in for what Southwest does today. Not the co-pilot.
 baseline:

@@ -21,6 +21,9 @@ from backend.execution.network_approval import NetworkApprovals
 from backend.rules.recovery_message import send_problems as recovery_send_problems
 
 
+SIDE_FEEDS = {"seats_updated"}
+
+
 def snapshot(memory):
     """A copy of an agent's working memory to roll back to if its run fails. Its list of written plan versions only ever grows
     (append-only), so it is kept by length instead of copied (5b: copying every version each run grew all day)."""
@@ -442,6 +445,7 @@ class Copilot:
         self.care = CareRunner(self.store, care_rows, self.context.feeds) if care_rows else None
         self.vendor_out = []                  # confirmations of what was applied (hotel vendor / supervisor records)
         self.station_event_id = -10_000_000   # Phase 4f: its own id namespace (no existing event is renumbered)
+        self.side_event_id = -20_000_000      # fix-seats: the seat inventory copies
         self.station = StationRunner(self.store, station_rows, self.context.feeds, self._publish_station) if station_rows else None
         if self.station:
             self.station.care = self.care
@@ -511,6 +515,10 @@ class Copilot:
 
     def receive(self, published):
         for event in published:
+            if event["type"] in SIDE_FEEDS:              # fix-seats: published copies (seat inventory) get their own ids, so
+                self.side_event_id -= 1                  # no existing event is renumbered
+                self.store.events.append({**deepcopy(event), "id": self.side_event_id})
+                continue
             self.event_id += 1
             self.store.events.append({**deepcopy(event), "id": self.event_id})
 

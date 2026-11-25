@@ -96,9 +96,16 @@ def test_world_identical_and_earlier_agents_unchanged(pair, monkeypatch):
     from tests.test_shared_state import _comparable      # event ids differ (care records take ids too); nothing else may
     strip = lambda r, t: [_comparable({k: v for k, v in x.items() if k != "agent_run_id"}) for x in r.copilot.store.records[t]]
     assert strip(without, "situation_assessments") == strip(co, "situation_assessments")
-    # Since 4f Network Recovery also records which Station & Staff version it read; Station & Staff reads Care's help requests,
-    # so that version NUMBER differs without Care. Everything Network Recovery planned must still be identical.
-    nr = lambda r: [{k: v for k, v in x.items() if k != "station_plan_version"} for x in strip(r, "recovery_plans")]
+    # Since fix-seats Network Recovery subtracts the seats Care's rebooking advice promises (on purpose: the two must agree on
+    # seats), so its seat-dependent parts (cancellations, seats, estimates) may differ without Care. Its delays, crew actions
+    # and warnings must not.
+    def nr(r):
+        out = []
+        for x in strip(r, "recovery_plans"):
+            y = {k: x[k] for k in ("delays", "crew_actions", "warnings")}
+            if not out or out[-1] != y:
+                out.append(y)
+        return out
     assert nr(without) == nr(co)
 
 

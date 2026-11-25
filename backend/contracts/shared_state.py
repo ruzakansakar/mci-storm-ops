@@ -61,7 +61,8 @@ SHARED["care_plans"] = {                          # Phase 4e: the Passenger Care
                                  "transport_status", "transport_decision"],
                   # Phase 4f: help requests for Station & Staff (ids and flights only: no names, no compensation)
                   "wheelchair_requests": ["passenger_id", "flight_id", "itinerary", "max_unattended_min", "needs"],
-                  "vulnerable": ["passenger_id", "kind", "itinerary", "decision", "plan", "staff_supervisor"]},
+                  "vulnerable": ["passenger_id", "kind", "itinerary", "decision", "plan", "staff_supervisor"],
+                  "rebooking_advice": ["flight_id", "passengers", "departs"]},          # fix-seats: seats it promises
 }
 SHARED["station_plans"] = {                       # Phase 4f: the Station & Staff agent's plan (gates, staff, tarmac, help)
     "producer": "station_staff",

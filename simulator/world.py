@@ -86,6 +86,10 @@ class World:
         self.fallbacks = []                # {t, process, flight_id, what}: today's process acted (no approved decision in time)
         self.applied = []                  # {t, action, facts, applied, reason}: what the operational systems were asked to do
         self.crew_violations = []          # departures whose crew did not have the legal duty time for the flight (all modes)
+        self.publish_seats = False         # fix-seats: the reservations system publishes seat inventory (co-pilot modes read it)
+        self.pending_cp = {}               # departure -> deadline (minute) of a co-pilot proposal waiting for approval
+        self.deferred_thin = {}            # departure -> (deadline, reason): thinning that waits for that proposal
+        self.thin_waits = []               # {flight_id, until, outcome}: each wait and how it ended
         self.ground_waits = []             # (minute, flight, why): a plane that had to wait for staff or a gate
         self.orig_groups = {k: g["count"] for k, g in self.groups.items()}
 
@@ -217,6 +221,8 @@ class World:
             self._flag_illegal_crews()
         for ev in self.sc.events_at(t):
             self._apply_event(ev)
+        if self.deferred_thin:                     # fix-seats: thinning that waited for a pending recommendation (every minute)
+            self._deferred_thinning()
         if t == self.start or t % self.ph["reproject_every_min"] == 0:
             self.reproject("regular update")
         self._tick_clocks()
@@ -742,9 +748,44 @@ class World:
         if self.orchestrated and (self.cp_cancelled or any(d["id"] in self.cp_delay for d in in_window)):
             return                                     # replaced: the approved co-pilot plan already decided this window
         for d in pool[:max(0, room)]:
+            wait = self.cfg.get("orchestrated", {}).get("wait_for_pending_recommendation")
+            if self.orchestrated and wait and self.pending_cp.get(d["id"], -1) > self.t:
+                self.thinned.add(d["id"])         # the ops team waits for the pending recommendation, until its deadline
+                self.deferred_thin[d["id"]] = (self.pending_cp[d["id"]], f"schedule thinning: {r['end'] - r['start']} min ground stop announced")
+                self.thin_waits.append({"flight_id": d["id"], "from": self.t, "until": self.pending_cp[d["id"]], "outcome": None})
+                continue
             self._fallback("schedule thinning", d, "no approved co-pilot plan for the stop window yet")
             self.thinned.add(d["id"])
             self._cancel_flight(d, f"schedule thinning: {r['end'] - r['start']} min ground stop announced")
+
+    def _seat_event(self, f):
+        if not self.publish_seats or f.get("direction") != "departure":
+            return
+        seats = f["_seats"] if f.get("_seats") else self.aircraft[f["aircraft_id"]]["seats"]
+        self._emit("seats_updated", f["origin"], {"flight_id": f["id"], "seats": seats, "booked": f["pax_total"],
+                                                  "sellable": self._room(f)})
+
+    def publish_all_seats(self):
+        for d in self.departures:
+            self._seat_event(d)
+
+    def set_pending(self, pending: dict):
+        """The orchestrator: co-pilot proposals waiting for a person, flight -> deadline minute."""
+        self.pending_cp = dict(pending)
+
+    def _deferred_thinning(self):
+        for fid, (until, reason) in list(self.deferred_thin.items()):
+            d = self.flights[fid]
+            w = next(x for x in reversed(self.thin_waits) if x["flight_id"] == fid)
+            if d["status"] not in WAITING_DEP or fid in self.cp_cancelled or fid in self.cp_delay:
+                w["outcome"] = "replaced by the approved co-pilot decision" if (fid in self.cp_cancelled or fid in self.cp_delay) \
+                    else f"no longer waiting ({d['status']})"
+                del self.deferred_thin[fid]
+            elif self.t >= until:
+                w["outcome"] = "not approved by its deadline: today's thinning acted"
+                del self.deferred_thin[fid]
+                self._fallback("schedule thinning", d, "the pending recommendation was not approved by its deadline")
+                self._cancel_flight(d, reason)
 
     def _fallback(self, process, f, what):
         if self.orchestrated:
@@ -990,6 +1031,8 @@ class World:
                   count=gd["count"] + n, as_of=t)
         self._set("flights", src, src["id"], "flight", "passengers rebooked away", pax_total=src["pax_total"] - n)
         self._set("flights", dst, dst["id"], "flight", "passengers rebooked onto flight", pax_total=dst["pax_total"] + n)
+        self._seat_event(src)
+        self._seat_event(dst)
 
     def _rebook_flight(self, f):
         """Everyone on a cancelled flight goes to the next flights to the same place that have room.

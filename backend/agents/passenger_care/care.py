@@ -150,6 +150,7 @@ class Care:
     # ------------------------------------------------------------ the run
     def run(self, events, sit, plan):
         st, S = _state(events), self.s
+        self.events = events
         self.st = st
         pax, flights = self.static["pax"], self.static["flights"]
         rooms = {h["id"]: h for h in self.static["hotels"]}
@@ -395,9 +396,10 @@ class Care:
 
     # ------------------------------------------------------------ e. rebooking advice (advisory)
     def rebooking(self, entries, pax, refs, plan):
+        from backend.rules.seats import free, inventory
         flights, st = self.static["flights"], self.st
-        seats = dict(((plan or {}).get("facts") or {}).get("seats_by_destination") or {})
-        left = {d: v.get("open_seats_later_today", 0) for d, v in seats.items()}
+        inv = inventory(self.events)                     # fix-seats: the same seat count as Network Recovery (shared helper)
+        used = {}                                        # seats this advice already promises, flight by flight
         lead = timedelta(minutes=self.s["rebooking"]["min_lead_min"])
         want = [e for e in entries.values() if e["trip_status"] in ("overnight", "cancelled") or
                 any(f in st["next_day"] for f in e["itinerary"])]
@@ -414,10 +416,10 @@ class Care:
                        and f["origin"] == "MCI" and f["id"] not in st["cancelled"] and f["id"] not in st["departed"]
                        and f["sched_dep"] >= self.now + lead]
             options.sort(key=lambda f: f["sched_dep"])
-            if not options or left.get(dest, 0) < len(group):
-                continue
-            f = options[0]                               # nonstop MCI -> destination: fine for a child alone too (J02)
-            left[dest] -= len(group)
+            f = next((g for g in options if free(g["id"], inv, used) >= len(group)), None)
+            if f is None:
+                continue                                 # no later flight today has a real seat for the whole group
+            used[f["id"]] = used.get(f["id"], 0) + len(group)   # nonstop MCI -> destination: fine for a child alone (J02)
             pids = [e["passenger_id"] for e in group]
             rid = self.propose(("rebook", tuple(pids), f["id"]), "rebook_passenger",
                                f"Advice: move {len(group)} passenger(s) to {f['id']} today ({hhmm(f['sched_dep'])})",
