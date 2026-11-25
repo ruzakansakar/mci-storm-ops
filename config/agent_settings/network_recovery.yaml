@@ -13,6 +13,8 @@ crew:
   onward_leg_min: 120                  # assumption: a crew's duty plan covers this flight plus about one more leg (the airline's
                                        # planning estimate; crew_short_for_plan events say "flight + one more leg + buffer")
   warn_before_min: 60                  # assumption (the brief): warn at least this long before a crew would go illegal
+  call_in_lead_min: 90                 # assumption (fix-seats): propose calling in a reserve / swap no earlier than this before the
+                                       # crew would go illegal (time to approve and report); earlier, its duty clock runs for nothing
   restart_after_end_min: 15            # assumption: departures start pushing back this long after the stop's expected end
   usable_reserve_status: [Available, On Call]   # assumption: published reserve statuses that may still be called in
   reserve_rest_hours: 10               # assumption: a reserve in a usable status has had at least the legal rest (10 h, 14 CFR
@@ -31,6 +33,9 @@ plan:
     per_pax: 0.05                      # load
     no_seats_later_today: 20           # nobody could be re-accommodated later today
   cancel_only_if_stop_min: 90          # assumption: only plan cancellations if the stop (to Situation's latest end) is this long
+  cancel_needs_end_confidence: 0.45    # assumption (fix-seats): a flight not yet held or delayed is cancelled only if Situation's
+                                       # end is at least "medium" confidence (Situation calls 0.45 medium); never on a guess
+                                       # (the same test before calling in a reserve or swapping a crew: no scarce crew spent on a guess)
   max_cancel_fraction: 0.2             # assumption: at most this share of departures in the stop window
   restart_spacing_min: 3               # assumption: one departure every 3 minutes once the stop lifts (restart order, B14)
   recheck_proposal_min: 30             # assumption: re-propose the same thing at most this often if nothing changed

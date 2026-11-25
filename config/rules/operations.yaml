@@ -255,6 +255,18 @@ rules:
     citation: "Class-project choice"
     enforced: false
 
+  - id: cancellation_must_not_strand_more
+    path: rule_check.cancellation_must_not_strand_more
+    description: >-
+      A cancellation must carry its estimate of passengers stranded overnight and that of the best alternative (delay, or keep
+      as scheduled). It may not strand more than the alternative, unless crew or aircraft legality leaves no alternative.
+      Otherwise it is blocked and goes to network operations control with the numbers.
+    value: true
+    source: assumption
+    citation: "Class-project choice (fix-seats: approved cancellations stranded passengers on 4 of 10 chaos days)"
+    enforced: true
+    checked_by: cancellation_guard
+
   - id: human_answer_deadline_min
     path: rule_check.human_answer_deadline_min
     description: If the named human doesn't answer within this many minutes (or before the decision's own deadline, if sooner), the orchestrator escalates to the next role.

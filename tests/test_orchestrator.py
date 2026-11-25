@@ -186,7 +186,8 @@ def test_seed7_conflicts_are_caught_with_both_views_and_blocked_advice_never_rea
     assert all(len(c["views"]) == 2 for c in o.conflicts)
     for b in o.blocked:
         if "recommendation" in b:
-            ctx = {"passenger_care": o.care.context, "station_staff": o.station.context}[b["agent"]]
+            ctx = {"passenger_care": o.care.context, "station_staff": o.station.context,
+                   "network_recovery": o.network.context}[b["agent"]]
             assert ctx.saved[("recommendations", b["recommendation"])]["status"] == "blocked_by_orchestrator"
             assert not [q for q in o.people.questions if q.agent == b["agent"] and q.rec_id == b["recommendation"]
                         and q.status == "answered"]

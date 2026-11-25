@@ -99,6 +99,12 @@ def check(proposal: dict, pending_proposals: list[dict] | None = None, world: di
                     block(f"rung {rung_def['rung']} ({rung_def['name']}): {why}", by_check.get(name, []) or [rung_def and f"rung_{rung_def['rung']}"],
                           approver)
 
+    # ---- 3b. a cancellation must not strand more passengers than its alternative (fix-seats)
+    from backend.rules.cancellation import cancellation_guard
+    why = cancellation_guard(proposal)
+    if why:
+        block(why, ["cancellation_must_not_strand_more"], "network_operations_control")
+
     # ---- 4. money: an offer can't give more than the rules allow
     if proposal.get("owed_inputs") is not None and (proposal.get("offer") or {}).get("items"):
         owed = compensation_for(proposal["owed_inputs"], rules)

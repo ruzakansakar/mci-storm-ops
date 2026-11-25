@@ -269,7 +269,8 @@ D = [
 
 # The money and safety rules that a decision uses only through the rule check, listed here so every enforced rule is covered.
 EXTRA_RULES = {
-    "B03": ["unlisted_action_is_human_only", "never_auto_rungs"],
+    "B03": ["unlisted_action_is_human_only", "never_auto_rungs", "cancellation_must_not_strand_more"],
+    "B04": ["cancellation_must_not_strand_more"],               # fix-seats: a cancellation must not strand more
     "C01": ["needs_inspection_check_note"],
     "F07": ["tarmac_lavatories_medical"],
 }

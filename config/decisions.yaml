@@ -328,6 +328,7 @@ decisions:
     role: network_operations_control
   checked_by:
   - orchestrator rule check
+  - cancellation_must_not_strand_more
   - rung_4_legal
   - crew_duty_buffer_min
   - pilot_min_rest_hours
@@ -341,6 +342,7 @@ decisions:
   - action_cancel_flight
   safety_rung: 4
   rules:
+  - cancellation_must_not_strand_more   # fix-seats
   - crew_duty_buffer_min
   - pilot_min_rest_hours
   - pilot_sleep_opportunity_hours
@@ -368,11 +370,13 @@ decisions:
     role: network_operations_control
   checked_by:
   - orchestrator rule check
+  - cancellation_must_not_strand_more
   - rung_6_network
   - proposal_conflicts_block
   - action_cancel_flight
   safety_rung: 6
   rules:
+  - cancellation_must_not_strand_more   # fix-seats
   - proposal_conflicts_block
   - action_cancel_flight
   data_needed: *id003

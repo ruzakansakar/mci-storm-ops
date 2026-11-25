@@ -24,6 +24,8 @@ event_feeds:
     network_proposal_reviewed: [proposal_id, action, flight_id, new_departure, crew_id, crew_role, role, rule_check_ok]
     network_approval_recorded: [proposal_id, plan_version, status, role, decided_at]
     recovery_action_applied: [proposal_id, plan_version, action, flight_id, new_departure, crew_id, role]   # 5b: done in the world
+  reservations:                        # fix-seats: the seat inventory, as the reservations system publishes it
+    seats_updated: [flight_id, seats, booked, sellable]
   flight_ops:
     flight_delayed: [flight_id, delay_min, new_departure, pax]
     flight_delay_updated: [flight_id, delay_min, new_departure, pax]
@@ -50,6 +52,11 @@ shared_reads:
              end_confidence, conflicts, stale_sources, data_as_of]
     conflict_fields: [key, flight_ids, fields, status]
     heartbeat: true
+  care_plans:                          # fix-seats: ONLY the seats its rebooking advice holds (flight and passenger ids)
+    producer: passenger_care
+    fields: [version, planned_at, rebooking_advice]
+    item_fields:
+      rebooking_advice: [flight_id, passengers]
   station_plans:                       # Phase 4f: ONLY the ramp status and the gate and staff shortages (never names or rosters)
     producer: station_staff
     fields: [version, planned_at, ramp_status, gate_shortages, staff_shortages]

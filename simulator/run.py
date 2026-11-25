@@ -117,8 +117,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
                           stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
                           network_rows=network_rows, care_rows=care_rows, station_rows=station_rows, **(copilot_options or {}),
-                          **({"apply_port": world.apply_decision} if mode == "orchestrated" else {}))
+                          **({"apply_port": world.apply_decision, "pending_port": world.set_pending} if mode == "orchestrated" else {}))
         world.orchestrated = mode == "orchestrated"     # approved co-pilot decisions replace today's process decisions
+        world.publish_seats = True                      # fix-seats: the reservations system's seat inventory (agents read it)
         from backend.contracts import load_contracts
         agent_types = {t for a in ("situation", "network_recovery", "passenger_care", "station_staff", "communication")
                        for t in load_contracts()[a].event_types}
@@ -130,6 +131,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     # changes. This is the truth feed the channels should follow (a real passenger service system publishes the same).
     for pid in sorted(world.truth):
         world.events.append(_trip_record(start, pid, world.truth[pid]))
+    if world.publish_seats:
+        world.t = start
+        world.publish_all_seats()
     for t in SimClock(start, until).ticks():
         world.step(t)
         for e in source_overlay:

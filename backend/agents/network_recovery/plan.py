@@ -110,6 +110,7 @@ class Planner:
         self.buffer = self.lim["crew_duty_buffer_min"]
         self.proposals = []                            # for the (advisory) executor: what the rule check should look at
         self.station = None                            # Station and Staff plan (Phase 4f), read in plan()
+        self.inv, self.held, self.guards_last = {}, {}, {}   # fix-seats: seat inventory at T and seats held / promised
         self.sources = [{"fact": "flight operations events", "source": "flight_ops", "as_of": ctx.feed_last("flight_ops").isoformat()},
                         {"fact": "published schedule, crew roster and fleet", "source": "plan published before the day",
                          "as_of": self.static["flights"][0]["sched_dep"].replace(hour=5, minute=0).isoformat()}]
@@ -287,9 +288,13 @@ class Planner:
                    dec, [f.id], f.pax, sources=self.sources)
         self.propose(("warn", f.id, role, w["likelihood"], legal[0]["crew_id"] if legal else None), "flag_crew_legality", out,
                      {"flight_id": f.id, "option": {}}, recheck=False)
+        due = self.now >= datetime.fromisoformat(w["illegal_at"]) - timedelta(minutes=self.s["crew"]["call_in_lead_min"])
+        # fix-seats: a scarce crew is called in only when it is needed: not on a guess, and not before the lead time it takes to
+        # approve and report (its duty clock starts when it is called; the warning still goes as early as before)
         if legal:
+            self.reserved.add(legal[0]["crew_id"])     # earmarked for this flight in the plan now (never offered twice)
+        if legal and self.not_a_guess(f) and due:
             best = legal[0]
-            self.reserved.add(best["crew_id"])
             dec2 = {"reserve": ["D03"] if role == "pilot" else ["D08"], "swap": ["D11"], "deadhead": ["D04"]}[best["kind"]]
             title = {"reserve": f"Call in reserve {best['crew_id']} for {f.id} ({who})",
                      "swap": f"Swap crew {best['crew_id']} (from cancelled {best.get('from_flight')}) onto {f.id} ({who})",
@@ -355,16 +360,49 @@ class Planner:
         score += p["no_seats_later_today"] if seats_later.get(f.destination, 0) <= 0 else 0
         return round(score, 1)
 
+    # ------------------------------------------------------------ seats (fix-seats: backend/rules/seats.py, shared with Care)
+    def later_ids(self, f):
+        """Later departures today to the same city that a cancelled flight's passengers could be moved to."""
+        when = f.est_dep or f.sched_dep
+        return [g.id for g in self.st.flights.values() if g.direction == "departure" and not g.next_day and g.id != f.id
+                and g.destination == f.destination and g.waiting and (g.est_dep or g.sched_dep) > when]
+
+    def seats_later(self):
+        """destination -> free seats on later departures today (real seats now, minus what is held or promised)."""
+        from backend.rules.seats import free
+        out = {}
+        for g in self.st.flights.values():
+            if g.direction == "departure" and not g.next_day and g.waiting and (g.est_dep or g.sched_dep) > self.now:
+                out[g.destination] = out.get(g.destination, 0) + free(g.id, self.inv, self.held)
+        return out
+
+    def not_a_guess(self, f):
+        """Act (cancel, call in a crew) only if the flight is actually held or delayed by the incident, or Situation's end is at
+        least medium confidence. Otherwise the stop may end sooner than feared and the scarce reserve or seat is wasted."""
+        held = f.status == "delayed" or (f.est_dep is not None and f.est_dep > f.sched_dep)
+        conf = (((self.pic or {}).get("suspected") or {}).get("expected_end_likely") or {}).get("confidence")
+        return held or (conf is not None and conf >= self.s["plan"]["cancel_needs_end_confidence"])
+
+    def no_alternative(self, f, stuck):
+        """Crew or aircraft legality leaves no way to fly it: its crew will time out with no legal option, or its aircraft
+        will not come (the inbound flight is cancelled)."""
+        if f.id in stuck:
+            return "its crew will run out of legal duty and no legal reserve, swap or deadhead exists"
+        inb = [g for g in self.st.flights.values() if g.direction == "arrival" and g.aircraft_id == f.aircraft_id
+               and g.sched_arr <= f.sched_dep and g.status == "cancelled"]
+        return "its aircraft will not arrive (inbound cancelled)" if inb else None
+
     def delay_cancel(self, crew):
+        from backend.rules.seats import stranded_if_cancelled, free
         st = self.st
-        seats = {r["destination"]: r.get("open_seats_later") or 0 for r in self.static["later_capacity"]}
+        seats = self.seats_later()
         empty = {"delays": [], "cancels": [], "protection": [], "estimates": {}, "seats_by_destination": {}}
         if not self.active:
             return {**empty, "seats_by_destination": self._seats(seats, [])}
         window = [f for f in st.flights.values() if f.direction == "departure" and not f.next_day and f.waiting
                   and f.sched_dep <= self.restart_worst]
         ranked = sorted(window, key=lambda f: (-self.protection(f, seats), f.sched_dep, f.id))
-        cancels, left = [], dict(seats)
+        cancels, left, guards = [], dict(seats), {}
         stop_min = (self.end_latest - self.m.stop_started).total_seconds() / 60 if self.end_latest else 0
         stuck = {w["flight_id"] for w in crew if w["likelihood"] == "likely" and w["best"] == "none" and w["role"] == "fa"}
         if stop_min >= self.s["plan"]["cancel_only_if_stop_min"]:
@@ -372,12 +410,28 @@ class Planner:
             gone = [f for f in st.flights.values() if f.direction == "departure" and not f.next_day and f.cancelled_at
                     and f.cancelled_at >= self.m.stop_started and f.sched_dep <= self.restart_worst]
             budget = int(self.s["plan"]["max_cancel_fraction"] * (len(window) + len(gone))) - len(gone)
+            conf = (((self.pic or {}).get("suspected") or {}).get("expected_end_likely") or {}).get("confidence")
             for f in [x for x in window if x.id in stuck] + list(reversed(ranked)):
                 if len(cancels) >= budget or f in cancels:
                     continue
-                if f.id in stuck or left.get(f.destination, 0) >= f.pax:          # its passengers fit on later flights today
+                no_alt = self.no_alternative(f, stuck)
+                if not no_alt and not self.not_a_guess(f):
+                    continue                    # no cancelling on a guess: not held by the incident, and the end is uncertain
+                pax = (self.inv.get(f.id) or {}).get("booked", f.pax)
+                later = self.later_ids(f)
+                est = stranded_if_cancelled(pax, later, self.inv, self.held)
+                alternative = 0                 # delayed or kept, its passengers still fly today
+                if no_alt or est["stranded"] <= alternative:
                     cancels.append(f)
-                    left[f.destination] = left.get(f.destination, 0) - f.pax
+                    guards[f.id] = {"stranded": est["stranded"], "rebooked_today": est["rebooked_today"],
+                                    "alternative": "none (" + no_alt + ")" if no_alt else "delay or keep as scheduled",
+                                    "alternative_stranded": None if no_alt else alternative, "no_alternative": bool(no_alt)}
+                    need = est["rebooked_today"]          # the seats its passengers would take are no longer free for others
+                    for gid in sorted(later, key=lambda x: self.st.flights[x].est_dep or self.st.flights[x].sched_dep):
+                        take = min(need, free(gid, self.inv, self.held))
+                        self.held[gid] = self.held.get(gid, 0) + take
+                        need -= take
+                    left[f.destination] = max(0, left.get(f.destination, 0) - est["rebooked_today"])
         delays = []
         slot = self.restart_likely
         used = {}                                             # departures it already placed in each station-constrained slot
@@ -413,7 +467,8 @@ class Planner:
                        "today" if f.id not in stuck else "its flight attendants will run out of legal duty and no legal option exists",
                        self.now, [_opt(f"cancel-{f.id}", f"cancel {f.id}", [f.id], f.pax, -self.protection(f, seats))],
                        ["B03", "B04"], [f.id], f.pax, sources=self.sources)
-            self.propose(("cancel", f.id), "cancel_flight", out, {"flight_id": f.id, "option": {}}, recheck=False)
+            self.propose(("cancel", f.id), "cancel_flight", out, {"flight_id": f.id, "option": {"cancellation": guards[f.id]}},
+                         recheck=False)
         order = [{"flight_id": f.id, "protection": self.protection(f, seats)} for f in ranked]
         key = tuple(o["flight_id"] for o in order[:20])
         if order:
@@ -421,9 +476,13 @@ class Planner:
                        "seats later today", self.now, [_opt("order", " > ".join(key), list(key), 0, 1.0)], ["B06"], list(key), 0,
                        sources=self.sources)
             self.propose(("order", key), "set_flight_protection_order", out, {"option": {}}, recheck=False)
+        self.guards_last = guards
         est = self.estimate([f.id for f in cancels], seats)
         return {"delays": delays, "cancels": [{"flight_id": f.id, "pax": f.pax, "destination": f.destination,
-                                               "why": "crew" if f.id in stuck else "least protected; seats later today"} for f in cancels],
+                                               "why": "crew" if f.id in stuck else "least protected; seats later today",
+                                               "stranded_estimate": guards[f.id]["stranded"],
+                                               "alternative": guards[f.id]["alternative"],
+                                               "alternative_stranded": guards[f.id]["alternative_stranded"]} for f in cancels],
                 "protection": order, "estimates": est, "seats_by_destination": self._seats(left, cancels)}
 
     def station_fit(self, t, used):
@@ -458,7 +517,11 @@ class Planner:
         return t, "; ".join(notes) or None
 
     def estimate(self, cancelled_ids, seats):
-        return estimate_stranded([(fid, self.st.flights[fid].pax, self.st.flights[fid].destination) for fid in cancelled_ids], seats)
+        """ESTIMATE of passengers stranded by the planned cancellations, with real seats (fix-seats)."""
+        return {"label": "estimate: the plan is not applied", "cancellations": len(cancelled_ids),
+                "passengers_stranded_overnight": sum(self.guards_last.get(fid, {}).get("stranded", 0) for fid in cancelled_ids),
+                "method": "each cancelled flight's booked passengers go to free seats on later flights today to the same city "
+                          "(published seat inventory, minus seats held or promised); whoever does not fit is stranded"}
 
     def _seats(self, left, cancels):
         nxt = {}
@@ -537,6 +600,10 @@ def plan(ctx, memory: Memory | None = None, settings: dict | None = None) -> dic
     pic = ctx.read_shared("situation_assessments")
     p = Planner(ctx, memory, s)
     p.station = ctx.read_shared("station_plans") if "station_plans" in (ctx.contract.shared_reads or {}) else None
+    from backend.rules.seats import held_by_advice, inventory
+    p.inv = inventory(events)
+    care = ctx.read_shared("care_plans") if "care_plans" in (ctx.contract.shared_reads or {}) else None
+    p.held = held_by_advice(((care or {}).get("facts") or {}).get("rebooking_advice"))
     memory.basis = {"situation_version": (pic or {}).get("version"), "station_plan_version": (p.station or {}).get("version")}
     res = p.run(events, pic)
     warnings = [{"kind": "crew", **{k: w[k] for k in ("flight_id", "role", "illegal_at", "likelihood", "best")}} for w in res["crew"]] + \
