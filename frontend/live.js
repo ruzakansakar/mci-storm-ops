@@ -259,7 +259,7 @@ function renderDetail() {
         : '<p class="muted">The agent did not record other options for this one.</p>'}</section>
     </div>
     <section class="d-sec"><h3>Rule check</h3><p><span class="status ${w.rule_check?.ok ? 'ok' : 'bad'}">${w.rule_check?.ok ? 'Passed' : 'Blocked'}</span>
-      ${esc((w.rule_check?.rules || []).join(', '))}${w.rule_check?.text ? `: ${esc(w.rule_check.text)}` : ''}</p></section>
+      ${esc((w.rule_check?.rules || []).join(', '))}${w.rule_check?.text ? `${(w.rule_check?.rules || []).length ? ':' : ''} ${esc(w.rule_check.text)}` : ''}</p></section>
     ${it.consequence_if_rejected ? `<section class="d-sec warnbox"><h3>${it.last_option ? 'No other option is left' : 'If you reject'}</h3><p>${esc(it.consequence_if_rejected)}</p></section>` : ''}
     <footer class="actions">
       ${rec ? `
@@ -321,7 +321,8 @@ async function refreshTrace() {
 }
 
 const AGENT_KEYS = ['situation', 'network_recovery', 'passenger_care', 'station_staff', 'communication'];
-const INPUT_AGENT = { situation: 'situation', recovery_plan: 'network_recovery', care_plan: 'passenger_care', station_plan: 'station_staff', communication: 'communication' };
+const INPUT_AGENT = { situation: 'situation', recovery_plan: 'network_recovery', care_plan: 'passenger_care', station_plan: 'station_staff', communication: 'communication',
+  network_recovery: 'network_recovery', passenger_care: 'passenger_care', station_staff: 'station_staff' };
 
 // Turn the trace into the three parts of the flowchart: how it came about, you, and where it went.
 function flowModel(it, rec, g) {
@@ -330,7 +331,11 @@ function flowModel(it, rec, g) {
   const human = nodes.find((n) => n.kind === 'human');
   const after = (n) => human && n.t && n.t >= human.t && n.kind === 'communication' && nodes.indexOf(n) > nodes.indexOf(human);
   const w = it.why || {};
-  const feeds = nodes.filter((n) => n.kind === 'feed').map((n) => ({ label: n.label, t: n.t, text: n.detail?.text || '' }));
+  const feeds = nodes.filter((n) => n.kind === 'feed').map((n) => {
+    const m = String(n.label).match(/^([a-z_]+):\s*(.*)$/i);
+    const what = m ? m[2] : n.label, src = m ? m[1].replace(/_/g, ' ') : '';
+    return { label: what.charAt(0).toUpperCase() + what.slice(1), t: `${src}${src && n.t ? ', ' : ''}${n.t || ''}`, text: n.detail?.text || `${src}: ${what}` };
+  });
   if (!feeds.length) for (const x of w.trigger || []) feeds.push({ label: String(x.source).replace(/_/g, ' '), t: x.t, text: x.text });
   const agents = AGENT_KEYS.map((key) => {
     const mine = nodes.filter((n) => n.kind === key && !after(n));
@@ -356,15 +361,16 @@ function flowModel(it, rec, g) {
     sub: youState === 'waiting' ? `decide by ${it.deadline}` : (human?.t || rec?.at || ''), t: human?.t || '', text: human?.detail?.text || (qNode?.detail?.text || '') };
   const preview = !finalApproved;
   const changeNodes = nodes.filter((n) => n.kind === 'change');
-  const changes = preview ? (g.preview?.changes?.length ? g.preview.changes : [{ label: it.title }]).map((c) => ({ label: c.label, t: '', text: c.label })) :
+  const changes = preview ? (g.preview?.changes?.length ? g.preview.changes : []).map((c) => ({ label: c.label, t: '', text: c.label })) :
     changeNodes.map((n) => ({ label: n.label, t: n.t, text: n.detail?.text || n.label }));
   const comm = nodes.filter((n) => n.kind === 'communication' && after(n)).pop();
   const destNodes = nodes.filter((n) => n.kind === 'channel' || n.kind === 'staff');
   const iconOf = (k) => ({ app: 'app', sms: 'sms', gate_screen: 'gate_screen', call_center: 'call_center', call_center_agents: 'call_center', crew: 'crew' }[k] || 'staff');
   const dests = preview
-    ? (g.preview?.destinations?.length ? g.preview.destinations : ['App', 'SMS', 'Gate screens', 'Call center screens'].map((label) => ({ label })))
+    ? (g.preview?.destinations || [])
       .map((d) => ({ label: d.label, icon: d.icon || iconOf(d.key), status: 'preview', text: 'Will get the same update at the same time' }))
-    : destNodes.map((n) => ({ label: n.label, icon: n.detail?.icon || iconOf(n.detail?.key || n.label), status: n.detail?.status || 'waiting', t: n.t, text: n.detail?.text || '' }));
+    : destNodes.map((n) => ({ label: String(n.label).split(':')[0], icon: n.detail?.icon || iconOf(n.detail?.key || n.label), status: n.detail?.status || 'waiting',
+        t: n.detail?.delivered > 1 ? `${n.detail.delivered} delivered${n.t ? ', ' + n.t : ''}` : n.t, text: [n.detail?.text, n.detail?.confirmed_by && `Confirmed by: ${n.detail.confirmed_by}`].filter(Boolean).join('. ') }));
   const hub = { label: 'One truth', sub: comm ? (comm.label.match(/v\d+/) || ['sent'])[0] : 'Communication', t: comm?.t,
     text: comm?.detail?.text ? `Sent to everyone: "${comm.detail.text}"` : 'The change is written once to the shared state and Communication sends that one version to every screen and every person at the same time.' };
   const rejected = answer === 'rejected' ? { agent: it.agent, label: `${agentName(it.agent)} is looking for a different plan`, sub: rec.reason ? `Your reason: ${rec.reason}` : '', text: it.consequence_if_rejected || '' } : null;
@@ -460,7 +466,7 @@ function drawFlow(flow) {
 async function refreshHistory() {
   const h = await ui.api.history(ui.run).catch(() => ({ decisions: [] }));
   $('history').innerHTML = `<thead><tr><th>Asked</th><th>Answered</th><th>Decision</th><th>Role</th><th>Your answer</th><th>Took</th></tr></thead><tbody>` +
-    (h.decisions.length ? h.decisions.map((d) => `<tr ${ui.decided.has(d.id) ? `data-open="${d.id}" tabindex="0" class="clickable"` : ''}><td>${esc(d.asked)}</td><td>${esc(d.answered)}</td><td>${esc(d.title)}</td><td>${esc(d.role)}</td>
+    (h.decisions.length ? h.decisions.map((d) => `<tr ${ui.decided.has(d.id) ? `data-open="${d.id}" tabindex="0" class="clickable"` : ''}><td>${esc(d.asked)}</td><td>${esc(d.answered)}</td><td>${esc(d.title)}</td><td>${esc(ROLE_TITLES[d.role] || d.role)}</td>
       <td><span class="status ${d.answer === 'approved' ? 'ok' : d.answer === 'rejected' ? 'bad' : 'warn'}">${esc(ACTION_WORD[d.answer] || d.answer)}</span>${d.by === 'director_of_operations' ? ' <span class="muted">by duty manager</span>' : ''}${d.reason ? `<br><span class="muted">${esc(d.reason)}</span>` : ''}</td>
       <td>${esc(d.waited_min)} min</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No decisions yet.</td></tr>') + '</tbody>';
   $('history').querySelectorAll('[data-open]').forEach((r) => r.addEventListener('click', () => {
@@ -491,7 +497,8 @@ async function refreshResults() {
 
 // ---------------------------------------------------------------- polling
 const agentName = (k) => ({ situation: 'Situation', network_recovery: 'Network Recovery', passenger_care: 'Passenger Care', station_staff: 'Station & Staff', communication: 'Communication', orchestrator: 'Orchestrator' }[k] || k);
-const kindName = (k) => ({ situation: "Situation's picture", recovery_plan: 'Network Recovery plan', care_plan: 'Passenger Care plan', station_plan: 'Station & Staff plan', communication: 'Communication draft' }[k] || k);
+const kindName = (k) => ({ situation: "Situation's picture", recovery_plan: 'Network Recovery plan', care_plan: 'Passenger Care plan', station_plan: 'Station & Staff plan', communication: 'Communication draft',
+  network_recovery: 'Network Recovery plan', passenger_care: 'Passenger Care plan', station_staff: 'Station & Staff plan' }[k] || k);
 
 async function refreshQueue() {
   const q = await ui.api.queue(ui.run, [...ui.view]).catch(() => null);

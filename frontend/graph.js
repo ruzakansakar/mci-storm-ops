@@ -175,6 +175,10 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
     // one truth hub
     g += box(300, R2, 120, H2, `hub ${m.preview ? 'preview' : 'on'}`, ICONS.communication, ['One truth'], m.hub.sub, m.hub);
     // destinations
+    if (!m.dests.length) {
+      g += `<text x="470" y="${R2 + 22}" class="df-sub">${m.preview ? 'Who is told shows up here once you answer.' : 'No one needed telling, or the messages are still being written.'}</text>`;
+    }
+    if (!m.changes.length) g += `<text x="0" y="${R2 + 22}" class="df-sub">${m.preview ? 'The agent did not say in advance what will change.' : 'No change recorded yet.'}</text>`;
     m.dests.forEach((d, k) => {
       const x = 470, y = R2 + k * DS;
       const st = m.preview ? 'preview' : d.status;
