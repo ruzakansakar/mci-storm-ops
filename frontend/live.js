@@ -1,7 +1,7 @@
 // Live control room: the user is the human in the loop for every decision the agents cannot make alone.
 import { pickApi, ROLE_TITLES } from './live-api.js';
 import { icon } from './icons.js';
-import { drawTrace } from './graph.js';
+import { drawDecisionFlow } from './graph.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -10,7 +10,7 @@ const CHANNELS = { app: 'App', sms: 'SMS', gate_screen: 'Gate screen', call_cent
 const ACTION_WORD = { approved: 'Approved', rejected: 'Rejected', waited: 'Waiting', 'handed off': 'Handed off' };
 
 const ui = { api: null, run: null, state: null, items: [], selected: null, roles: Object.keys(ROLE_TITLES), view: new Set(Object.keys(ROLE_TITLES)),
-  tab: 'decisions', series: [], traceFor: null, rejecting: false, busy: false };
+  tab: 'decisions', series: [], traceFor: null, rejecting: false, busy: false, decided: new Map() };
 
 // ---------------------------------------------------------------- theme
 function theme() { return document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); }
@@ -117,11 +117,9 @@ function renderState() {
 
   const t = s.truth || {};
   $('wrong-now').textContent = num(t.wrong_now);
-  const diffNow = (t.today_wrong_now || 0) - (t.wrong_now || 0);
-  $('wrong-now-sub').innerHTML = `Today's process: <b>${num(t.today_wrong_now)}</b>${diffNow > 0 ? `, <span class="good">${num(diffNow)} fewer</span>` : diffNow < 0 ? `, <span class="badtxt">${num(-diffNow)} more</span>` : ''}`;
+  $('wrong-now-sub').textContent = t.wrong_now ? 'until the co-pilot\'s fixes reach their screens' : 'every screen matches the truth';
   $('wrong-total').textContent = num(t.wrong_minutes_total);
-  const pct = t.today_wrong_minutes_total ? Math.round(100 * (1 - t.wrong_minutes_total / t.today_wrong_minutes_total)) : 0;
-  $('wrong-total-sub').innerHTML = `Today's process: <b>${num(t.today_wrong_minutes_total)}</b>${pct > 0 ? `, <span class="good">${pct}% less</span>` : pct < 0 ? `, <span class="badtxt">${-pct}% more</span>` : ''}`;
+  $('wrong-total-sub').textContent = 'one passenger on one wrong screen for one minute = 1';
   const last = ui.series[ui.series.length - 1];
   if (!last || last.m !== s.minute) ui.series.push({ m: s.minute, you: t.wrong_now || 0, today: t.today_wrong_now || 0 });
   if (ui.series.length > 600) ui.series.shift();
@@ -142,10 +140,9 @@ function drawSpark() {
   const pts = ui.series;
   if (pts.length < 2) { $('spark').innerHTML = ''; return; }
   const m0 = pts[0].m, m1 = Math.max(pts[pts.length - 1].m, m0 + 60);
-  const max = Math.max(10, ...pts.map((p) => Math.max(p.you, p.today))) * 1.1;
+  const max = Math.max(10, ...pts.map((p) => p.you)) * 1.1;
   const xy = (p, k) => `${((p.m - m0) / (m1 - m0) * 300).toFixed(1)},${(70 - p[k] / max * 66).toFixed(1)}`;
-  $('spark').innerHTML = `<polyline class="sp-today" points="${pts.map((p) => xy(p, 'today')).join(' ')}"/>
-    <polyline class="sp-you" points="${pts.map((p) => xy(p, 'you')).join(' ')}"/>`;
+  $('spark').innerHTML = `<polyline class="sp-you" points="${pts.map((p) => xy(p, 'you')).join(' ')}"/>`;
 }
 
 // ---------------------------------------------------------------- the queue
@@ -182,17 +179,27 @@ function renderQueue() {
     }).join('');
     $('qlist').querySelectorAll('[data-id]').forEach((b) => b.addEventListener('click', () => select(Number(b.dataset.id))));
   }
-  if (!ui.items.some((x) => x.id === ui.selected)) select(rows[0] ? rows[0].id : null, true);
+  if (!ui.items.some((x) => x.id === ui.selected) && !ui.decided.has(ui.selected)) select(rows[0] ? rows[0].id : null, true);
   else updateDetail();
 }
 
+// the decision on screen: still waiting (from the queue) or already answered (kept so you can watch it go out)
+function current() {
+  const live = ui.items.find((x) => x.id === ui.selected);
+  if (live) return { it: live, rec: null };
+  const rec = ui.decided.get(ui.selected);
+  return rec ? { it: rec.item, rec } : { it: null, rec: null };
+}
+
 // Re-draw the decision only when something about it changed, so reading and typing are never interrupted.
-function detailSig(it) {
-  return it ? [it.id, it.status, it.group_size, itemGroup(it).length, it.can_wait, it.last_option, it.consequence_if_rejected, ui.rejecting].join('|') : 'none';
+function detailSig() {
+  const { it, rec } = current();
+  return it ? [it.id, it.status, it.group_size, rec ? `${rec.answer}:${ui.items.length > 0}` : itemGroup(it).length, it.can_wait, it.last_option, it.consequence_if_rejected, ui.rejecting].join('|') : 'none';
 }
 function updateDetail() {
-  const it = ui.items.find((x) => x.id === ui.selected);
-  if (detailSig(it) !== ui.detailSig) { renderDetail(); return; }
+  const { it, rec } = current();
+  if (detailSig() !== ui.detailSig) { renderDetail(); return; }
+  if (rec) return;
   if (!it) return;
   const left = $('detail').querySelector('.d-left');
   if (left) left.textContent = it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`;
@@ -210,14 +217,15 @@ function select(id, quiet = false) {
 // ---------------------------------------------------------------- one decision
 function renderDetail() {
   const box = $('detail');
-  const it = ui.items.find((x) => x.id === ui.selected);
-  ui.detailSig = detailSig(it);
+  const { it, rec } = current();
+  ui.detailSig = detailSig();
   if (!it) {
     box.innerHTML = `<div class="detail-empty">${icon('orchestrator', 'ico big')}<p>When an agent needs a person, its plan, the way it got there and your options appear here.</p></div>`;
     return;
   }
-  const group = it.group_size > 1 ? itemGroup(it) : [it];
+  const group = rec ? rec.group : it.group_size > 1 ? itemGroup(it) : [it];
   const w = it.why || {};
+  const ANSWER = { approved: 'Approved', rejected: 'Rejected', hand_off: 'Handed off to the duty manager' };
   const keepReason = box.querySelector('#reason')?.value || '';
   box.innerHTML = `
     <header class="d-head">
@@ -225,10 +233,11 @@ function renderDetail() {
         <p class="d-role">${icon(it.agent)} ${esc(agentName(it.agent))} asks <b>${esc(it.role_title)}</b></p>
         <h2>${esc(it.title)}</h2>
       </div>
+      ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">at ${esc(rec.at)}</span></div>` : `
       <div class="d-clock ${it.minutes_left <= 3 ? 'late' : ''}">
         <span class="d-left">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span>
         <span class="muted">${it.status === 'escalated' ? 'with the duty manager' : `to decide, by ${esc(it.deadline)}`}</span>
-      </div>
+      </div>`}
     </header>
     <div class="d-tags">
       ${it.safety_legal ? '<span class="tagx bad">Safety or legal</span>' : ''}${it.urgent ? '<span class="tagx warn">Urgent</span>' : ''}
@@ -237,9 +246,9 @@ function renderDetail() {
     </div>
     <section class="d-sec"><h3>The plan</h3><p class="d-plan">${esc(w.plan)}</p>
       ${group.length > 1 ? `<ul class="group-list">${group.map((g) => `<li>${esc(g.title)}</li>`).join('')}</ul>` : ''}</section>
-    <section class="d-sec"><h3>How it reached you</h3>
+    <section class="d-sec"><h3>${rec ? 'From what happened to every screen' : 'How it reached you, and where it goes next'}</h3>
       <div class="trace" id="trace"><p class="muted">Loading the path…</p></div>
-      <p class="trace-note muted" id="trace-note">Select a box to see what that step did.</p></section>
+      <p class="trace-note muted" id="trace-note">Select any box to see what that step did.</p></section>
     <section class="d-sec"><h3>Why a person must decide</h3><p>${esc(w.why_human)}</p></section>
     <div class="d-cols">
       <section class="d-sec"><h3>What it used</h3><ul class="plain">
@@ -253,7 +262,10 @@ function renderDetail() {
       ${esc((w.rule_check?.rules || []).join(', '))}${w.rule_check?.text ? `: ${esc(w.rule_check.text)}` : ''}</p></section>
     ${it.consequence_if_rejected ? `<section class="d-sec warnbox"><h3>${it.last_option ? 'No other option is left' : 'If you reject'}</h3><p>${esc(it.consequence_if_rejected)}</p></section>` : ''}
     <footer class="actions">
-      ${ui.rejecting ? `
+      ${rec ? `
+        <div class="act-row">
+          ${ui.items.length ? `<button class="btn primary" id="next" type="button">Go to the next decision (${ui.items.length} waiting)</button>` : '<span class="muted">Nothing else is waiting for you.</span>'}
+        </div>` : ui.rejecting ? `
         <label class="reason"><span>Why are you rejecting it? The agent uses this to find a different plan.</span>
           <textarea id="reason" rows="2" required>${esc(keepReason)}</textarea></label>
         <div class="act-row">
@@ -272,6 +284,7 @@ function renderDetail() {
         ${it.can_wait ? '' : `<p class="blocked">Can't wait: ${esc(it.blocked_by.map((b) => b.title).join(', '))} depends on this.</p>`}`}
     </footer>`;
   const ids = group.map((g) => g.id);
+  box.querySelector('#next')?.addEventListener('click', () => { ui.selected = null; renderQueue(); });
   box.querySelector('#do-approve')?.addEventListener('click', () => decide(ids, { action: 'approve' }, 'Approved'));
   box.querySelector('#start-reject')?.addEventListener('click', () => { ui.rejecting = true; renderDetail(); box.querySelector('#reason').focus(); });
   box.querySelector('#cancel-reject')?.addEventListener('click', () => { ui.rejecting = false; renderDetail(); });
@@ -287,20 +300,83 @@ function renderDetail() {
 
 async function loadTrace(it) {
   const el = $('trace');
-  if (ui.traceFor && ui.traceFor.id === it.id && ui.traceFor.graph) { paintTrace(ui.traceFor.graph); return; }
+  if (ui.traceFor && ui.traceFor.id === it.id && ui.traceFor.graph) { paintTrace(); return; }
   ui.traceFor = { id: it.id };
   try {
     const g = await ui.api.trace(ui.run, it.id);
     if (ui.selected !== it.id) return;
     ui.traceFor.graph = g;
-    paintTrace(g);
+    paintTrace();
   } catch (e) { el.innerHTML = `<p class="muted">Could not load the path: ${esc(e.message)}</p>`; }
 }
-function paintTrace(g) {
+async function refreshTrace() {
+  const { it, rec } = current();
+  if (!it || !rec || !ui.traceFor || ui.traceFor.id !== it.id) return;
+  const g = await ui.api.trace(ui.run, it.id).catch(() => null);
+  if (!g || ui.selected !== it.id) return;
+  const key = JSON.stringify(g.nodes.map((n) => [n.id, n.detail && n.detail.status]));
+  if (key === ui.traceFor.key) return;
+  ui.traceFor.graph = g; ui.traceFor.key = key;
+  paintTrace();
+}
+
+const AGENT_KEYS = ['situation', 'network_recovery', 'passenger_care', 'station_staff', 'communication'];
+const INPUT_AGENT = { situation: 'situation', recovery_plan: 'network_recovery', care_plan: 'passenger_care', station_plan: 'station_staff', communication: 'communication' };
+
+// Turn the trace into the three parts of the flowchart: how it came about, you, and where it went.
+function flowModel(it, rec, g) {
+  const nodes = g.nodes || [];
+  const qNode = nodes.find((n) => n.kind === 'question');
+  const human = nodes.find((n) => n.kind === 'human');
+  const after = (n) => human && n.t && n.t >= human.t && n.kind === 'communication' && nodes.indexOf(n) > nodes.indexOf(human);
+  const w = it.why || {};
+  const feeds = nodes.filter((n) => n.kind === 'feed').map((n) => ({ label: n.label, t: n.t, text: n.detail?.text || '' }));
+  if (!feeds.length) for (const x of w.trigger || []) feeds.push({ label: String(x.source).replace(/_/g, ' '), t: x.t, text: x.text });
+  const agents = AGENT_KEYS.map((key) => {
+    const mine = nodes.filter((n) => n.kind === key && !after(n));
+    const used = (w.inputs || []).filter((x) => INPUT_AGENT[x.kind] === key);
+    const involved = mine.length > 0 || used.length > 0 || it.agent === key;
+    const lastN = mine[mine.length - 1], lastU = used[used.length - 1];
+    const short = lastN ? (lastN.label.match(/v\d+/) || [''])[0] : lastU ? `v${lastU.version}` : it.agent === key ? 'asked' : '';
+    return { key, name: agentName(key), involved, short: short.trim(),
+      label: agentName(key), t: lastN?.t || lastU?.t || '',
+      text: involved ? (lastN?.detail?.text || (it.agent === key ? w.plan : `${kindName(lastU?.kind)} version ${lastU?.version}`)) : 'Had nothing to add to this decision.' };
+  });
+  const rcN = nodes.find((n) => n.kind === 'rule_check');
+  const rule = { ok: w.rule_check ? w.rule_check.ok : !/block/i.test(rcN?.label || ''), rules: (w.rule_check?.rules || []).join(', '),
+    label: 'Rule check', t: rcN?.t, text: w.rule_check?.text || rcN?.detail?.text || '' };
+  const orN = nodes.find((n) => n.kind === 'orchestrator');
+  const orch = { label: 'Orchestrator', t: orN?.t, text: orN?.detail?.text || w.why_human || '' };
+  const answer = rec ? rec.answer : null;
+  const finalApproved = answer === 'approved' || (human && /approved/i.test(human.label));
+  const youState = finalApproved ? 'approved' : answer === 'rejected' ? 'rejected' : answer === 'hand_off' ? 'handed off' : it.status === 'escalated' ? 'escalated' : 'waiting';
+  const you = { state: youState,
+    label: youState === 'waiting' ? 'Your call' : youState === 'approved' ? (human && /duty manager/i.test(human.label) ? 'Duty manager approved' : 'You approved') :
+      youState === 'rejected' ? 'You rejected' : youState === 'handed off' ? 'With the duty manager' : 'Escalated to duty manager',
+    sub: youState === 'waiting' ? `decide by ${it.deadline}` : (human?.t || rec?.at || ''), t: human?.t || '', text: human?.detail?.text || (qNode?.detail?.text || '') };
+  const preview = !finalApproved;
+  const changeNodes = nodes.filter((n) => n.kind === 'change');
+  const changes = preview ? (g.preview?.changes?.length ? g.preview.changes : [{ label: it.title }]).map((c) => ({ label: c.label, t: '', text: c.label })) :
+    changeNodes.map((n) => ({ label: n.label, t: n.t, text: n.detail?.text || n.label }));
+  const comm = nodes.filter((n) => n.kind === 'communication' && after(n)).pop();
+  const destNodes = nodes.filter((n) => n.kind === 'channel' || n.kind === 'staff');
+  const iconOf = (k) => ({ app: 'app', sms: 'sms', gate_screen: 'gate_screen', call_center: 'call_center', call_center_agents: 'call_center', crew: 'crew' }[k] || 'staff');
+  const dests = preview
+    ? (g.preview?.destinations?.length ? g.preview.destinations : ['App', 'SMS', 'Gate screens', 'Call center screens'].map((label) => ({ label })))
+      .map((d) => ({ label: d.label, icon: d.icon || iconOf(d.key), status: 'preview', text: 'Will get the same update at the same time' }))
+    : destNodes.map((n) => ({ label: n.label, icon: n.detail?.icon || iconOf(n.detail?.key || n.label), status: n.detail?.status || 'waiting', t: n.t, text: n.detail?.text || '' }));
+  const hub = { label: 'One truth', sub: comm ? (comm.label.match(/v\d+/) || ['sent'])[0] : 'Communication', t: comm?.t,
+    text: comm?.detail?.text ? `Sent to everyone: "${comm.detail.text}"` : 'The change is written once to the shared state and Communication sends that one version to every screen and every person at the same time.' };
+  const rejected = answer === 'rejected' ? { agent: it.agent, label: `${agentName(it.agent)} is looking for a different plan`, sub: rec.reason ? `Your reason: ${rec.reason}` : '', text: it.consequence_if_rejected || '' } : null;
+  return { feeds, agents, rule, orch, you, changes, hub, dests, preview, rejected };
+}
+
+function paintTrace() {
   const el = $('trace');
-  if (!el) return;
-  drawTrace(el, g, { onNode: (n) => {
-    $('trace-note').innerHTML = `<b>${esc(n.label)}</b> at ${esc(n.t)}${n.detail && n.detail.text ? `: ${esc(n.detail.text)}` : ''}`;
+  const { it, rec } = current();
+  if (!el || !it || !ui.traceFor?.graph) return;
+  drawDecisionFlow(el, flowModel(it, rec, ui.traceFor.graph), { onNode: (n) => {
+    $('trace-note').innerHTML = `<b>${esc(n.label || n.name || '')}</b>${n.t ? ` at ${esc(n.t)}` : ''}${n.text ? `: ${esc(n.text)}` : ''}`;
   } });
 }
 
@@ -308,9 +384,15 @@ async function decide(ids, body, done) {
   if (ui.busy) return;
   ui.busy = true;
   try {
+    const group = ids.map((id) => ui.items.find((x) => x.id === id)).filter(Boolean);
     const r = await ui.api.decide(ui.run, { question_ids: ids, ...body });
     const errs = r.results.filter((x) => x.error);
     if (errs.length) toast(errs.map((x) => x.error).join('; '), true); else toast(done);
+    if (body.action !== 'wait' && group.length && !errs.length) {     // keep it on screen to watch it go out
+      const rec = { item: group[0], group, answer: body.action === 'approve' ? 'approved' : body.action === 'reject' ? 'rejected' : body.action, reason: body.reason || '', at: ui.state?.clock || '' };
+      for (const g of group) ui.decided.set(g.id, rec);
+      ui.selected = group[0].id;
+    }
     ui.rejecting = false; ui.traceFor = null;
     await refreshQueue();
   } catch (e) {
@@ -378,9 +460,13 @@ function drawFlow(flow) {
 async function refreshHistory() {
   const h = await ui.api.history(ui.run).catch(() => ({ decisions: [] }));
   $('history').innerHTML = `<thead><tr><th>Asked</th><th>Answered</th><th>Decision</th><th>Role</th><th>Your answer</th><th>Took</th></tr></thead><tbody>` +
-    (h.decisions.length ? h.decisions.map((d) => `<tr><td>${esc(d.asked)}</td><td>${esc(d.answered)}</td><td>${esc(d.title)}</td><td>${esc(d.role)}</td>
+    (h.decisions.length ? h.decisions.map((d) => `<tr ${ui.decided.has(d.id) ? `data-open="${d.id}" tabindex="0" class="clickable"` : ''}><td>${esc(d.asked)}</td><td>${esc(d.answered)}</td><td>${esc(d.title)}</td><td>${esc(d.role)}</td>
       <td><span class="status ${d.answer === 'approved' ? 'ok' : d.answer === 'rejected' ? 'bad' : 'warn'}">${esc(ACTION_WORD[d.answer] || d.answer)}</span>${d.by === 'director_of_operations' ? ' <span class="muted">by duty manager</span>' : ''}${d.reason ? `<br><span class="muted">${esc(d.reason)}</span>` : ''}</td>
       <td>${esc(d.waited_min)} min</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No decisions yet.</td></tr>') + '</tbody>';
+  $('history').querySelectorAll('[data-open]').forEach((r) => r.addEventListener('click', () => {
+    ui.selected = Number(r.dataset.open); ui.traceFor = null;
+    document.querySelector('[data-tab="decisions"]').click(); renderDetail();
+  }));
 }
 
 async function refreshResults() {
@@ -431,6 +517,7 @@ async function loop() {
     ui.state = await ui.api.state(ui.run);
     renderState();
     await refreshQueue();
+    if (ui.tab === 'decisions' && ticks % 2 === 0) await refreshTrace();
     if (ui.tab === 'flow' && ticks % 2 === 0) await refreshFlow();
     if (ui.tab === 'history' && ticks % 3 === 0) await refreshHistory();
     if (ui.tab === 'results' && ticks % 5 === 0) await refreshResults();

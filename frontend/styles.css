@@ -5,8 +5,8 @@
   --ok: #1E8A55; --ok-soft: #E3F4EA; --warn: #9A5A07; --warn-soft: #FDF0DC; --bad: #A61C12; --bad-soft: #FCE8E6;
   --map-bg: #E8EDF3; --map-dot: #BAC6D2; --map-route: rgba(47,91,211,0.20); --map-out: #2F5BD3; --map-in: #0F766E; --map-label: #3C4955;
   --wx-1: rgba(46,160,90,0.28); --wx-2: rgba(232,178,40,0.42); --wx-3: rgba(206,52,40,0.55); --wx-wind: #5B6B7B; --wx-bolt: #E8A400;
-  --display: 'Barlow Semi Condensed', 'Arial Narrow', sans-serif;
-  --body: 'Atkinson Hyperlegible', system-ui, sans-serif;
+  --display: 'Inter Tight', 'Inter', system-ui, sans-serif;
+  --body: 'Inter', system-ui, sans-serif;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {

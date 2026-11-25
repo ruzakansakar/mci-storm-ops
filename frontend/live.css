@@ -188,3 +188,55 @@ legend { font-weight: 700; margin-bottom: 8px; }
   .pages { order: 3; width: 100%; }
   .actions { position: static; margin: 4px 0 0; padding: 12px 0 0; }
 }
+
+/* one decision, start to finish */
+.dflow { width: 100%; min-width: 720px; height: auto; display: block; }
+.df { cursor: pointer; }
+.df:focus { outline: none; }
+.df rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.df:hover rect, .df:focus rect { stroke: var(--accent); }
+.df-ico { fill: var(--accent); }
+.df-label { font: 600 13px var(--body); fill: var(--ink); }
+.df-sub { font: 11px var(--body); fill: var(--muted); }
+.df-head { font: 700 12px var(--body); fill: var(--muted); }
+.df-ver { font: 600 11px var(--body); fill: var(--accent); }
+.df-edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.df-edge.on { stroke: var(--accent); stroke-width: 2; }
+.df-edge.off { stroke-dasharray: 2 4; opacity: 0.6; }
+.df-edge.preview { stroke: var(--muted); stroke-dasharray: 5 5; opacity: 0.7; }
+.df-edge.sending { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; animation: flowdash 0.9s linear infinite; }
+.df-edge.bad { stroke: var(--bad); }
+.df.feed rect { fill: var(--bg); }
+.df.feed .df-ico { fill: var(--muted); }
+.df.agent.on rect { stroke: var(--accent); fill: var(--accent-soft); }
+.df.agent.off { opacity: 0.45; }
+.df.agent.off .df-ico { fill: var(--muted); }
+.df.shared rect { fill: var(--ink); stroke: var(--ink); }
+.df.shared .df-label { fill: var(--surface); font-size: 15px; font-weight: 700; }
+.df.shared .df-sub { fill: var(--surface); opacity: 0.75; }
+.df.rule.ok .df-ico { fill: var(--ok); } .df.rule.bad rect { stroke: var(--bad); }
+.df.you rect { stroke-width: 2.5; }
+.df.you.wait rect { stroke: var(--warn); fill: var(--warn-soft); } .df.you.wait .df-ico { fill: var(--warn); }
+.df.you.ok rect { stroke: var(--ok); fill: var(--ok-soft); } .df.you.ok .df-ico { fill: var(--ok); }
+.df.you.bad rect { stroke: var(--bad); fill: var(--bad-soft); } .df.you.bad .df-ico { fill: var(--bad); }
+.df.you.warn rect { stroke: var(--warn); fill: var(--warn-soft); }
+.df.change.on rect { stroke: var(--accent); }
+.df.change.preview rect, .df.hub.preview rect, .df.dest.preview rect { stroke-dasharray: 5 4; fill: transparent; }
+.df.change.preview .df-label, .df.dest.preview .df-label { fill: var(--muted); }
+.df.hub.on rect { fill: var(--accent); stroke: var(--accent); }
+.df.hub.on .df-label, .df.hub.on .df-sub { fill: var(--accent-ink); }
+.df.hub.on .df-ico { fill: var(--accent-ink); }
+.df.hub .df-label { font-size: 15px; font-weight: 700; }
+.df.dest.delivered rect { stroke: var(--ok); fill: var(--ok-soft); }
+.df.dest.delivered .df-sub { fill: var(--ok); font-weight: 700; }
+.df.dest.delivered .df-ico { fill: var(--ok); }
+.df.dest.waiting rect { stroke: var(--accent); stroke-dasharray: 4 3; }
+.df.dest.failed rect { stroke: var(--bad); fill: var(--bad-soft); }
+.df.replan rect { stroke: var(--bad); fill: var(--bad-soft); }
+.d-clock.done .d-left { font-size: 24px; }
+.d-clock.done.approved .d-left { color: var(--ok); } .d-clock.done.rejected .d-left { color: var(--bad); } .d-clock.done.hand_off .d-left { color: var(--warn); }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--bg); }
+@media (prefers-reduced-motion: reduce) { .df-edge.sending { animation: none; } }
+.df-mark { font: 600 12px var(--body); fill: var(--muted); }
+.df-mark.delivered { fill: var(--ok); } .df-mark.waiting { fill: var(--accent); } .df-mark.failed { fill: var(--bad); }
+.df.dest .df-label { font-size: 13px; }

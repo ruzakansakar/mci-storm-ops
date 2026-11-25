@@ -131,6 +131,34 @@ const SCRIPT = [
     whyHuman: 'Hotel spending needs the customer service supervisor.', reject: { last: true, consequence: '62 passengers get vouchers and find their own rooms' } },
 ];
 
+
+// What each kind of decision changes, and who is told, in the practice session.
+const CHANGES = {
+  extend_crew_duty: (q) => [`Crew ${q.target.crew_id} may work until 16:05`, `${q.target.flight_id} keeps its slot after the stop`],
+  delay_flight: (q) => [`${q.target.flight_id} now leaves 13:43`, 'Gate B57 held until 14:00'],
+  assign_reserve_crew: (q) => [`Reserve crew ${q.target.crew_id} on ${q.target.flight_id}`, 'Original crew released to rest'],
+  send_mass_message: () => ['Status for 19 flights: ground stop, next update 12:30'],
+  move_gate_agents: (q) => [`Gate agent moved for ${q.target.flight_id}`],
+  divert_flight: (q) => [`${q.target.flight_id} now landing in Des Moines`, 'New arrival time 12:40 (Des Moines)', 'Onward plan: back to MCI after the stop'],
+  pause_ramp_tasks: () => ['Ramp closed: 12 workers inside', 'Fuelling and loading paused'],
+  send_correction: (q) => [`${q.target.flight_id} status: diverted to St. Louis`, '158 trips updated'],
+  swap_crew: (q) => [`Crew ${q.target.crew_id} on ${q.target.flight_id}`, `${q.target.flight_id} leaves 15:14 from gate B58`, '143 trips updated, including Maya Torres'],
+  send_status_update: (q) => [`${q.target.flight_id} passengers: 15:14, gate B58`],
+  hold_hotel_rooms: () => ['40 rooms held at 2 partner hotels', 'Shuttle every 20 min from door 4'],
+};
+const D = {
+  app: ['app', 'Passengers: app', 'app', 1], sms: ['sms', 'Passengers: SMS', 'sms', 1], gate: ['gate_screen', 'Gate screens', 'gate_screen', 2],
+  cc: ['call_center', 'Call center screens', 'call_center', 2], counter: ['counter', 'Ticket counter agents', 'staff', 3], gates: ['gate_agents', 'Gate agents', 'staff', 3],
+  crew: ['crew', 'Crew', 'crew', 3], ramp: ['ramp', 'Ramp crew radios', 'staff', 1], hotel: ['hotel_desk', 'Hotel desks', 'staff', 4], ccagents: ['call_center_agents', 'Call center agents', 'call_center', 3],
+};
+const DESTS = {
+  extend_crew_duty: ['crew', 'gates', 'counter', 'ccagents'], delay_flight: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'crew', 'ccagents'],
+  assign_reserve_crew: ['crew', 'gates', 'ccagents'], send_mass_message: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'ccagents'],
+  move_gate_agents: ['gates'], divert_flight: ['app', 'sms', 'gate', 'cc', 'crew', 'ccagents'], pause_ramp_tasks: ['ramp', 'gates', 'crew'],
+  send_correction: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'ccagents'], swap_crew: ['crew', 'app', 'sms', 'gate', 'cc', 'counter', 'gates', 'ccagents'],
+  send_status_update: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'ccagents'], hold_hotel_rooms: ['app', 'sms', 'counter', 'ccagents', 'hotel'],
+};
+
 const AGENT_NAMES = { situation: 'Situation', network_recovery: 'Network Recovery', passenger_care: 'Passenger Care', station_staff: 'Station & Staff', communication: 'Communication' };
 
 class PracticeApi {
@@ -200,7 +228,7 @@ class PracticeApi {
   }
 
   _answer(q, status, m, by, reason = '') {
-    q.status = status; q.answeredMin = m;
+    q.status = status; q.answeredMin = m; q.answeredBy = by; q.reason = reason;
     const s = this.s;
     s.decisions.push({ id: q.id, title: q.title, role: ROLE_TITLES[q.role] || q.role, action: q.action, answer: status, reason,
       asked: hm(q.askedMin), answered: hm(m), waited_min: Math.round(m - q.askedMin), by });
@@ -341,11 +369,27 @@ class PracticeApi {
     edges.push({ from: rc, to: orch, label: 'sent to', t: hm(q.askedMin) });
     const qq = add({ id: 'q', kind: 'question', label: q.title, t: hm(q.askedMin), detail: { text: `${ROLE_TITLES[q.role]} must decide by ${hm(q.deadlineMin)}` } });
     edges.push({ from: orch, to: qq, label: 'sent to', t: hm(q.askedMin) });
-    if (['approved', 'rejected'].includes(q.status)) {
-      const h = add({ id: 'h', kind: 'human', label: `You: ${q.status}`, t: hm(q.answeredMin), detail: {} });
+    const text = q.msg ? q.plan.replace(/^.*?"(.*)".*$/, '$1') : `${q.title}. Same update for everyone.`;
+    const dests = (DESTS[q.action] || ['app', 'sms', 'gate', 'cc']).map((k) => D[k]);
+    const changes = (CHANGES[q.action] || (() => [q.title]))(q);
+    const preview = { changes: changes.map((label) => ({ label })), destinations: dests.map(([key, label, icon]) => ({ key, label, icon })) };
+    const final = ['approved', 'rejected'].includes(q.status);
+    if (final) {
+      const h = add({ id: 'h', kind: 'human', label: q.answeredBy === 'director_of_operations' ? `Duty manager: ${q.status}` : `You: ${q.status}`, t: hm(q.answeredMin), detail: { text: q.reason || '' } });
       edges.push({ from: qq, to: h, label: 'answered', t: hm(q.answeredMin) });
+      if (q.status === 'approved') {
+        const m = Math.floor(this.s.minute);
+        changes.forEach((label, i) => { add({ id: `x${i}`, kind: 'change', label, t: hm(q.answeredMin), detail: { text: label } }); edges.push({ from: h, to: `x${i}`, label: 'changed', t: hm(q.answeredMin) }); });
+        const c2 = add({ id: 'c2', kind: 'communication', label: `Communication v${300 + q.id * 3}`, t: hm(q.answeredMin + 1), detail: { text } });
+        dests.forEach(([key, label, icon, delay], i) => {
+          const at = q.answeredMin + delay;
+          const status = m >= at ? 'delivered' : 'waiting';
+          add({ id: `d${i}`, kind: ['app', 'sms', 'gate_screen', 'call_center'].includes(key) ? 'channel' : 'staff', label, t: status === 'delivered' ? hm(at) : '', detail: { status, text, key, icon } });
+          edges.push({ from: c2, to: `d${i}`, label: status === 'delivered' ? 'confirmed' : 'sent to', t: hm(at) });
+        });
+      }
     }
-    return { question_id: qid, snapshot: ['approved', 'rejected'].includes(q.status) ? 'answered' : 'asked', nodes, edges };
+    return { question_id: qid, snapshot: final ? 'answered' : 'asked', nodes, edges, preview: final ? null : preview };
   }
 
   async flow(id, since) {

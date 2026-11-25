@@ -295,7 +295,7 @@ export class NetworkMap {
       }
       if (isMci || a.base || hot || this.labels.has(a.code) || (this.hover && this.hover.codes.includes(a.code))) {
         ctx.fillStyle = colors.ink;
-        ctx.font = `${isMci || hot ? 700 : 400} ${isMci ? 13 : hot ? 13 : 11}px 'Atkinson Hyperlegible', system-ui, sans-serif`;
+        ctx.font = `${isMci || hot ? 700 : 400} ${isMci ? 13 : hot ? 13 : 11}px 'Inter', system-ui, sans-serif`;
         ctx.fillText(a.code, s.x + 7, s.y - 6);
       }
     }
