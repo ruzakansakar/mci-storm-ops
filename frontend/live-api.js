@@ -37,7 +37,8 @@ export const ROLE_TITLES = {
 export async function pickApi() {
   const forced = new URLSearchParams(location.search).get('mock') === '1';
   if (!forced) {
-    try { await http('GET', '/api/live/sessions'); return new RealApi(); } catch (e) { /* not there yet */ }
+    try { await http('GET', '/api/live/sessions'); return new RealApi(); }
+    catch (e) { if (e.status !== 404) throw e; }      // only a missing live backend means practice; other errors are shown
   }
   return new PracticeApi();
 }

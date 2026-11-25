@@ -46,10 +46,14 @@ $('start-form').addEventListener('submit', async (e) => {
   const roles = fd.getAll('role');
   const random = fd.get('day') === 'random';
   const body = { seed: random ? Math.floor(Math.random() * 9000) + 100 : 7, scenario: random ? 'random' : 'a31_storm', roles: roles.length ? roles : Object.keys(ROLE_TITLES) };
+  if (!ui.api) { toast('Still connecting to the database. Try again in a few seconds.', true); return; }
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true; btn.textContent = 'Starting the day…';
   try {
     const r = await ui.api.start(body);
     open(r.run_id, body.roles);
   } catch (err) { toast(`Could not start: ${err.message}`, true); }
+  finally { btn.disabled = false; btn.textContent = 'Start the day'; }
 });
 
 function open(runId, roles) {
@@ -535,7 +539,17 @@ async function loop() {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  ui.api = await pickApi();
+  const startBtn = document.querySelector('#start-form button[type="submit"]');
+  startBtn.disabled = true; startBtn.textContent = 'Connecting to the database…';
+  for (let attempt = 1; ; attempt++) {                // Neon can take a few seconds to wake up
+    try { ui.api = await pickApi(); break; }
+    catch (e) {
+      startBtn.textContent = `Waiting for the database (try ${attempt})…`;
+      if (attempt >= 6) { startBtn.textContent = 'Could not reach the database'; toast(`The server could not reach the database: ${e.message}. Check the terminal, then reload.`, true); return; }
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+  }
+  startBtn.disabled = false; startBtn.textContent = 'Start the day';
   $('practice').hidden = !ui.api.practice;
   const run = new URLSearchParams(location.search).get('run');
   if (run && !ui.api.practice) open(run, []);
