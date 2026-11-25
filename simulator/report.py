@@ -183,6 +183,9 @@ def build_html(data: dict) -> str:
     if data.get("comparison"):
         from simulator.comparison_page import section
         result = result.replace("</main>", section(**data["comparison"]) + "</main>")
+    if data.get("three_ways"):
+        from simulator.comparison_page import three_ways_section
+        result = result.replace("</main>", three_ways_section(data["three_ways"]) + "</main>")
     return result
 
 
@@ -195,6 +198,8 @@ def write_report(run_id: str | None = None, latest: bool = False):
                                  (run["seed"], run["scenario"])).fetchall())
         if all(mode in pair and "comparison_series" in pair[mode] for mode in ("today", "copilot")):
             data["comparison"] = {mode: pair[mode] for mode in ("today", "copilot")}
+        if all(mode in pair and "three_ways" in pair[mode] for mode in ("today", "copilot", "orchestrated")):
+            data["three_ways"] = {mode: pair[mode]["three_ways"] for mode in ("today", "copilot", "orchestrated")}
     REPORTS.mkdir(exist_ok=True)
     path = REPORTS / f"{rid}.html"
     path.write_text(build_html(data), encoding="utf-8")

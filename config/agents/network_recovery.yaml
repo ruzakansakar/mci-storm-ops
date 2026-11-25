@@ -23,6 +23,7 @@ event_feeds:
   decisions:
     network_proposal_reviewed: [proposal_id, action, flight_id, new_departure, crew_id, crew_role, role, rule_check_ok]
     network_approval_recorded: [proposal_id, plan_version, status, role, decided_at]
+    recovery_action_applied: [proposal_id, plan_version, action, flight_id, new_departure, crew_id, role]   # 5b: done in the world
   flight_ops:
     flight_delayed: [flight_id, delay_min, new_departure, pax]
     flight_delay_updated: [flight_id, delay_min, new_departure, pax]
@@ -38,6 +39,7 @@ event_feeds:
     next_day_flight_created: [flight_id, route, departs]
   crew_ops:                            # crew scheduling's own records
     reserve_crew_assigned: [flight_id, crew_id, role, reserve_id, reserve_duty_left_min]
+    crew_reassigned: [flight_id, crew_id, role, reserve_duty_left_min]   # 5b: an approved swap the world carried out
     crew_out_of_duty: [flight_id, crew_id, role]
     pilot_duty_extended: [flight_id, crew_id, extension_min]
 # Shared state (config/agents/_shared.yaml shared_state): the Situation agent's latest version <= T, these fields only.

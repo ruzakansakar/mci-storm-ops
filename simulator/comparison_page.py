@@ -307,3 +307,35 @@ def section(today, copilot):
         '<details><summary>Maya minute by minute — today (left), with co-pilot (right)</summary>' \
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;overflow:auto;max-height:650px">' + \
         ''.join(by_mode) + '</div></details></section>'
+
+
+THREE_WAYS = [("cancellations", "Flights cancelled"), ("delays", "Flights delayed"), ("diversions", "Flights diverted"),
+              ("stranded_overnight", "Passengers stranded overnight"), ("crew_legality_violations", "Crew legality violations"),
+              ("fallbacks", "Fallbacks to today's process"), ("applied", "Approved decisions applied"),
+              ("refused", "Approved decisions refused (facts changed)"), ("wrong_screen_minutes", "Wrong-screen passenger-minutes"),
+              ("messages_delivered", "Messages delivered"), ("promises_found", "Promises found"), ("approvals", "Approvals given"),
+              ("busiest_role_per_hour", "Busiest role (questions in an hour)"), ("hotel_rooms", "Hotel rooms assigned"),
+              ("care_cost_usd", "Care cost committed ($)"), ("ground_waits", "Planes that waited for staff or a gate")]
+
+
+def three_ways_section(modes):
+    """Phase 5b: today, with co-pilot (advice only) and orchestrated (approved decisions change the world), side by side."""
+    names = {"today": "Today", "copilot": "Co-pilot (advice)", "orchestrated": "Orchestrated"}
+    show3 = lambda v: "-" if v is None else (f"{str(v[0]).replace('_', ' ')} ({v[1]})" if isinstance(v, (list, tuple)) else
+                                              ", ".join(f"{k} {n}" for k, n in v.items()) if isinstance(v, dict) else f"{v:,}"
+                                              if isinstance(v, int) else str(v))
+    rows = "".join("<tr><th>" + label + "</th>" + "".join(f"<td>{esc(show3(modes[m].get(key)))}</td>" for m in names) + "</tr>"
+                   for key, label in THREE_WAYS)
+    maya = []
+    for m, label in names.items():
+        d = modes[m]["maya"]
+        legs = "; ".join(f"{x['flight_id']} {x['status']}" + (f", left {x['left']}" if x.get("left") else "")
+                         + (f" ({x['cancel_reason']})" if x.get("cancel_reason") else "") for x in d["legs"])
+        told = "".join(f"<li>{esc(t['at'])} {esc(t['text'] or t['type'])}</li>" for t in d["told"])
+        maya.append(f"<h4>Maya's day: {label}</h4><p>{esc(d['status'])}: {esc(legs)}. {esc(d.get('message') or '')}</p>"
+                    + (f"<ul>{told}</ul>" if told else "<p>No messages from the co-pilot (today's process sends none).</p>"))
+    return ('<section id="three-ways"><h2>Three ways</h2><p>The same day three ways: <b>today</b> (Southwest\'s current process), '
+            '<b>co-pilot</b> (the agents advise; nothing changes the world) and <b>orchestrated</b> (decisions a person approved are '
+            'carried out; where none was approved in time, today\'s process acts, logged as a fallback). Physics and law are the '
+            'same in all three.</p><table><tr><th>Measure</th>' + "".join(f"<th>{v}</th>" for v in names.values()) + '</tr>'
+            + rows + '</table>' + "".join(maya) + '</section>')

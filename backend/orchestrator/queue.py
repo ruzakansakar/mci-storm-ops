@@ -47,9 +47,29 @@ class Item:
 
 
 def own_deadline_min(decision: dict | None):
-    """A decision's own deadline in minutes, when its text says 'within N min' (else None)."""
-    m = re.search(r"within (\d+) min", (decision or {}).get("deadline") or "")
-    return int(m.group(1)) if m else None
+    """A decision's own deadline in minutes, when its text says 'within N min' / 'within N h' (else None)."""
+    text = (decision or {}).get("deadline") or ""
+    m = re.search(r"within (\d+) (min|h)", text)
+    if m:
+        return int(m.group(1)) * (60 if m.group(2) == "h" else 1)
+    return None
+
+
+def deadline_for(decision: dict | None, now, s: dict):
+    """When a person must have answered (Phase 5b): the decision's own deadline in config/decisions.yaml ('within N min',
+    'immediately', 'before HH:MM'); a deadline tied to an event we can't time here gets the default (settings)."""
+    text = ((decision or {}).get("deadline") or "").strip()
+    mins = own_deadline_min(decision)
+    if mins is not None:
+        return now + timedelta(minutes=mins)
+    if text.startswith("immediately"):
+        return now + timedelta(minutes=s["immediate_min"])
+    m = re.match(r"before (\d{1,2}):(\d{2})", text)
+    if m:
+        at = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if at > now:
+            return at
+    return now + timedelta(minutes=s["default_deadline_min"])
 
 
 class Queue:
@@ -64,8 +84,9 @@ class Queue:
 
     # ------------------------------------------------------------ helpers
     def _deadline(self, now, decision_ids):
-        mins = [self.answer_min] + [m for d in decision_ids or [] if (m := own_deadline_min(self.decisions.get(d))) is not None]
-        return now + timedelta(minutes=min(mins))
+        """The soonest of the decisions' own deadlines (Phase 5b; routine items are not all 10 minutes)."""
+        ds = [deadline_for(self.decisions.get(d), now, self.s["deadlines"]) for d in decision_ids or []]
+        return min(ds) if ds else now + timedelta(minutes=self.s["deadlines"]["default_deadline_min"])
 
     @staticmethod
     def _facts(proposal):
@@ -172,7 +193,15 @@ class Queue:
             if item is None or item.rec_id != q.rec_id or item.agent != q.agent:
                 out.append(q)
                 continue
+            if item.status == "answered":                    # the other person already answered it (an escalation)
+                continue
             item.status, item.answered_at, item.answered_by = "answered", now, q.role
+            if q.role != item.role:                          # the duty manager answered an escalated item, for that role
+                q = copy(q)
+                q.answer = {**q.answer, "answered_by": item.answered_by, "on_behalf_of": item.role}
+                q.role = item.role
+            if self.humans and len(item.alerted):            # whoever answers first: the other person's question is withdrawn
+                self.humans.withdraw(q.agent, q.rec_id)
             for agent, rec_id, proposal, asked in item.members:
                 if agent == q.agent and rec_id == q.rec_id:
                     out.append(q)
@@ -194,7 +223,10 @@ class Queue:
                 continue
             item.alerted.append(nxt)
             item.escalations.append({"at": now.isoformat(), "from": current, "to": nxt})
-            item.deadline = now + timedelta(minutes=self.answer_min)
+            item.deadline = now + timedelta(minutes=self.s["deadlines"]["escalated_answer_min"])
+            if self.humans and item.kind != "conflict" and nxt == self.s["duty_manager"]:
+                agent, rec_id, proposal, _ = item.members[0]          # the duty manager is asked too (same rules: passed only)
+                self.humans.ask(agent, rec_id, proposal, nxt, now, True)
             self.events.append(("decision_escalated", {"queue_item": item.id, "agent": item.agent, "recommendation": item.rec_id,
                                                        "action": item.action, "from_role": current, "to_role": nxt,
                                                        "decision_ids": item.decision_ids, "decision": "S06"}))

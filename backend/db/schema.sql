@@ -588,7 +588,7 @@ CREATE TABLE metric_runs (
     id             bigserial PRIMARY KEY,
     run_id         text NOT NULL,
     seed           bigint NOT NULL,
-    mode           text NOT NULL CHECK (mode IN ('today','copilot')),
+    mode           text NOT NULL CHECK (mode IN ('today','copilot','orchestrated')),
     scenario       text NOT NULL,
     metrics        jsonb NOT NULL,
     finished_at    timestamptz NOT NULL DEFAULT now()

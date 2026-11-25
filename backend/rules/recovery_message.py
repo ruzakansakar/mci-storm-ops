@@ -36,7 +36,8 @@ def directives(view, flights=None):
                 c = {k: v for k, v in {**row, "action": action or row.get("action")}.items()
                      if k in ("proposal_id", "action", "flight_id", "new_departure", "crew_id", "role", "report_by")}
                 if col == "crew_actions":
-                    dep = planned.get(c["flight_id"]) or ((flights or {}).get(c["flight_id"]) or {}).get("departure")
+                    # the flight's CURRENT published estimate first (a plan's earlier delay may be out of date)
+                    dep = ((flights or {}).get(c["flight_id"]) or {}).get("departure") or planned.get(c["flight_id"])
                     if dep:
                         c["departure"] = dep
                         if not c.get("report_by"):
@@ -91,11 +92,13 @@ def send_problems(draft, world):
     # Approval is not application. A source confirmation binds the applied action
     # to the proposal/version, and current operational facts must still match.
     applied = world.get("recovery_applications", {}).get(draft["proposal_id"])
-    op = lambda c: {k: c[k] for k in OPERATIONAL if k in (c or {})}    # what an application confirms (not the derived wording)
+    op = lambda c: {k: c[k] for k in OPERATIONAL if (c or {}).get(k) is not None}   # what an application confirms (set fields)
     if (not applied or applied.get("plan_version") != draft.get("plan_version") or op(applied.get("change")) != op(change)):
         problems.append("approved, waiting to take effect")
     elif not truth_matches(change, world.get("recovery_flights", {}), world.get("recovery_crews", {})):
         problems.append("approved, waiting to take effect")
+    if draft.get("audience") == "crew" and change.get("report_by") and world.get("now") is not None             and datetime.fromisoformat(change["report_by"]) <= world["now"]:
+        problems.append("the report time has already passed; crew scheduling must call the crew")
     if draft.get("audience") not in ("passenger", "crew"):
         problems.append("internal staff notes cannot use passenger delivery")
     if draft.get("audience") == "passenger":

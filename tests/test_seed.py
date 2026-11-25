@@ -87,6 +87,12 @@ def test_seed_data_is_exactly_what_it_was_before_the_numbers_moved_into_config_s
     assert (SEED, SAMPLE_PASSENGERS) == (42, 300), "the checksum is only valid for the default SEED and SAMPLE_PASSENGERS"
     data = build()
     issues = data.pop("data_issues")
+    # Phase 5b added a late shift to the roster on purpose (appended after the drawn shifts, no random draws: nothing else moves).
+    blob = json.dumps(data, sort_keys=True, default=str).encode()
+    assert hashlib.sha256(blob).hexdigest() == "ed6e59f097c85d40d1d674c443e091aaf1054b50f1c780fdb5dbb2c36ab1187a"
+    late = [s for s in data["staff"] if s["shift_start"].strftime("%H:%M") == "15:00"]
+    assert late and data["staff"][-len(late):] == late                 # exactly the appended late shift
+    data["staff"] = data["staff"][:-len(late)]                         # ...and without it, the data from before 5b, byte for byte
     blob = json.dumps(data, sort_keys=True, default=str).encode()
     # Phase 4c changed the data on purpose, in exactly two ways: (1) app/SMS screens only for passengers who have them on file,
     # (2) the story override gives Maya Torres app + SMS (config/seed.yaml story_overrides). New checksum:

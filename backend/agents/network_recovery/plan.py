@@ -368,7 +368,10 @@ class Planner:
         stop_min = (self.end_latest - self.m.stop_started).total_seconds() / 60 if self.end_latest else 0
         stuck = {w["flight_id"] for w in crew if w["likelihood"] == "likely" and w["best"] == "none" and w["role"] == "fa"}
         if stop_min >= self.s["plan"]["cancel_only_if_stop_min"]:
-            budget = int(self.s["plan"]["max_cancel_fraction"] * len(window))
+            # Phase 5b: departures in this stop window already cancelled (by today's process or an approved plan) count too
+            gone = [f for f in st.flights.values() if f.direction == "departure" and not f.next_day and f.cancelled_at
+                    and f.cancelled_at >= self.m.stop_started and f.sched_dep <= self.restart_worst]
+            budget = int(self.s["plan"]["max_cancel_fraction"] * (len(window) + len(gone))) - len(gone)
             for f in [x for x in window if x.id in stuck] + list(reversed(ranked)):
                 if len(cancels) >= budget or f in cancels:
                     continue

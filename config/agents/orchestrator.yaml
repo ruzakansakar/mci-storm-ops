@@ -216,6 +216,8 @@ writes:
     - queue_merged
     - workload_high
     - stale_chain_found
+    - decision_applied
+    - decision_refused
   audit_log:
     mode: insert
 actions:

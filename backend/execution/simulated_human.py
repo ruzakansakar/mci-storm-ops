@@ -44,6 +44,8 @@ class SimulatedHumans:
         self.station_rng.setstate(rng.getstate())
         self.orchestrator_rng = Random()           # Phase 5a: the orchestrator's own questions (A10, Q07, T05)
         self.orchestrator_rng.setstate(rng.getstate())
+        self.duty_seed = rng.getstate()[1][:8]     # Phase 5b: the duty manager answering escalations: one stream PER AGENT, so
+        self.duty_rngs = {}                        # one agent's escalations never move another agent's answer times
         self.questions: list[Question] = []
         self.answered_conflicts: dict = {}      # conflict key -> the answer already given (one answer per conflict)
         self.refused_blocked = 0                # proposals it never saw because the rule check blocked them
@@ -54,13 +56,18 @@ class SimulatedHumans:
             self.refused_blocked += 1
             return None
         action = proposal.get("action")
-        if action not in self.s["handles"].get(role, []):
+        handled = self.s["handles"].get(role, [])
+        if role == self.s.get("duty_manager"):     # answers whatever any simulated role answers, once it is escalated to them
+            handled = {x for acts in self.s["handles"].values() for x in acts}
+        if action not in handled:
             q = Question(rec_id, agent, action, role, now, None, False, proposal, status="not_handled")
             self.questions.append(q)
             return q
         urgent = bool(proposal.get("urgent"))
         lo, hi = self.s["response_min"][role]["urgent" if urgent else "normal"]
-        rng = self.network_rng if agent == "network_recovery" or proposal.get("recovery_message") else             self.station_rng if agent == "station_staff" else self.orchestrator_rng if agent == "orchestrator" else self.rng
+        rng = (self.duty_rngs.setdefault(agent, Random(f"duty:{agent}:{self.duty_seed}")) if role == self.s.get("duty_manager") else
+               self.network_rng if agent == "network_recovery" or proposal.get("recovery_message") else
+               self.station_rng if agent == "station_staff" else self.orchestrator_rng if agent == "orchestrator" else self.rng)
         q = Question(rec_id, agent, action, role, now, now + timedelta(minutes=rng.randint(lo, hi)), urgent, proposal)
         self.questions.append(q)
         return q

@@ -271,12 +271,12 @@ class Station:
         for fid, f in F.items():
             if f["destination"] != self.code or self.eta.get(fid) is None:
                 continue
-            g = st["gates"].get(fid) or next(({"gate": p["gate"], "remote": p.get("remote"), "pending": rid}
-                                              for rid, p in self.m.pending.items() if p.get("kind") == "gate"
-                                              and p.get("flight_id") == fid), None)
+            # the newest plan first: a replacement waiting for approval, else the gate applied (5b)
+            g = next(({"gate": p["gate"], "remote": p.get("remote"), "pending": rid} for rid, p in self.m.pending.items()
+                      if p.get("kind") == "gate" and p.get("flight_id") == fid), None) or st["gates"].get(fid)
             occ.append({"flight_id": fid, "gate": (g or {}).get("gate"), "remote": bool((g or {}).get("remote")),
                         "from": self.eta[fid] - timedelta(minutes=5), "to": self.gate_until(fid), "kind": "arrival",
-                        "status": "assigned" if fid in st["gates"] else "pending" if g else "none"})
+                        "status": "pending" if g and g.get("pending") else "assigned" if fid in st["gates"] else "none"})
         return occ
 
     # ------------------------------------------------------------ the run
@@ -417,6 +417,10 @@ class Station:
 
         lock = timedelta(minutes=S["lock_before_arrival_min"])
 
+        def taken_any(gate, a, b, me):
+            # anyone at all (earlier or later) holding the gate then: a NEW gate must be free of everybody (5b)
+            return any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"]) for o in occ)
+
         def taken(gate, a, b, me):
             # a plane that lands earlier (or was there overnight) keeps its gate; a later one moves
             return any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
@@ -456,7 +460,8 @@ class Station:
                 out.append({"flight_id": fid, "gate": p["gate"], "from": _iso(o["from"]), "to": _iso(o["to"]), "status": "pending"})
                 continue
             keep = old["gate"] if moved and not taken(old["gate"], o["from"], o["to"], fid) else None
-            pick = keep or next((g for g in names if not taken(g, o["from"], o["to"], fid)), None)
+            pick = keep or next((g for g in names if not taken_any(g, o["from"], o["to"], fid)), None) or \
+                next((g for g in names if not taken(g, o["from"], o["to"], fid)), None)
             remote = False
             if pick is None and self.ramp_open_at(o["from"], o["to"]):
                 pick, remote = next((g for g in stands if not taken(g, o["from"], o["to"], fid)), None), True

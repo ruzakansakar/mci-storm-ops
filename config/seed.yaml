@@ -105,3 +105,6 @@ staff:                             # assumption: MCI staff roster
     station_manager: 2
   shift_starts: ["04:00", "04:30", "08:00", "12:00", "13:00"]
   shift_length_min: 510            # 8 h 30 min
+  late_shift:                      # assumption (Phase 5b): the drawn shifts end by 21:30 but flights run until 22:10 and the
+    start: "15:00"                 # last arrival's turn ends later; a late shift is added AFTER the drawn ones (no random
+    roles: {ramp: 8, gate_agent: 4, wheelchair: 2, customer_service: 2}   # draws), so every existing staff member is unchanged

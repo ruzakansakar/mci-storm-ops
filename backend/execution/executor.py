@@ -9,6 +9,28 @@ from backend.rules import load_rules
 from backend.contracts.loader import load_contracts
 
 
+def apply_approved(proposal: dict, now, port, world: dict | None = None) -> dict:
+    """Phase 5b (orchestrated mode): carry out an APPROVED decision in the world. The rule check runs again NOW (the data behind
+    it is as of now); a block is never applied. The operational systems (`port`) refuse it too if the facts changed."""
+    verdict = check_only({**proposal, "data_as_of": now}, {"now": now, "flights": {}, **(world or {})})
+    if verdict["result"] != "pass":
+        return {"applied": False, "reason": "blocked by the rule check at apply time: " + "; ".join(verdict["reasons"][:2]),
+                "verdict": verdict}
+    out = port(proposal["action"], proposal["facts"])
+    return {**out, "verdict": verdict}
+
+
+def apply_approved(proposal: dict, now, port, world: dict | None = None) -> dict:
+    """Phase 5b (orchestrated mode): carry out an APPROVED decision in the world. The rule check runs again NOW (the data behind
+    it is as of now); a block is never applied. The operational systems (`port`) refuse it too if the facts changed."""
+    verdict = check_only({**proposal, "data_as_of": now}, {"now": now, "flights": {}, **(world or {})})
+    if verdict["result"] != "pass":
+        return {"applied": False, "reason": "blocked by the rule check at apply time: " + "; ".join(verdict["reasons"][:2]),
+                "verdict": verdict}
+    out = port(proposal["action"], proposal["facts"])
+    return {**out, "verdict": verdict}
+
+
 def check_only(proposal, world, pending=(), rules=None):
     """The rule check plus the contract check, without dispatching anything (also used again when an approval arrives)."""
     rules = rules or load_rules()

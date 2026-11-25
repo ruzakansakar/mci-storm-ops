@@ -19,10 +19,16 @@ response_min:                          # how long a person takes to answer, draw
   ramp_supervisor:                     # Phase 4f
     normal: [5, 20]                    # assumption
     urgent: [2, 8]                     # assumption
+  director_of_operations:              # Phase 5b: the duty manager, answering escalations
+    normal: [3, 10]                    # assumption
+    urgent: [2, 5]                     # assumption
+
+duty_manager: director_of_operations   # Phase 5b: answers anything a simulated role answers, once it is escalated to them
 
 handles:                               # what each simulated person answers. Anything else stays pending (it is listed, not answered)
   customer_service_supervisor: [draft_message, send_mass_message, send_staff_briefing, send_crew_message, escalate_channel_problem,
-                                issue_compensation, arrange_ground_transport, offer_refund]   # 4e: rooms, transport, refund offers
+                                issue_compensation, arrange_ground_transport, offer_refund,   # 4e: rooms, transport, refund offers
+                                rebook_passenger]              # 5b: asked only in orchestrated mode (advice elsewhere)
   network_operations_control: [resolve_source_conflict, delay_flight, cancel_flight, declare_recovery]   # 5a: A10
   crew_scheduling: [call_in_reserve_crew, swap_crews, deadhead_crew]
   station_manager: [assign_gates, move_gate_agents, call_in_ground_staff, supervise_child_alone, arrange_food_water,

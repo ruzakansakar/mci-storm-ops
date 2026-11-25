@@ -153,6 +153,13 @@ physics:
     arrive_before_departure_min: 60   # assumption: passengers reach the terminal this long before departure
     show_up_fraction: 0.85       # assumption: share of booked passengers who are in the terminal
   disrupted_delay_min: 30        # assumption: a flight this late counts as "disrupted" in the numbers
+  ground:                        # Phase 5b: staff and gates are physics, in EVERY mode (today, copilot, orchestrated). The same
+                                 # numbers as Station & Staff's settings (tested); calibrated on a calm day, not on any storm
+    southwest_gates: 15          # assumption (= station_staff gates.southwest_gates)
+    remote_stands: 4             # assumption: usable only while the ramp is open (stairs)
+    tow_to_gate_before_min: 60   # assumption: a plane parked overnight is at a gate from this long before its first departure
+    departure: {ramp: [3, 25], gate_agent: [1, 30]}   # people, minutes before pushback
+    arrival: {ramp: [3, 20], gate_agent: [1, 15]}     # people, minutes after landing
 
 # ------------------------------------------------------------------ TODAY'S BEHAVIOUR (no co-pilot)
 # Simple fixed rules that stand in for what Southwest does today. Not the co-pilot.

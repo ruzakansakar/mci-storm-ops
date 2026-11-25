@@ -21,6 +21,28 @@ from backend.execution.network_approval import NetworkApprovals
 from backend.rules.recovery_message import send_problems as recovery_send_problems
 
 
+def snapshot(memory):
+    """A copy of an agent's working memory to roll back to if its run fails. Its list of written plan versions only ever grows
+    (append-only), so it is kept by length instead of copied (5b: copying every version each run grew all day)."""
+    plans = getattr(memory, "plans", None)
+    if plans is None:
+        return (deepcopy(memory), None, None)
+    memory.plans = []
+    try:
+        copy_ = deepcopy(memory)
+    finally:
+        memory.plans = plans
+    return (copy_, plans, len(plans))
+
+
+def restore(saved):
+    copy_, plans, n = saved
+    if plans is not None:
+        del plans[n:]
+        copy_.plans = plans
+    return copy_
+
+
 def serial(value):
     if isinstance(value, datetime):
         return value.isoformat()
@@ -113,11 +135,11 @@ class NetworkRunner:
             return
         ctx = self.context
         ctx.now = now
-        saved = deepcopy(self.memory)
+        saved = snapshot(self.memory)
         try:
             res = plan(ctx, self.memory, self.s)
         except Exception as err:                 # no partial plan; one agent_error with the reason
-            self.memory = saved
+            self.memory = restore(saved)
             ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
             self.errors.append((now, f"{type(err).__name__}: {err}"))
             return
@@ -172,11 +194,11 @@ class CareRunner:
             return
         ctx = self.context
         ctx.now = now
-        saved = deepcopy(self.memory)
+        saved = snapshot(self.memory)
         try:
             res = plan_care(ctx, self.memory, self.s)
         except Exception as err:
-            self.memory = saved
+            self.memory = restore(saved)
             ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
             self.errors.append((now, f"{type(err).__name__}: {err}"))
             return
@@ -205,7 +227,7 @@ class CareRunner:
                 rec["status"] = "pending"
                 # advice is advisory: recorded, never put to a person to apply. A child's supervision is a request for Station &
                 # Staff (Phase 4f): it names the staff member, the station manager approves that, and this request is then closed.
-                if humans and p["kind"] not in ("advice", "child"):
+                if humans and (p["kind"] not in ("advice", "child") or (p["kind"] == "advice" and getattr(self, "ask_advice", False))):
                     humans.ask("passenger_care", p["id"], p, rec.get("approver_role"), now, True)
 
     def approved(self, q, now, publish):
@@ -289,11 +311,11 @@ class StationRunner:
             return
         ctx = self.context
         ctx.now = now
-        saved = deepcopy(self.memory)
+        saved = snapshot(self.memory)
         try:
             res = plan_station(ctx, self.memory, self.s)
         except Exception as err:
-            self.memory = saved
+            self.memory = restore(saved)
             ctx.record_event("agent_error", {"at": now.isoformat(), "error": f"{type(err).__name__}: {err}"})
             self.errors.append((now, f"{type(err).__name__}: {err}"))
             return
