@@ -4,7 +4,7 @@
   --accent: #2F5BD3; --accent-ink: #FFFFFF; --accent-soft: #E7EEFC;
   --ok: #1E8A55; --ok-soft: #E3F4EA; --warn: #9A5A07; --warn-soft: #FDF0DC; --bad: #A61C12; --bad-soft: #FCE8E6;
   --map-bg: #E8EDF3; --map-dot: #BAC6D2; --map-route: rgba(47,91,211,0.20); --map-out: #2F5BD3; --map-in: #0F766E; --map-label: #3C4955;
-  --wx-1: rgba(46,160,90,0.28); --wx-2: rgba(232,178,40,0.42); --wx-3: rgba(206,52,40,0.55); --wx-wind: #5B6B7B; --wx-bolt: #E8A400;
+  --wx-1: rgba(46,160,90,0.28); --wx-2: rgba(232,178,40,0.42); --wx-3: rgba(206,52,40,0.55); --wx-wind: #5B6B7B; --wx-bolt: #E8A400; --wx-cloud: #6B7785; --wx-rain: #3E6FB8;
   --display: 'Inter Tight', 'Inter', system-ui, sans-serif;
   --body: 'Inter', system-ui, sans-serif;
   color-scheme: light;
@@ -15,7 +15,7 @@
     --accent: #7EA6FF; --accent-ink: #0B1118; --accent-soft: rgba(126,166,255,0.14);
     --ok: #57C38A; --ok-soft: rgba(87,195,138,0.14); --warn: #F2B35C; --warn-soft: rgba(242,179,92,0.14); --bad: #FF8A7E; --bad-soft: rgba(255,138,126,0.14);
     --map-bg: #0E1620; --map-dot: #2A3B4D; --map-route: rgba(126,166,255,0.18); --map-out: #7EA6FF; --map-in: #5FD0C0; --map-label: #B7C3CF;
-    --wx-1: rgba(70,200,120,0.22); --wx-2: rgba(250,200,70,0.34); --wx-3: rgba(255,90,80,0.5); --wx-wind: #8FA3B8; --wx-bolt: #FFE27A;
+    --wx-1: rgba(70,200,120,0.22); --wx-2: rgba(250,200,70,0.34); --wx-3: rgba(255,90,80,0.5); --wx-wind: #8FA3B8; --wx-bolt: #FFE27A; --wx-cloud: #C9D3DE; --wx-rain: #9CC2FF;
     color-scheme: dark;
   }
 }
@@ -24,7 +24,7 @@
   --accent: #7EA6FF; --accent-ink: #0B1118; --accent-soft: rgba(126,166,255,0.14);
   --ok: #57C38A; --ok-soft: rgba(87,195,138,0.14); --warn: #F2B35C; --warn-soft: rgba(242,179,92,0.14); --bad: #FF8A7E; --bad-soft: rgba(255,138,126,0.14);
   --map-bg: #0E1620; --map-dot: #2A3B4D; --map-route: rgba(126,166,255,0.18); --map-out: #7EA6FF; --map-in: #5FD0C0; --map-label: #B7C3CF;
-  --wx-1: rgba(70,200,120,0.22); --wx-2: rgba(250,200,70,0.34); --wx-3: rgba(255,90,80,0.5); --wx-wind: #8FA3B8; --wx-bolt: #FFE27A;
+  --wx-1: rgba(70,200,120,0.22); --wx-2: rgba(250,200,70,0.34); --wx-3: rgba(255,90,80,0.5); --wx-wind: #8FA3B8; --wx-bolt: #FFE27A; --wx-cloud: #C9D3DE; --wx-rain: #9CC2FF;
   color-scheme: dark;
 }
 

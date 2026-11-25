@@ -121,8 +121,8 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
   let g = '', e = '';
 
   // column headings
-  const heads = [[0, 'What happened'], [180, 'Agents bring in what they know'], [404, 'Shared state'], [530, 'Checked'], [730, 'You']];
-  const heads2 = [[0, m.preview ? 'What will change if you approve' : 'What changed'], [300, 'One truth'], [470, m.preview ? 'Who will be told, at once' : 'Sent to everyone, at once']];
+  const heads = [[0, 'What happened'], [180, "The co-pilot's agents"], [404, 'Shared picture'], [530, 'Safety rules'], [730, 'You']];
+  const heads2 = [[0, m.preview ? 'What changes if you approve' : 'What changed'], [300, 'One update'], [470, m.preview ? 'Who will be told, at the same time' : 'Everyone told, at the same time']];
   for (const [x, t] of heads) g += `<text x="${x}" y="-12" class="df-head">${esc(t)}</text>`;
   for (const [x, t] of heads2) g += `<text x="${x}" y="${R2 - 12}" class="df-head">${esc(t)}</text>`;
 
@@ -145,12 +145,12 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
   });
 
   // shared state
-  g += box(404, 0, 96, H1, 'shared', null, ['Shared', 'state'], 'one truth', { label: 'Shared state', text: 'Every agent writes versioned facts and plans here and reads the others\' from here. Nobody passes notes on the side.' });
+  g += box(404, 0, 96, H1, 'shared', null, ['Shared', 'picture'], 'one truth', { label: 'Shared state', text: 'Every agent writes versioned facts and plans here and reads the others\' from here. Nobody passes notes on the side.' });
   e += curve(500, H1 / 2, 530, H1 / 2 - 34);
 
   // rule check and orchestrator
-  g += box(530, H1 / 2 - 60, 160, 50, `rule ${m.rule.ok ? 'ok' : 'bad'}`, EXTRA.rule_check, [m.rule.ok ? 'Rule check passed' : 'Rule check blocked'], m.rule.rules, m.rule);
-  g += box(530, H1 / 2 + 10, 160, 50, 'orch', ICONS.orchestrator, ['Orchestrator'], 'needs a person', m.orch);
+  g += box(530, H1 / 2 - 60, 160, 50, `rule ${m.rule.ok ? 'ok' : 'bad'}`, EXTRA.rule_check, [m.rule.ok ? 'Safety rules met' : 'Blocked by a rule'], '', m.rule);
+  g += box(530, H1 / 2 + 10, 160, 50, 'orch', ICONS.orchestrator, ['Orchestrator'], 'sends it to you', m.orch);
   e += `<path class="df-edge" d="M610,${H1 / 2 - 10} L610,${H1 / 2 + 7}" marker-end="url(#dfa)"/>`;
   e += curve(690, H1 / 2 + 35, 730, H1 / 2);
 
@@ -173,7 +173,7 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
       e += curve(260, R2 + k * 58 + 24, 300, R2 + H2 / 2, m.preview ? 'preview' : 'on');
     });
     // one truth hub
-    g += box(300, R2, 120, H2, `hub ${m.preview ? 'preview' : 'on'}`, ICONS.communication, ['One truth'], m.hub.sub, m.hub);
+    g += box(300, R2, 120, H2, `hub ${m.preview ? 'preview' : 'on'}`, ICONS.communication, ['One update'], m.hub.sub, m.hub);
     // destinations
     if (!m.dests.length) {
       g += `<text x="470" y="${R2 + 22}" class="df-sub">${m.preview ? 'Who is told shows up here once you answer.' : 'No one needed telling, or the messages are still being written.'}</text>`;

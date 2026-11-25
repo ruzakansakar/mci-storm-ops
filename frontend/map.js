@@ -69,7 +69,7 @@ export class NetworkMap {
     const v = (n) => css.getPropertyValue(n).trim();
     this.colors = { bg: v('--map-bg'), dot: v('--map-dot'), route: v('--map-route'), out: v('--map-out'), inn: v('--map-in'),
       label: v('--map-label'), ink: v('--ink'), surface: v('--surface'), accent: v('--accent'), warn: v('--warn'), bad: v('--bad'),
-      wx1: v('--wx-1'), wx2: v('--wx-2'), wx3: v('--wx-3'), wind: v('--wx-wind'), bolt: v('--wx-bolt') };
+      wx1: v('--wx-1'), wx2: v('--wx-2'), wx3: v('--wx-3'), wind: v('--wx-wind'), bolt: v('--wx-bolt'), cloud: v('--wx-cloud'), rain: v('--wx-rain') };
   }
 
   resize() {
@@ -199,6 +199,32 @@ export class NetworkMap {
       this._groundShape(w.x - 4.2, w.z + 2.2, 1.2, 0.4, spin * 1.3 + 4); ctx.fill();
       ctx.fillStyle = colors.wx2;
       this._groundShape(w.x - 4.1, w.z + 2.15, 0.55, 0.4, spin * 1.3 + 5); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // cloud deck above the cell, and rain falling out of it
+      ctx.fillStyle = colors.cloud;
+      for (let k = 0; k < 7; k++) {
+        const a = k / 7 * TAU + spin * 0.6, r = 1.6 + (k % 3) * 0.5;
+        const s = this.project(w.x + Math.cos(a) * r * 1.1, 1.25 + (k % 2) * 0.15, w.z + Math.sin(a) * r * 0.7);
+        if (!s) continue;
+        ctx.globalAlpha = 0.22 * c.show;
+        ctx.beginPath(); ctx.ellipse(s.x, s.y, s.s * 1.5, s.s * 0.55, 0, 0, TAU); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = colors.rain; ctx.lineWidth = 1;
+      const drops = Math.round(160 * c.show * c.core);
+      for (let k = 0; k < drops; k++) {
+        const h1 = Math.sin(k * 12.9898) * 43758.5453, h2 = Math.sin(k * 78.233) * 12345.678;
+        const u = h1 - Math.floor(h1), v = h2 - Math.floor(h2);
+        const ang = u * TAU, rad = Math.sqrt(v) * 2.4;
+        const x = w.x + Math.cos(ang) * rad * 1.25, z = w.z + Math.sin(ang) * rad * 0.85;
+        const fall = this.reduceMotion ? 0.5 : ((now / 700) + u * 7) % 1;
+        const y0 = 1.15 * (1 - fall), y1 = Math.max(0, y0 - 0.22);
+        const a = this.project(x, y0, z), b = this.project(x - 0.05, y1, z);
+        if (!a || !b) continue;
+        ctx.globalAlpha = 0.55 * c.show;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
       ctx.globalAlpha = 1;
 
       if (wx.lightning) {
