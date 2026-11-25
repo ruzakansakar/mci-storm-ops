@@ -703,3 +703,16 @@ python -m backend.api
 Then open http://127.0.0.1:8000 (it opens by itself). Press play, drag the time bar, switch light/dark, or pick another simulated day at the top.
 
 What step 0 shows: a tilted, simulated 3D map of today's routes around MCI with flights moving in real time, MCI's status (operations, ramp, weather), the numbers right now, a departures and arrivals board, what the co-pilot is doing, and which agents have checked in. The storm, incident, approvals and other pages come in the next steps.
+
+## Front end: live control room (branch live-ui)
+
+`python -m backend.api`, then open http://127.0.0.1:8000/live.html (or "Live control room" in the top bar).
+You are the human in the loop: every decision the agents cannot make alone comes to you, sorted by priority, with the
+agent's plan, how it reached you (a flowchart from the feeds through Situation, the shared state, the other agents, the
+rule check and the orchestrator), why a person must decide, and what happens if you reject. Approve, reject (with a
+reason), wait 10/15 min (blocked when another decision depends on it) or hand off to the duty manager.
+"Same story everywhere" shows, live, how many passengers see wrong information on their screens compared with today's
+process, and the focus passenger's four screens.
+
+Until the live backend (branch live-hitl, docs/live_api.md) is merged, the page runs a scripted practice copy of the
+seed 7 storm in the browser and says so on screen. Force it any time with `live.html?mock=1`.

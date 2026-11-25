@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Control Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/live.css">
+<script>
+  try { const s = localStorage.getItem('gsc-theme'); if (s) document.documentElement.dataset.theme = s; } catch (e) {}
+</script>
+</head>
+<body class="live-page">
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 18.5l16-6-4 9-3.5-2.5-2.5 3-1-4.5z" fill="currentColor"/></svg>
+    <div>
+      <div class="brand-name">Ground-Stop Co-Pilot</div>
+      <div class="brand-sub">Kansas City (MCI) station view</div>
+    </div>
+  </div>
+  <nav class="pages" aria-label="Pages">
+    <a href="/">Network map</a>
+    <a href="/live.html" aria-current="page">Live control room</a>
+  </nav>
+  <button id="theme" class="btn ghost" type="button">Dark mode</button>
+</header>
+
+<div id="practice" class="practice" hidden>
+  Practice data: the live backend is not running yet, so this session is a scripted copy of the seed 7 storm played in your browser. Your answers still change what happens.
+</div>
+
+<!-- start a session -->
+<main id="start" class="start">
+  <section class="card start-card">
+    <h1>Run a live storm day</h1>
+    <p class="lead">The weather, flights and passengers are simulated. The agents run live on them, and you answer every decision they cannot make alone. The duty manager is the only other person in the loop: hand things off to them when you can't decide.</p>
+    <form id="start-form">
+      <fieldset>
+        <legend>Which day</legend>
+        <label class="choice"><input type="radio" name="day" value="seed7" checked><span><b>Seed 7 storm</b><br><span class="muted">Thunderstorm ground stop 11:30 to 14:00. Follow Maya Torres, flying Denver to Kansas City to Baltimore.</span></span></label>
+        <label class="choice"><input type="radio" name="day" value="random"><span><b>A random storm day</b><br><span class="muted">New weather and timings. We follow the passenger whose trip changes most.</span></span></label>
+      </fieldset>
+      <fieldset>
+        <legend>Roles you want in view <span class="muted">(you still answer for every role; this only filters your list)</span></legend>
+        <div class="role-picks" id="role-picks"></div>
+      </fieldset>
+      <p class="muted small">Starts at 11:00, half an hour before the storm. The morning is already decided. The clock keeps running: deadlines are real.</p>
+      <button class="btn primary big" type="submit">Start the day</button>
+    </form>
+  </section>
+  <section class="card past-card">
+    <h2>Past sessions</h2>
+    <ul id="past" class="past"><li class="muted">None yet.</li></ul>
+  </section>
+</main>
+
+<!-- the live session -->
+<main id="live" class="live" hidden>
+  <section class="session-bar" aria-label="Session">
+    <div class="clock-block">
+      <span id="clock" class="clock-big">11:00</span>
+      <span id="status" class="status-line">Running</span>
+    </div>
+    <button id="pause" class="btn" type="button">Pause</button>
+    <label class="field"><span class="field-label">Speed, nothing waiting</span>
+      <select id="speed-idle"><option value="1">1 min/s</option><option value="5" selected>5 min/s</option><option value="15">15 min/s</option></select></label>
+    <label class="field"><span class="field-label">Speed, decisions waiting</span>
+      <select id="speed-pending"><option value="0.1">1 min / 10 s</option><option value="0.1667" selected>1 min / 6 s</option><option value="0.3333">1 min / 3 s</option><option value="1">1 min/s</option></select></label>
+    <div class="world-pills" id="world"></div>
+  </section>
+
+  <section class="truth card" aria-label="Same story everywhere">
+    <div class="truth-head">
+      <h2>Same story everywhere</h2>
+      <p class="muted">Does every passenger see the true status on every screen: app, SMS, gate screen and call center? Compared with today's process at the same minute.</p>
+    </div>
+    <div class="truth-body">
+      <div class="truth-numbers">
+        <div class="tn">
+          <span class="tn-label">Passengers seeing wrong info now</span>
+          <span class="tn-value" id="wrong-now">0</span>
+          <span class="tn-sub" id="wrong-now-sub"></span>
+        </div>
+        <div class="tn">
+          <span class="tn-label">Passenger-minutes on a wrong screen, so far</span>
+          <span class="tn-value" id="wrong-total">0</span>
+          <span class="tn-sub" id="wrong-total-sub"></span>
+        </div>
+        <svg class="spark" id="spark" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Passengers seeing wrong info, you and today's process"></svg>
+        <div class="spark-key"><span><i class="k-you"></i>With you and the co-pilot</span><span><i class="k-today"></i>Today's process</span></div>
+      </div>
+      <div class="focus">
+        <div class="focus-head"><b id="focus-name">Maya Torres</b> <span class="muted" id="focus-truth"></span></div>
+        <div class="screens" id="screens"></div>
+      </div>
+    </div>
+  </section>
+
+  <nav class="tabs big-tabs" role="tablist" aria-label="Views">
+    <button class="tab active" role="tab" data-tab="decisions" aria-selected="true" type="button">Decisions <span class="count" id="count">0</span></button>
+    <button class="tab" role="tab" data-tab="flow" aria-selected="false" type="button">Agent flow</button>
+    <button class="tab" role="tab" data-tab="history" aria-selected="false" type="button">Your decisions</button>
+    <button class="tab" role="tab" data-tab="results" aria-selected="false" type="button">Results</button>
+  </nav>
+
+  <section class="tab-panel" id="tab-decisions">
+    <div class="decisions">
+      <aside class="queue card" aria-label="Waiting for you">
+        <div class="queue-head">
+          <h2>Waiting for you</h2>
+          <div class="role-filter" id="role-filter"></div>
+        </div>
+        <ol class="qlist" id="qlist"></ol>
+      </aside>
+      <article class="detail card" id="detail" aria-live="polite"></article>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-flow" hidden>
+    <div class="card">
+      <h2>How the co-pilot works, live</h2>
+      <p class="muted">The agents never call each other directly: each one writes a new version to the shared state, and the others read it. A box lights up when its agent has just written something.</p>
+      <div class="sysflow-wrap"><svg class="sysflow" id="sysflow" viewBox="0 0 1120 400" role="img" aria-label="The co-pilot's agents and how information moves between them"></svg></div>
+      <h3>Latest hand-overs through the shared state</h3>
+      <ol class="ticker" id="ticker"></ol>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-history" hidden>
+    <div class="card">
+      <h2>Your decisions</h2>
+      <div class="board-wrap"><table class="board" id="history"></table></div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-results" hidden>
+    <div id="results"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script type="module" src="/live.js"></script>
+</body>
+</html>
