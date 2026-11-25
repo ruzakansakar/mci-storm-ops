@@ -19,6 +19,7 @@ class RecoveryMemory:
     applications: dict = field(default_factory=dict)
     crews: dict = field(default_factory=dict)
     read_at: object = None
+    told: set = field(default_factory=set)          # (recipient, text) already delivered: never told the same thing twice
 
 
 def _record(ctx, memory, item, status, reason):
@@ -127,6 +128,9 @@ def prepare(ctx, result, situation, memory, settings, screens):
         if item["status"] != "held":
             continue
         approval = approvals.get(item["proposal_id"], {})
+        if (item.get("passenger_id") or item.get("crew_id"), item["text"]) in memory.told:
+            _record(ctx, memory, item, "discarded", "already told exactly this")
+            continue
         problems = send_problems(item, world)
         if problems:
             reason = "approved, waiting to take effect" if approval.get("status") == "approved" and "approved, waiting to take effect" in problems else problems[0]
@@ -139,6 +143,7 @@ def prepare(ctx, result, situation, memory, settings, screens):
 
 
 def mark_sent(ctx, memory, item):
+    memory.told.add((item.get("passenger_id") or item.get("crew_id"), item["text"]))
     _record(ctx, memory, item, "sent", "approved and confirmed in operational records")
 
 

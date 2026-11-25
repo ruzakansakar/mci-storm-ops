@@ -42,8 +42,8 @@ def run_id_for(seed: int, scenario: str, mode: str) -> str:
 
 
 def check_mode(mode: str):
-    if mode not in ("today", "copilot"):
-        raise ValueError(f"Unknown mode '{mode}'. Use 'today' or 'copilot'.")
+    if mode not in ("today", "copilot", "orchestrated"):
+        raise ValueError(f"Unknown mode '{mode}'. Use 'today', 'copilot' or 'orchestrated'.")
 
 
 def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until: int | None = None,
@@ -72,7 +72,7 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
     comparison = ComparisonRecorder(load_settings(), focus_passenger(data))
     copilot = None
     event_cursor = 0
-    if mode == "copilot":
+    if mode in ("copilot", "orchestrated"):
         from backend.orchestrator.loop import Orchestrator as Copilot     # Phase 5a: the orchestrator owns the minute loop
         schedule = [{k: f[k] for k in ("id", "direction", "origin", "destination", "sched_dep", "sched_arr")}
                     for f in data["flights"]]
@@ -116,7 +116,9 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
             "passenger_groups": [{k: g[k] for k in ("flight_id", "segment", "count")} for g in data["passenger_groups"]]}
         copilot = Copilot(at(start), schedule, passengers, feeds, situation_schedule, system_health,
                           stations=[{"code": x["code"], "name": x["name"]} for x in data["stations"]], humans=humans,
-                          network_rows=network_rows, care_rows=care_rows, station_rows=station_rows, **(copilot_options or {}))
+                          network_rows=network_rows, care_rows=care_rows, station_rows=station_rows, **(copilot_options or {}),
+                          **({"apply_port": world.apply_decision} if mode == "orchestrated" else {}))
+        world.orchestrated = mode == "orchestrated"     # approved co-pilot decisions replace today's process decisions
         from backend.contracts import load_contracts
         agent_types = {t for a in ("situation", "network_recovery", "passenger_care", "station_staff", "communication")
                        for t in load_contracts()[a].event_types}
@@ -192,6 +194,11 @@ def simulate(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", u
         metrics["station"] = _serial(station_metrics(world, copilot, data))
         from simulator.orchestrator_metrics import orchestrator_metrics
         metrics["orchestrator"] = _serial(orchestrator_metrics(copilot))
+    from simulator.comparison import focus_passenger as _focus
+    from simulator.three_ways import mode_summary
+    from backend.execution.copilot import serial as _ser
+    metrics["three_ways"] = _ser(mode_summary(world, metrics, copilot, _focus(data)))    # 5b: today / copilot / orchestrated
+    metrics["mode"] = mode
     rid = run_id or run_id_for(seed, scenario, mode)
     result = Result(rid, seed, sc, world, channels, metrics, until, copilot)
     from simulator.comparison import truth_fingerprint
@@ -263,11 +270,11 @@ def run(seed: int, scenario: str = DEFAULT_SCENARIO, mode: str = "today", until:
         with contextlib.redirect_stdout(io.StringIO()):
             reset_db()
     with connect() as conn:
-        if mode == "copilot":
+        if mode in ("copilot", "orchestrated"):
             if not conn.execute("SELECT 1 FROM metric_runs WHERE run_id=%s", (run_id_for(seed, scenario, "today"),)).fetchone():
-                raise ValueError("Run the matching today mode first so both modes can be compared.")
+                raise ValueError("Run the matching today mode first so the modes can be compared.")
             if conn.execute("SELECT 1 FROM events WHERE run_id=%s LIMIT 1", (run_id_for(seed, scenario, mode),)).fetchone():
-                raise ValueError("This copilot run already exists; rerun today first to rebuild both modes cleanly.")
+                raise ValueError(f"This {mode} run already exists; rerun today first to rebuild the modes cleanly.")
         return simulate(seed, scenario, mode, until_min, writer=Writer(conn, run_id_for(seed, scenario, mode), seed,
                                                                      persist_truth=mode == "today"),
                         on_flush=on_flush)
@@ -304,7 +311,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Play one simulated day at MCI and save it to the database.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scenario", choices=SCENARIOS, default=DEFAULT_SCENARIO)
-    ap.add_argument("--mode", default="today", choices=("today", "copilot"), help="today or automatic confirmed screen corrections")
+    ap.add_argument("--mode", default="today", choices=("today", "copilot", "orchestrated"),
+                    help="today; copilot (advice, nothing changes the world); orchestrated (approved decisions change the world)")
     ap.add_argument("--until", default=load_config()["day"]["end"], help="last minute to simulate, HH:MM")
     args = ap.parse_args(argv)
     try:

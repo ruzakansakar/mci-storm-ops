@@ -10,7 +10,9 @@ from backend.orchestrator.queue import Queue
 
 T = datetime.fromisoformat("2026-10-06T14:00:00-05:00")
 SETTINGS = {"queue": {"batch": {"window_min": 15, "kinds": {"station_staff": ["call_in_ground_staff"]}},
-                      "escalation_chain": {"station_manager": "director_of_operations"}, "workload_max_per_hour": 2}}
+                      "escalation_chain": {"station_manager": "director_of_operations"}, "workload_max_per_hour": 2,
+                      "deadlines": {"immediate_min": 10, "default_deadline_min": 30, "escalated_answer_min": 20},
+                      "duty_manager": "director_of_operations"}}
 RULES = {"rule_check": {"human_answer_deadline_min": 10}}
 
 
@@ -49,9 +51,9 @@ def p(action, i, **kw):
 # ------------------------------------------------------------------ the queue
 def test_the_queue_escalates_an_unanswered_item_and_a_late_answer_still_counts():
     people = FakePeople(handles={"call_in_ground_staff"}, after=25)
-    q = Queue(people, SETTINGS, RULES, {"E06": {"deadline": "within 30 min"}})
+    q = Queue(people, SETTINGS, RULES, {"E06": {"deadline": "within 10 min"}})
     item = q.ask("station_staff", 1, p("call_in_ground_staff", 1), "station_manager", T, True)
-    assert item.deadline == T + timedelta(minutes=10)                   # the rule's 10 min (sooner than the decision's 30)
+    assert item.deadline == T + timedelta(minutes=10)                   # the decision's own deadline (5b)
     q.escalate(T + timedelta(minutes=9), SETTINGS["queue"]["escalation_chain"])
     assert not item.alerted
     q.escalate(T + timedelta(minutes=10), SETTINGS["queue"]["escalation_chain"])
@@ -89,7 +91,7 @@ def test_duplicates_are_merged_and_blocked_proposals_are_never_shown():
 
 
 def test_the_queue_order_is_safety_rung_then_deadline_then_passengers():
-    q = Queue(FakePeople(), SETTINGS, RULES, {"F02": {"deadline": "within 5 min"}})
+    q = Queue(FakePeople(), SETTINGS, RULES, {"F02": {"deadline": "within 5 min"}})                 # the others: default 30
     late = q.ask("a", 1, {"action": "x", "decision_ids": [], "safety_rung": 5, "passenger_ids": ["P1"]}, "r", T, True)
     many = q.ask("a", 2, {"action": "y", "decision_ids": [], "safety_rung": 5, "passenger_ids": ["P1", "P2"]}, "r", T, True)
     soon = q.ask("a", 3, {"action": "z", "decision_ids": ["F02"], "safety_rung": 5}, "r", T, True)
@@ -178,8 +180,9 @@ def test_seed7_no_stale_chain_one_incident_and_every_proposal_rule_checked_first
 
 def test_seed7_conflicts_are_caught_with_both_views_and_blocked_advice_never_reaches_a_person(seed7):
     o = seed7.copilot
-    kinds = {c["kind"] for c in o.conflicts}
-    assert {"rebooking_on_cancelled", "departure_without_capacity"} <= kinds
+    # 5b: Network Recovery no longer double-counts cancellations and the station's numbers were calibrated, so these two
+    # kinds no longer occur on seed 7 (each kind is still caught in test_each_cross_agent_conflict_is_caught); no same-gate one
+    assert not [c for c in o.conflicts if c.get("resource_kind") == "gate"]
     assert all(len(c["views"]) == 2 for c in o.conflicts)
     for b in o.blocked:
         if "recommendation" in b:
@@ -223,6 +226,7 @@ def test_the_orchestrator_gives_the_old_loops_results_when_batching_is_off(seed7
     def no_batching():
         s = orig()
         s["queue"]["batch"]["kinds"] = {}
+        s["queue"]["duty_manager"] = None             # 5b: nor a duty manager answering escalations (the old loop has neither)
         return s
     monkeypatch.setattr(L, "load_settings", no_batching)
     d = build()
@@ -295,3 +299,5 @@ def test_two_incidents_at_once_get_their_own_ids_are_ranked_tagged_and_both_clos
                 lo, hi = spans[i.incident_id]
                 assert lo <= i.asked_at.isoformat() <= hi, (seed, i.id)
         assert o.findings == [], seed                                   # no stale chain on these days either
+        work = {t["incident_id"] for t in o.tags if t["kind"] in ("recommendation", "message", "recovery_plans")}
+        assert {i.id for i in inc} <= work, seed                         # 5b: EACH incident gets its own work

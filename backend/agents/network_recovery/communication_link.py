@@ -26,6 +26,8 @@ def sync_link(ctx, memory):
                     and p.get("plan_version") == item.get("plan_version")):
                 if p.get("status") in ("approved", "rejected"):
                     item.update(status=p["status"], decided_at=e["occurred_at"].isoformat())
+        elif e["type"] == "recovery_action_applied" and key in state and state[key]["status"] == "approved":
+            state[key]["applied"] = e["occurred_at"].isoformat()      # 5b: the world carried it out; it stays in the plan
     memory.link_read_at = ctx.now
     row = deepcopy(memory.plans[-1])
     row.update(getattr(memory, "basis", None) or {})   # the upstream versions it read last (5a: no stale version recorded)
@@ -47,6 +49,19 @@ def sync_link(ctx, memory):
                 chosen = max(matches, key=lambda p: p["proposal_id"])
                 item["proposal_id"] = chosen["proposal_id"]
                 active.add(chosen["proposal_id"])
+    for key, item in state.items():
+        if key in active or not item.get("applied"):
+            continue
+        # an applied change stays in the published plan (it happened): a passenger or crew member can now be told the outcome
+        if item["action"] == "delay_flight":
+            row["delays"].append({"flight_id": item["flight_id"], "new_departure": item.get("new_departure"), "proposal_id": key,
+                                  "applied": True})
+        elif item["action"] == "cancel_flight":
+            row["cancels"].append({"flight_id": item["flight_id"], "proposal_id": key, "applied": True})
+        else:
+            row["crew_actions"].append({"flight_id": item["flight_id"], "role": item.get("crew_role"), "action": item["action"],
+                                        "crew_id": item.get("crew_id"), "best": "applied", "proposal_id": key, "applied": True})
+        active.add(key)
     for key, item in state.items():
         if key not in active and item.get("plan_version") and item["status"] in ("pending", "approved"):
             item["status"] = "superseded"

@@ -31,6 +31,7 @@ from backend.orchestrator.incidents import Incidents
 from backend.orchestrator.queue import Queue
 from backend.settings import ROOT
 
+APPLIES = ("delay_flight", "cancel_flight", "swap_crews", "call_in_reserve_crew", "deadhead_crew", "rebook_passenger")
 AGENT_TABLE = {"situation": "situation_assessments", "network_recovery": "recovery_plans", "passenger_care": "care_plans",
                "station_staff": "station_plans"}
 
@@ -43,10 +44,14 @@ class Orchestrator(Copilot):
     """The co-pilot's minute loop, owned by the orchestrator. The agents and their runners are the same; the orchestrator runs
     them in order and adds the queue, incidents, conflicts and the shared-state audit around them."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, apply_port=None, **kwargs):
         from backend.contracts.decisions import load_decisions
         from backend.rules import load_rules
         super().__init__(*args, **kwargs)
+        self.apply_port = apply_port                    # Phase 5b: orchestrated mode carries out approved decisions
+        self.applied_log = []
+        if self.care is not None:
+            self.care.ask_advice = apply_port is not None   # rebooking advice becomes a decision a person approves
         self.os = load_settings()
         self.rules = load_rules()
         self.queue = Queue(self.humans, self.os, self.rules, load_decisions())
@@ -61,6 +66,10 @@ class Orchestrator(Copilot):
         self.seen = {"messages": 0, "recovery": 0, "recs": {}}
         self.workload = {}                              # role -> {hour: count}
         self.rec_seen = {}                              # context -> the last saved row id already looked at
+        self.flight_incident = {}                       # flight -> the incident that disrupted it (5b: tags follow the work)
+        self.event_seen = 0
+        self.directions = {f["id"]: f["direction"] for f in kwargs.get("network_rows", {}).get("flights", [])} \
+            if kwargs.get("network_rows") else {}
         self.advice = {}                                # Passenger Care rebooking advice: recommendation id -> its facts
 
     # ------------------------------------------------------------ the minute
@@ -71,6 +80,8 @@ class Orchestrator(Copilot):
         due = self.queue.due(now)
         self.answer_own([q for q in due if q.agent == "orchestrator"], now)
         human_out, approved_now = self.answers(now, [q for q in due if q.agent != "orchestrator"])
+        if self.apply_port is not None:
+            self._apply_approved(now, human_out)
         outputs, audits, row = [], [], {"at": now.isoformat(), "ran": [], "read": {}, "wrote": {}, "proposals": 0, "blocks": 0,
                                          "conflicts": [], "stale": []}
         for name in self.os["run"]["agents"]:
@@ -83,6 +94,7 @@ class Orchestrator(Copilot):
                 o, a = self.run_agent(name, now)
             if name == "situation":
                 self._incidents(now)
+                self._attribute_flights()
                 self.queue.incident_id = self.incidents.primary()
                 self._tag_contexts()
             ran = name == "communication" or any(k == "agent_heartbeat" for _, k, _ in o)
@@ -101,20 +113,27 @@ class Orchestrator(Copilot):
 
             for t, rows_ in wrote.items():
                 for r in rows_:
-                    self.tags.append({"incident_id": self.incidents.primary(), "kind": t, "ref": r[SHARED[t]["version"]], "at": now.isoformat()})
+                    for inc in self._incidents_of_row(t, r):
+                        self.tags.append({"incident_id": inc, "kind": t, "ref": r[SHARED[t]["version"]], "at": now.isoformat()})
             outputs, audits = outputs + o, audits + a
         self._tag_messages(now)
         for c in self._contexts():                      # every new proposal: counted, its rule check result, its incident
             for rid, rec in self._new_recs(c):
                 if c.agent == "passenger_care" and rec.get("_action") == "rebook_passenger":
                     self.advice[rid] = rec
-                if rec.get("incident_id") is None and self.incidents.primary() is not None:
-                    rec["incident_id"] = self.incidents.primary()     # made this minute, before Situation's picture opened it
+                if self.incidents.primary() is not None:              # the incident its flights belong to (else the first)
+                    rec["incident_id"] = self._incident_for(self._flights_in(rec)) or rec.get("incident_id") or self.incidents.primary()
                 row["proposals"] += 1
                 row["blocks"] += rec.get("rule_check_ok") is False
                 self.tags.append({"incident_id": rec.get("incident_id"), "kind": "recommendation", "ref": f"{c.agent}:{rid}",
                                   "at": now.isoformat()})
         row["conflicts"] = self._conflicts(now)
+        for item in self.queue.items[self.seen.setdefault("items", 0):]:   # queue items follow their proposal's flights (5b)
+            if item.incident_id is not None:
+                flights = [item.facts.get("flight_id")] if item.facts.get("flight_id") else self._flights_in(
+                    {"title": item.facts.get("title"), "options": item.members[0][2] if item.members else None})
+                item.incident_id = self._incident_for(flights) or item.incident_id
+        self.seen["items"] = len(self.queue.items)
         self.queue.escalate(now, self.os["queue"]["escalation_chain"])
         counts = self.queue.workload(now, self.os["queue"]["workload_max_per_hour"])
         hour = now.strftime("%H:00")
@@ -131,8 +150,41 @@ class Orchestrator(Copilot):
         o, a = self._drain(self.octx, "orchestrator")
         return outputs + o, audits + a
 
+    # ------------------------------------------------------------ Phase 5b: approved decisions change the world
+    def _apply_approved(self, now, human_out):
+        """Every decision a person approved this minute that changes the world goes through the executor: rule-checked again
+        now, carried out by the operational systems (or refused, with the reason), and logged in events and the audit log."""
+        from backend.execution.executor import apply_approved
+        for actor, kind, a in human_out:
+            if kind == "network_approved":
+                p = self.network.approvals.options.get(a["proposal_id"]) or {}
+                facts = {"proposal_id": a["proposal_id"], "plan_version": a["plan_version"], "action": p.get("action"),
+                         "flight_id": p.get("flight_id"), "new_departure": p.get("new_departure"), "crew_id": p.get("crew_id"),
+                         "role": p.get("crew_role")}
+                proposal = {"id": a["proposal_id"], "agent": "network_recovery", "action": p.get("action"),
+                            "decision_ids": p.get("decision_ids") or ["B02"], "flight_id": p.get("flight_id"), "facts": facts}
+            elif kind == "human_approved" and a.get("agent") == "passenger_care" and a.get("action") == "rebook_passenger":
+                p = self.care.options.get(a["recommendation"]) or {}
+                rec = self.care.context.saved.get(("recommendations", a["recommendation"])) or {}
+                flight = ((rec.get("options") or [{}])[0]).get("flight_id")
+                facts = {"passenger_ids": p.get("passenger_ids", []), "flight_id": flight, "recommendation": a["recommendation"]}
+                proposal = {"id": a["recommendation"], "agent": "passenger_care", "action": "rebook_passenger",
+                            "decision_ids": p.get("decision_ids") or ["K01"], "facts": facts}
+            else:
+                continue
+            if not proposal["action"] or proposal["action"] not in APPLIES:
+                continue
+            out = apply_approved(proposal, now, self.apply_port)
+            entry = {"at": now.isoformat(), "agent": proposal["agent"], "recommendation": proposal["id"], "action": proposal["action"],
+                     "facts": serial(proposal["facts"]), "approved_by": a.get("role"), "applied": out["applied"],
+                     "reason": out.get("reason"), "moved": out.get("moved")}
+            self.applied_log.append(entry)
+            kind_out = "decision_applied" if out["applied"] else "decision_refused"
+            self.octx.outputs.append((kind_out, entry))
+            self.octx._audit_row(kind_out, "recommendation", proposal["id"], None, entry)
+
     # ------------------------------------------------------------ incidents
-    def _new_recs(self, ctx):
+    def _new_recs(self, ctx):  # noqa: D401
         """The recommendations this context saved since the last minute (row ids grow by one per insert)."""
         last = self.rec_seen.get(id(ctx), 0)
         out = []
@@ -204,12 +256,62 @@ class Orchestrator(Copilot):
     def _tag_messages(self, now):
         inc = self.incidents.primary()
         for m in self.messages.log[self.seen["messages"]:]:
-            self.tags.append({"incident_id": inc, "kind": "message", "ref": m.get("id") or m.get("rec"), "at": now.isoformat()})
+            flights = list((m.get("trip_facts") or {}).get("itinerary") or [])
+            self.tags.append({"incident_id": (self._incident_for(flights) or inc) if inc else None, "kind": "message",
+                              "ref": m.get("id") or m.get("rec"), "at": now.isoformat()})
         self.seen["messages"] = len(self.messages.log)
         for d in self.recovery.history[self.seen["recovery"]:]:
             if d.get("status") == "drafted":
-                self.tags.append({"incident_id": inc, "kind": "recovery_draft", "ref": d["id"], "at": now.isoformat()})
+                self.tags.append({"incident_id": (self._incident_for([d["flight_id"]]) or inc) if inc else None,
+                                  "kind": "recovery_draft", "ref": d["id"], "at": now.isoformat()})
         self.seen["recovery"] = len(self.recovery.history)
+
+    # ------------------------------------------------------------ which incident a piece of work belongs to (5b)
+    DISRUPTS = ("flight_delayed", "flight_delay_updated", "flight_cancelled", "flight_diverted", "flight_holding", "tarmac_started")
+
+    def _attribute_flights(self):
+        """Each flight belongs to the incident that disrupted it: of the incidents open when it was first disrupted, the most
+        recently opened one whose cause can affect that kind of flight (config incidents.scope); else the first-ranked."""
+        scope = self.os["incidents"]["scope"]
+        events = self.store.events
+        new = [e for e in events if e["id"] > 0][self.event_seen:] if self.event_seen else [e for e in events if e["id"] > 0]
+        self.event_seen += len(new)
+        open_ = sorted(self.incidents.open(), key=lambda i: i.opened_at, reverse=True)
+        if not open_:
+            return
+        for e in new:
+            fid = (e.get("payload") or {}).get("flight_id")
+            if e["type"] not in self.DISRUPTS or not fid or fid in self.flight_incident:
+                continue
+            kind = self.directions.get(fid, "departure")
+            match = next((i for i in open_ if i.opened_at <= e["occurred_at"] and kind in scope.get(i.kind, [kind])), None)
+            self.flight_incident[fid] = (match or open_[-1]).id if match or open_ else None
+
+    def _incident_for(self, flights):
+        open_ids = {i.id for i in self.incidents.open()}
+        for fid in flights or []:
+            inc = self.flight_incident.get(fid)
+            if inc is not None and inc in open_ids:          # never to an incident already closed
+                return inc
+        return None
+
+    @staticmethod
+    def _flights_in(rec):
+        import re
+        return sorted(set(re.findall(r"\bWN\d{3,4}\b", str(rec.get("title")) + str(rec.get("options")))))
+
+    def _incidents_of_row(self, table, row):
+        """A shared version belongs to the incidents of the flights it changes; Situation's picture to every open incident."""
+        if not self.incidents.primary():
+            return [None]
+        if table == "situation_assessments":
+            return [i.id for i in self.incidents.open()]
+        import re
+        flights = set(re.findall(r"\bWN\d{3,4}\b", str({k: row.get(k) for k in ("delays", "cancels", "crew_actions", "gates",
+                                                                                     "passengers", "tarmac")})))
+        open_ids = {i.id for i in self.incidents.open()}
+        incs = {self.flight_incident[f] for f in flights if self.flight_incident.get(f) in open_ids}
+        return sorted(incs) or [self.incidents.primary()]
 
     # ------------------------------------------------------------ conflicts
     def _latest(self, table):
@@ -244,8 +346,8 @@ class Orchestrator(Copilot):
                                     "agent": "network_recovery", "rec_id": None, "applied": False, "task": "recover"})
         if self.station:
             st = self.station
-            for g in (station or {}).get("gates") or []:
-                if g.get("gate") and g.get("status") in ("assigned", "pending", "at gate"):
+            for g in (station or {}).get("gates") or []:             # gates planned from now on (a parked plane is a fact)
+                if g.get("gate") and g.get("status") in ("assigned", "pending") and g["to"] > self.octx.now.isoformat():
                     out["gates"].append({"resource": g["gate"], "flight_id": g["flight_id"], "from": g["from"], "to": g["to"],
                                          "agent": "station_staff", "rec_id": None, "applied": g["status"] != "pending"})
             from backend.execution.ledger import effective

@@ -119,8 +119,10 @@ def test_network_recovery_takes_the_station_into_account_and_earlier_agents_are_
     monkeypatch.setattr(cp.StationRunner, "tick", lambda self, now, humans: None)
     without = simulate(7, "a31_storm", mode="copilot", data=build())
     nr_with, nr_without = co.copilot.network.memory.plans, without.copilot.network.memory.plans
-    moved = [d for p in nr_with for d in p["delays"] if d.get("station_check")]
-    assert moved and not [d for p in nr_without for d in p["delays"] if d.get("station_check")]
+    # Network Recovery reads the station's plan and records the version it used (moving a departure out of a slot the station
+    # can't work is tested in test_station_fit_...; since 5b's calibrated staff numbers, no slot is that short on seed 7)
+    assert any(p.get("station_plan_version") for p in nr_with) and not any(p.get("station_plan_version") for p in nr_without)
+    assert not [d for p in nr_without for d in p["delays"] if d.get("station_check")]
     warn = lambda plans: {(w["kind"], w["flight_id"], w.get("role")) for p in plans for w in p["warnings"]}
     assert warn(nr_with) == warn(nr_without)                                           # its crew warnings still appear
     swap = lambda plans: {(c["flight_id"], c["role"], (c.get("option") or {}).get("crew_id"))
@@ -176,7 +178,7 @@ def test_simulated_station_people_answer_only_passed_proposals_and_never_human_o
     assert station_q and all(q.action in BUILT for q in station_q)
     assert not [q for q in h.questions if q.action in HUMAN_ONLY]
     answered = [q for q in station_q if q.status == "answered"]
-    assert answered and all(q.role == "station_manager" for q in answered)
+    assert answered and all(q.role in ("station_manager", "director_of_operations") for q in answered)   # 5b: escalated items
     assert h.refused_blocked == 0 and pair[1].metrics["station"]["rule_check_blocks"] == 0
     human_only_asks = {q["decision_id"] for q in pair[1].metrics["station"]["asked"]}
     assert {"E01", "E02", "F06", "F07"} <= human_only_asks                              # asked, with the facts; nobody answers

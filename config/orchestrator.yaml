@@ -11,21 +11,36 @@ incidents:
   quiet_before_recovery_min: 60        # assumption: an incident whose type Situation has not reported for an hour is recovering
   close_after_recovery_min: 180        # assumption: close (Q07) this long after recovery started, if nothing is left in the queue
   rank: [security, airport, weather, it_outage, faa_program, crew, other, unknown]   # T05: safety first (assumption)
+  scope:                               # Phase 5b: which flights each cause can disrupt (assumption), to tag work to its incident
+    weather: [departure, arrival]
+    faa_program: [departure, arrival]
+    ground_stop: [departure, arrival]
+    airport: [departure, arrival]      # runway or power: both directions
+    security: [departure]              # screening and the terminal: departing passengers
+    it_outage: [departure, arrival]
+    crew: [departure]
+    other: [departure, arrival]
+    unknown: [departure, arrival]
 
 queue:
+  deadlines:                           # Phase 5b: each decision's own deadline (config/decisions.yaml) is used
+    immediate_min: 10                  # assumption: "immediately"
+    default_deadline_min: 30           # assumption: a deadline tied to an event the queue can't time ("before the flight departs")
+    escalated_answer_min: 20           # assumption: how long the next role has before it goes further up
+  duty_manager: director_of_operations # Phase 5b: simulated; answers what is escalated to it (passed proposals only)
   escalation_chain:                    # S06: who is next when nobody answered in time (assumption)
     customer_service_supervisor: director_of_operations
     station_manager: director_of_operations
     network_operations_control: director_of_operations
-    crew_scheduling: network_operations_control
+    crew_scheduling: director_of_operations
     ramp_supervisor: station_manager
     captain: chief_pilot
     maintenance_control: director_of_operations
     regulatory_compliance: director_of_operations
   batch:                               # routine approvals of the same kind, asked within the window, become ONE queue item
     window_min: 15                     # assumption
-    kinds:
-      station_staff: [call_in_ground_staff, arrange_food_water]
+    kinds:                             # Phase 5b: routine gate and staff assignments too (the station manager's load)
+      station_staff: [call_in_ground_staff, arrange_food_water, assign_gates, move_gate_agents, request_wheelchair_help]
   workload_max_per_hour: 30            # assumption: flag a role that gets more than this many queue items in an hour
   conflict_roles:                      # who is asked when two agents disagree (assumption)
     rebooking_on_cancelled_flight: network_operations_control

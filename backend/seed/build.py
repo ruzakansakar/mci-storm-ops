@@ -442,4 +442,14 @@ def _staff(rng: random.Random) -> list[dict]:
                 "shift_start": start, "shift_end": start + timedelta(minutes=CFG["staff"]["shift_length_min"]),
                 "last_break": start, "source": "generated",
             })
+    late = CFG["staff"].get("late_shift")
+    if late:                                   # appended after the drawn shifts: no random draws, nothing else moves
+        count = {role: n for role, n in roles}
+        start = at(_hhmm(late["start"]))
+        for role, n in late["roles"].items():
+            for i in range(n):
+                count[role] = count.get(role, 0) + 1
+                out.append({"id": f"{role[:3].upper()}{count[role]:03d}", "role": role, "station": "MCI", "shift_start": start,
+                            "shift_end": start + timedelta(minutes=CFG["staff"]["shift_length_min"]), "last_break": start,
+                            "source": "generated"})
     return out

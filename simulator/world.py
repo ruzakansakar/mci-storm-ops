@@ -73,6 +73,20 @@ class World:
         for b in self.bags.values():
             self.bags_by_pax[b["passenger_id"]].append(b["tag"])
         self.groups = {(r["flight_id"], r["segment"]): {**r, "rebooked": 0, "as_of": start} for r in data["passenger_groups"]}
+        # ---- ground staff on shift and gates (Phase 5b physics: the same in every mode)
+        self.ground = self.ph["ground"]
+        self.roster = [(r["role"], minute_of(r["shift_start"]), minute_of(r["shift_end"])) for r in data.get("staff", [])
+                       if r.get("station") == "MCI"]
+        self.worked = []                   # (minute, "departure" | "arrival") turns worked at MCI
+        # ---- Phase 5b: in orchestrated mode, approved co-pilot decisions replace today's PROCESS decisions (never physics or
+        # law). Where none was approved by the moment today's process would act, today's process acts (a logged fallback).
+        self.orchestrated = False
+        self.cp_delay = {}                 # departure -> approved new departure (minute): replaces the cancel cutoff
+        self.cp_cancelled = set()          # departures the co-pilot's approved plan cancelled
+        self.fallbacks = []                # {t, process, flight_id, what}: today's process acted (no approved decision in time)
+        self.applied = []                  # {t, action, facts, applied, reason}: what the operational systems were asked to do
+        self.crew_violations = []          # departures whose crew did not have the legal duty time for the flight (all modes)
+        self.ground_waits = []             # (minute, flight, why): a plane that had to wait for staff or a gate
         self.orig_groups = {k: g["count"] for k, g in self.groups.items()}
 
         # ---- crews: how much duty a flight needs, which crews were legal at the start, and the reserve list
@@ -375,14 +389,17 @@ class World:
             if ready is None:
                 cancels.append((d, "aircraft will not arrive (inbound flight cancelled)"))
                 continue
-            keyed.append((max(d["sched_dep"], ready, t), d["id"], d))
+            keyed.append((max(d["sched_dep"], ready, t, self.cp_delay.get(d["id"], 0)), d["id"], d))
         keyed.sort(key=lambda k: k[:2])
         prev = None
         for key, _, d in keyed:
             slot = key if prev is None else max(key, prev + self.ph["slot_spacing_min"])
             while not self._departure_open(slot):
                 slot += 1
-            if slot - d["sched_dep"] > limit:
+            if slot - d["sched_dep"] > limit and self.orchestrated and d["id"] in self.cp_delay:
+                pass                                   # replaced: a person approved this delay (crew law still applies)
+            elif slot - d["sched_dep"] > limit:
+                self._fallback("cancel cutoff", d, f"would leave more than {limit} min late; no approved co-pilot delay")
                 inb = self.flights[d["_inbound"]] if d["_inbound"] else None
                 if inb and inb["diverted_to"]:
                     why = f"aircraft out of position after diverting to {inb['diverted_to']}: would leave more than {limit} min late"
@@ -448,6 +465,46 @@ class World:
                                                     "fuel_minutes_extra": self.aircraft[f["aircraft_id"]]["fuel_minutes_extra"],
                                                     "pax": f["pax_total"]})
 
+    # ---- ground physics (Phase 5b): staff and gates, the same in every mode
+    def _on_shift(self, role, t):
+        return sum(1 for r, a, b in self.roster if r == role and a <= t < b)
+
+    def _staff_free(self, kind, t):
+        """Can the ramp crew and gate agents needed for this piece of work be found now (people on shift minus the turns still
+        being worked)? Same numbers as Station & Staff's planning."""
+        g = self.ground
+        for role in ("ramp", "gate_agent"):
+            busy = 0
+            for minute, k in self.worked:
+                n, length = g[k][role]
+                if minute <= t < minute + length if k == "arrival" else t - length < minute <= t:
+                    busy += n
+            if busy + g[kind][role][0] > self._on_shift(role, t):
+                return False, role
+        return True, None
+
+    def _gates_in_use(self, t):
+        tow = self.ground["tow_to_gate_before_min"]
+        n = 0
+        for d in self.departures:
+            if d["status"] not in WAITING_DEP or d["tarmac_since"] is not None:
+                continue
+            inb = self.flights[d["_inbound"]] if d["_inbound"] else None
+            if (inb and inb["status"] == "arrived") or (inb is None and t >= d["sched_dep"] - tow):
+                n += 1
+        for a in self.arrivals:                   # a plane whose next flight from MCI is gone stays at its gate
+            if a["status"] == "arrived" and (not a["_outbound"] or self.flights[a["_outbound"]]["status"] == "cancelled"):
+                n += 1
+        return n
+
+    def _gate_free(self, t):
+        cap = self.ground["southwest_gates"] + (self.ground["remote_stands"] if self.ramp_until is None else 0)
+        return self._gates_in_use(t) < cap
+
+    def _ground_wait(self, f, why):
+        if not self.ground_waits or self.ground_waits[-1][1:] != (f["id"], why):
+            self.ground_waits.append((self.t, f["id"], why))
+
     def _landings(self):
         t = self.t
         if t < self.next_land_slot or not self._landing_open(t):
@@ -456,7 +513,11 @@ class World:
                         key=lambda f: (f["est_arr"], f["id"])):
             if f["est_arr"] > t:
                 break
+            if not self._gate_free(t):                               # physics: no gate (or stand) free to take the plane
+                self._ground_wait(f, "no gate free")
+                break
             self.next_land_slot = t + self._land_spacing(t)
+            self.worked.append((t, "arrival"))
             self._land(f)
             break                                                    # one landing per slot
 
@@ -498,12 +559,22 @@ class World:
             ready = self._ready_at(d)
             if ready is None or ready > t:
                 continue
+            ok, short = self._staff_free("departure", t)
+            if not ok:                                               # physics: no ramp crew / gate agent free to work it
+                self._ground_wait(d, f"no {short.replace('_', ' ')} free")
+                continue
+            self.worked.append((t, "departure"))
             self._depart(d)
             self.next_dep_slot = t + self.ph["slot_spacing_min"]
             break                                                     # one takeoff per slot
 
     def _depart(self, d):
         t = self.t
+        for role, field, _ in CREW_ROLES:                    # the law, measured in every mode: duty time must cover the flight
+            crew = self._crew_for(d, role)
+            if crew and crew[field] is not None and crew[field] < d["_block"] and (crew["id"], role) in self.crew_checked:
+                self.crew_violations.append({"t": t, "flight_id": d["id"], "crew_id": crew["id"], "role": role,
+                                             "duty_left_min": crew[field], "needed_min": d["_block"]})
         self._end_tarmac(d, "took off")
         self._set("flights", d, d["id"], "flight", "departed", status="departed", actual_dep=t, est_dep=t,
                   est_arr=t + d["_block"], as_of=t)
@@ -598,6 +669,7 @@ class World:
                 left = crew[field] if crew else None
                 if (crew["id"], role) not in self.crew_checked or left is None or left >= d["_crew_need"]:
                     continue
+                self._fallback("reserve choice", d, f"{role} crew {crew['id']} short; no approved co-pilot crew change in time")
                 reserve = self._find_reserve(role, d)
                 if reserve:
                     self._assign_reserve(d, crew, role, field, reserve)
@@ -667,9 +739,100 @@ class World:
         pool = [d for d in in_window if d["status"] in WAITING_DEP and d["priority"] in th["priorities"]
                 and d["tarmac_since"] is None]
         pool.sort(key=lambda d: (th["priorities"].index(d["priority"]), d["sched_dep"], d["id"]))
+        if self.orchestrated and (self.cp_cancelled or any(d["id"] in self.cp_delay for d in in_window)):
+            return                                     # replaced: the approved co-pilot plan already decided this window
         for d in pool[:max(0, room)]:
+            self._fallback("schedule thinning", d, "no approved co-pilot plan for the stop window yet")
             self.thinned.add(d["id"])
             self._cancel_flight(d, f"schedule thinning: {r['end'] - r['start']} min ground stop announced")
+
+    def _fallback(self, process, f, what):
+        if self.orchestrated:
+            self.fallbacks.append({"t": self.t, "process": process, "flight_id": f["id"], "what": what})
+            self._emit("process_fallback", "MCI", {"process": process, "flight_id": f["id"], "what": what})
+
+    def apply_decision(self, action: str, facts: dict) -> dict:
+        """The operational systems carry out an APPROVED co-pilot decision (orchestrated mode only). Physics and law still
+        hold: it is refused, with the reason, if the facts changed. A done change is confirmed as recovery_action_applied."""
+        t = self.t
+        out = self._apply(action, facts)
+        self.applied.append({"t": t, "action": action, "facts": dict(facts), **out})
+        if out["applied"] and action != "rebook_passenger":
+            self._emit("recovery_action_applied", "MCI", {k: facts.get(k) for k in ("proposal_id", "plan_version", "action",
+                                                                                   "flight_id", "new_departure", "crew_id", "role")})
+        return out
+
+    def _apply(self, action, facts):
+        t = self.t
+        f = self.flights.get(facts.get("flight_id"))
+        if action in ("delay_flight", "cancel_flight", "swap_crews", "call_in_reserve_crew", "deadhead_crew"):
+            if f is None or f["status"] not in WAITING_DEP:
+                return {"applied": False, "reason": f"{facts.get('flight_id')} is no longer waiting ({f and f['status']})"}
+        if action == "delay_flight":
+            from datetime import datetime as _dt
+            m = minute_of(_dt.fromisoformat(facts["new_departure"]))
+            if m < t:
+                return {"applied": False, "reason": "the new departure time has already passed"}
+            self.cp_delay[f["id"]] = m
+            self.reproject(f"co-pilot delay applied to {f['id']}")
+            return {"applied": True}
+        if action == "cancel_flight":
+            self.cp_cancelled.add(f["id"])
+            self._cancel_flight(f, "co-pilot: approved cancellation (B03/B04)")
+            return {"applied": True}
+        if action in ("swap_crews", "call_in_reserve_crew", "deadhead_crew"):
+            role = facts.get("role")
+            field = next((fld for r, fld, _ in CREW_ROLES if r == role), None)
+            crew = self.crews.get(facts.get("crew_id"))
+            if field is None or crew is None:
+                return {"applied": False, "reason": "unknown crew or role"}
+            busy = [g["id"] for g in self.flights.values() if g["id"] != f["id"] and g.get("direction") == "departure"
+                    and g["status"] in WAITING_DEP + ("departed",) and self._crew_for(g, role) is crew]
+            if busy:
+                return {"applied": False, "reason": f"crew {crew['id']} is still on {busy[0]}"}
+            if crew.get("is_reserve") and (crew.get("_used") or crew["reserve_status"] not in self.base["crew"]["reserve_usable_status"]
+                                           or crew["_avail"] > max(t, f["est_dep"])):
+                return {"applied": False, "reason": f"reserve {crew['id']} is not available"}
+            wait = max(0, f["est_dep"] - t)
+            if crew[field] is None or crew[field] < f["_crew_need"] + wait:
+                return {"applied": False, "reason": f"crew {crew['id']} would not be legal for {f['id']} "
+                                                    f"({crew[field]} min left, {f['_crew_need'] + wait} needed)"}
+            if crew.get("is_reserve"):
+                crew["_used"] = True
+                self._set("crews", crew, crew["id"], "crew", f"reserve crew assigned to {f['id']} (approved co-pilot decision)",
+                          reserve_status="Assigned")
+            f["_role_crew"][role] = crew["id"]
+            self.crew_checked.add((crew["id"], role))
+            self._set("flights", f, f["id"], "flight", f"{role} crew {crew['id']} assigned (approved co-pilot decision)",
+                      reserve_crew_ids=sorted(set(f["_role_crew"].values())))
+            self._emit("reserve_crew_assigned" if crew.get("is_reserve") else "crew_reassigned", "MCI",
+                       {"flight_id": f["id"], "crew_id": crew["id"], "role": role, "reserve_duty_left_min": crew[field],
+                        **({"reserve_id": crew["id"]} if crew.get("is_reserve") else {})})
+            return {"applied": True}
+        if action == "rebook_passenger":
+            to = self.flights.get(facts.get("flight_id"))
+            if to is None or to["status"] not in WAITING_DEP or to["est_dep"] <= t:
+                return {"applied": False, "reason": f"{facts.get('flight_id')} is no longer open for rebooking"}
+            moved = []
+            for pid in facts.get("passenger_ids") or []:
+                b = next((b for b in self.bookings.get(pid, []) if b["status"] != "cancelled"
+                          and (self.flights[b["flight_id"]].get("_next_day") or self.flights[b["flight_id"]]["status"] == "cancelled")
+                          and self.flights[b["flight_id"]]["destination"] == to["destination"]), None)
+                if b is None or self._room(to) < 1:
+                    continue
+                old = self.flights[b["flight_id"]]
+                seg = self.passengers[pid]["segment"]
+                if self.groups.get((old["id"], seg), {}).get("count", 0) > 0:
+                    self._move_count(old, to, seg, 1)
+                self._rebook_booking(pid, b, to)
+                if old.get("_next_day"):
+                    self._set("passengers", self.passengers[pid], pid, "passenger_overnight_flag",
+                              "back on a flight today (approved co-pilot rebooking)", overnight=False)
+                moved.append(pid)
+            if not moved:
+                return {"applied": False, "reason": "no passenger could be moved (seats or bookings changed)"}
+            return {"applied": True, "moved": moved}
+        return {"applied": False, "reason": f"'{action}' is not applied to the world in this phase"}
 
     def _crew_for(self, f, role):
         """The crew doing this role on this flight: the reserve that took over, or the flight's own crew."""
@@ -833,6 +996,7 @@ class World:
         If no seat is left today, they go on a next-day flight (7 Oct) and are marked as stranded overnight."""
         if not self.base["rebook_to_next_flight_with_room"]:
             return
+        self._fallback("rebooking", f, "passengers rebooked by today's process (Passenger Care's approved advice moves them later)")
         cands = self._candidates(f)
         chunks = defaultdict(list)                                    # segment -> [[flight, seats left to hand out]]
         for seg in SEG_ORDER:

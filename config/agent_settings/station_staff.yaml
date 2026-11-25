@@ -25,13 +25,15 @@ gates:
 diversions:
   flight_back_min: 40                  # assumption: from leaving a diversion airport to landing at MCI (nearby alternates)
 
-staff:                                 # who each piece of work needs (assumption: Southwest's station planning numbers)
+staff:                                 # who each piece of work needs (assumption). Phase 5b: calibrated so that the published
+                                       # roster works the published schedule on time on a calm day (no storm); the simulator's
+                                       # ground physics (config/simulator.yaml ground) uses exactly these numbers (tested)
   arrival:
-    ramp: {count: 4, before_min: 0, after_min: 30}           # unload, bags, marshalling
-    gate_agent: {count: 1, before_min: 5, after_min: 20}     # meet the plane, jet bridge
+    ramp: {count: 3, before_min: 0, after_min: 20}           # unload, bags, marshalling
+    gate_agent: {count: 1, before_min: 0, after_min: 15}     # meet the plane, jet bridge
   departure:
-    ramp: {count: 4, before_min: 40, after_min: 0}           # load, fuel, push back
-    gate_agent: {count: 2, before_min: 45, after_min: 0}     # boarding
+    ramp: {count: 3, before_min: 25, after_min: 0}           # load, fuel, push back
+    gate_agent: {count: 1, before_min: 30, after_min: 0}     # boarding
   cancelled:
     customer_service: {count: 2, before_min: 0, after_min: 90}   # the rebooking line for a cancelled flight
   diverted_arrival:

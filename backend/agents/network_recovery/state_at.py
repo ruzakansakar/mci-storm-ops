@@ -125,6 +125,9 @@ def _apply(st: NRState, e):
     elif typ == "reserve_crew_assigned":
         f.reserves[p.get("role")] = (p.get("reserve_id"), p.get("reserve_duty_left_min"), when)
         st.used_reserves.add(p.get("reserve_id"))
+    elif typ == "crew_reassigned":                     # 5b: a crew swapped onto this flight (its own duty clock runs now)
+        f.reserves[p.get("role")] = (p.get("crew_id"), p.get("reserve_duty_left_min"), when)
+        st.used_reserves.add(p.get("crew_id"))
     elif typ == "crew_out_of_duty":
         st.timed_out.append((when, f.id, p.get("crew_id"), p.get("role")))
     elif typ == "pilot_duty_extended":

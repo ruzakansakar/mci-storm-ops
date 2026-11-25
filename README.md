@@ -28,7 +28,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 4e-2 | Network Recovery -> Communication (held drafts, crew drafts, staff notes) | **done** |
 | 4f | Station & Staff agent (tarmac care, gates, ground staff, wheelchair and child help) + link to Network Recovery | **done** |
 | 5a | Orchestrator, part 1: owns the minute loop, one approval queue, incidents, conflicts between agents, shared-state audit | **done** |
-| Later | Orchestrator, part 2: applying approved actions | planned; no guardrail agent |
+| 5b | Orchestrator, part 2: orchestrated mode, approved decisions change the world; staff and gates are physics in every mode | **done** |
 | 7 | API + live updates | |
 | 8 | Front end (milestone 3) | |
 | 9 | AI pieces | |
@@ -636,6 +636,22 @@ Plain code, no AI. It owns the co-pilot's minute loop and coordinates; in this p
 
 The debug page has an "Orchestrator" section: how the agents connected at 14:15, the queue over the day, the conflicts and
 the incidents.
+
+## Three ways (Phase 5b)
+
+```powershell
+python -m simulator.run --seed 7 --scenario a31_storm --mode today
+python -m simulator.run --seed 7 --scenario a31_storm --mode copilot
+python -m simulator.run --seed 7 --scenario a31_storm --mode orchestrated
+python -m simulator.report --run-id a31_storm-s7-today
+```
+
+- **Today:** Southwest's current process. **Co-pilot:** the agents advise; nothing in the world changes. **Orchestrated:** what a
+  person approves is carried out (delays, cancellations, reserve crews and crew swaps, rebookings, hotels); if nothing was
+  approved in time, today's process acts and that fallback is logged.
+- Weather, the FAA stop, fuel, crew legal hours, curfews and maintenance always apply, and so do staff and gates: a departure
+  needs a ramp crew and a gate agent, an arrival needs a gate, in every mode.
+- The debug page's "Three ways" section compares the three, with Maya's day in each.
 
 ## Rules for conflicting files
 
