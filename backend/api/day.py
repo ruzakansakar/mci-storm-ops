@@ -115,7 +115,8 @@ def day(run_id: str) -> dict:
         for at, kind, p in cur.fetchall():
             row = {"t": _minute(at), "type": kind, **{k: v for k, v in (p or {}).items()
                                                        if k in ("flight_id", "to", "delay_min", "new_departure", "diverted_to",
-                                                                "expected_landing", "reason", "expected_end", "program")}}
+                                                                "expected_landing", "reason", "expected_end", "program",
+                                                                "extra_flying_min")}}
             (world if kind in WORLD_EVENTS else flight_events).append(row)
 
         cur.execute("SELECT occurred_at, payload FROM events WHERE run_id = %s AND type = 'station_status' ORDER BY occurred_at",
@@ -161,9 +162,31 @@ def day(run_id: str) -> dict:
                   "incidents": [i for i in r.get("incidents", []) if i.get("status") != "closed"]}
                  for at, r in cur.fetchall()]
 
+        # Situation's pictures, newest version last. Only runs with the co-pilot have them.
+        cur.execute("SELECT version, assessed_at, status, type, likely_cause, confidence, expected_end_earliest, "
+                    "expected_end_likely, expected_end_latest, end_confidence, summary, impact, evidence "
+                    "FROM situation_assessments WHERE run_id = %s ORDER BY version", (run_id,))
+        situation = []
+        for (v, at, status, kind, cause, conf, e1, e2, e3, end_conf, summary, impact, evidence) in cur.fetchall():
+            impact = impact or {}
+            arr, dep = impact.get("arrivals") or {}, impact.get("departures") or {}
+            situation.append({
+                "version": v, "t": _minute(at), "status": status, "type": kind, "cause": cause,
+                "confidence": float(conf) if conf is not None else None,
+                "end_earliest": _hhmm(e1) if e1 else None, "end_likely": _hhmm(e2) if e2 else None,
+                "end_latest": _hhmm(e3) if e3 else None,
+                "end_confidence": float(end_conf) if end_conf is not None else None,
+                "summary": summary,
+                "impact": {"diverted": arr.get("ever_diverted", 0), "holding": arr.get("holding", 0),
+                           "cancelled": (arr.get("cancelled", 0) or 0) + (dep.get("cancelled", 0) or 0),
+                           "delayed": (arr.get("ever_delayed_30_plus", 0) or 0) + (dep.get("ever_delayed_30_plus", 0) or 0),
+                           "passengers": impact.get("passengers_on_affected_flights", 0)},
+                "sources": sorted({e.get("source") for e in (evidence or []) if e.get("source")}),
+            })
+
     return {
         "run_id": run_id, "date": SIM_DATE.isoformat(), "timezone": str(TZ),
         "airports": airports, "flights": flights, "flight_events": flight_events, "world": world,
-        "station": station, "activity": activity, "orchestrator": ticks,
+        "station": station, "activity": activity, "orchestrator": ticks, "situation": situation,
         "roster_flags": crew_flags, "agents": AGENT_NAMES,
     }

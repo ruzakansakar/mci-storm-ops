@@ -39,6 +39,8 @@ const LAND = (() => {
   return pts;
 })();
 
+const TAU = Math.PI * 2;
+
 export class NetworkMap {
   constructor(canvas, tooltip) {
     this.canvas = canvas;
@@ -53,6 +55,9 @@ export class NetworkMap {
     this.labels = new Set();
     this.colors = {};
     this.hover = null;
+    this.selection = null;  // { id, legs: [{from, to, p}], planned: {from, to} | null }
+    this.weather = null;    // { cell, wind, lightning, alert }
+    this.onSelect = null;
     this.reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this._bind();
     this.resize();
@@ -63,7 +68,8 @@ export class NetworkMap {
     const css = getComputedStyle(document.documentElement);
     const v = (n) => css.getPropertyValue(n).trim();
     this.colors = { bg: v('--map-bg'), dot: v('--map-dot'), route: v('--map-route'), out: v('--map-out'), inn: v('--map-in'),
-      label: v('--map-label'), ink: v('--ink'), surface: v('--surface'), accent: v('--accent') };
+      label: v('--map-label'), ink: v('--ink'), surface: v('--surface'), accent: v('--accent'), warn: v('--warn'), bad: v('--bad'),
+      wx1: v('--wx-1'), wx2: v('--wx-2'), wx3: v('--wx-3'), wind: v('--wx-wind'), bolt: v('--wx-bolt') };
   }
 
   resize() {
@@ -81,10 +87,9 @@ export class NetworkMap {
     this.routes = routes;
   }
 
-  setPlanes(planes, labels) {
-    this.planes = planes;
-    this.labels = labels;
-  }
+  setPlanes(planes, labels) { this.planes = planes; this.labels = labels; }
+  setSelection(sel) { this.selection = sel; }
+  setWeather(wx) { this.weather = wx; }
 
   project(x, y, z) {
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
@@ -101,6 +106,132 @@ export class NetworkMap {
     return { x: a.x + (b.x - a.x) * t, y: Math.sin(Math.PI * t) * d * 0.16, z: a.z + (b.z - a.z) * t };
   }
 
+  _arcPath(a, b, t0, t1, steps = 48) {
+    const { ctx } = this;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i <= steps; i++) {
+      const q = this.arcPoint(a, b, t0 + (t1 - t0) * i / steps), s = this.project(q.x, q.y, q.z);
+      if (!s) continue;
+      started ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y);
+      started = true;
+    }
+  }
+
+  _groundShape(cx, cz, radius, wobble, phase) {
+    const { ctx } = this;
+    ctx.beginPath();
+    for (let i = 0; i <= 64; i++) {
+      const a = i / 64 * TAU;
+      const r = radius * (1 + wobble * (0.55 * Math.sin(3 * a + phase) + 0.3 * Math.sin(5 * a - phase * 1.3) + 0.15 * Math.sin(8 * a + 2)));
+      const s = this.project(cx + Math.cos(a) * r * 1.25, 0, cz + Math.sin(a) * r * 0.85);
+      if (!s) continue;
+      i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y);
+    }
+    ctx.closePath();
+  }
+
+  // Where a plane is in world space, and a point a little ahead of it for its heading.
+  _planeAt(p, now) {
+    if (p.kind === 'orbit') {
+      const a = p.orbit.ang, r = p.orbit.r;
+      const pos = { x: Math.cos(a) * r * 1.3, y: p.orbit.alt, z: Math.sin(a) * r };
+      const ahead = { x: Math.cos(a + 0.15) * r * 1.3, y: p.orbit.alt, z: Math.sin(a + 0.15) * r };
+      return [pos, ahead];
+    }
+    const a = this.byCode[p.from], b = this.byCode[p.to];
+    if (!a || !b) return null;
+    if (p.kind === 'ground') {      // parked at `from`, nose towards `to`
+      const ahead = this.arcPoint(a, b, 0.03);
+      return [{ x: a.x, y: 0, z: a.z }, { x: ahead.x, y: 0, z: ahead.z }];
+    }
+    return [this.arcPoint(a, b, p.progress), this.arcPoint(a, b, Math.min(1, p.progress + 0.02))];
+  }
+
+  _drawWeather(now) {
+    const wx = this.weather;
+    if (!wx) return;
+    const { ctx, colors } = this;
+    const spin = this.reduceMotion ? 0 : now / 9000;
+
+    // wind streaks around Kansas City, moving downwind
+    if (wx.wind) {
+      const to = (wx.wind.dir + 180) * Math.PI / 180;
+      const dx = Math.sin(to), dz = -Math.cos(to);
+      const len = 0.35 + wx.wind.speed / 40;
+      const drift = this.reduceMotion ? 0.5 : ((now / 1000) * (0.25 + wx.wind.speed / 60)) % 1;
+      ctx.strokeStyle = colors.wind; ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+      for (let gx = -6; gx <= 6; gx += 1.5) {
+        for (let gz = -4.5; gz <= 4.5; gz += 1.5) {
+          const jitter = Math.sin(gx * 12.9 + gz * 78.2) * 0.5;
+          const fade = Math.max(0, 1 - Math.hypot(gx, gz) / 7);
+          if (fade <= 0) continue;
+          const k = (drift + (jitter + 1) / 2) % 1;
+          const ox = gx + jitter + dx * k * 1.5, oz = gz - jitter * 0.6 + dz * k * 1.5;
+          const a = this.project(ox, 0.05, oz), b = this.project(ox + dx * len, 0.05, oz + dz * len);
+          if (!a || !b) continue;
+          ctx.globalAlpha = fade * Math.sin(Math.PI * k) * 0.9;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          const ang = Math.atan2(b.y - a.y, b.x - a.x);
+          ctx.beginPath(); ctx.moveTo(b.x, b.y);
+          ctx.lineTo(b.x - 4 * Math.cos(ang - 0.5), b.y - 4 * Math.sin(ang - 0.5));
+          ctx.moveTo(b.x, b.y);
+          ctx.lineTo(b.x - 4 * Math.cos(ang + 0.5), b.y - 4 * Math.sin(ang + 0.5));
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // the storm cell: radar-style layers, heavier towards the core
+    const c = wx.cell;
+    if (c && c.show > 0.01) {
+      const w = toWorld(c.lat, c.lon);
+      ctx.globalAlpha = c.show;
+      const layers = [[3.1, colors.wx1, 0.35], [1.95, colors.wx2, 0.3], [1.0 * c.core, colors.wx3, 0.25]];
+      for (const [i, [r, col, wob]] of layers.entries()) {
+        ctx.fillStyle = col;
+        this._groundShape(w.x + i * 0.18, w.z - i * 0.1, r, wob, spin + i);
+        ctx.fill();
+      }
+      // trailing cells to the south-west
+      ctx.fillStyle = colors.wx1;
+      this._groundShape(w.x - 4.2, w.z + 2.2, 1.2, 0.4, spin * 1.3 + 4); ctx.fill();
+      ctx.fillStyle = colors.wx2;
+      this._groundShape(w.x - 4.1, w.z + 2.15, 0.55, 0.4, spin * 1.3 + 5); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      if (wx.lightning) {
+        // ring around MCI while the ramp is closed for lightning
+        const ring = 0.75;
+        ctx.strokeStyle = colors.bad; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        for (let i = 0; i <= 64; i++) {
+          const a = i / 64 * TAU, s = this.project(Math.cos(a) * ring * 1.3, 0, Math.sin(a) * ring);
+          if (s) (i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y));
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+        // strikes, changing every fraction of a second
+        const seed = this.reduceMotion ? 3 : Math.floor(now / 260);
+        const rnd = (n) => { const v = Math.sin(seed * 91.7 + n * 12.3) * 43758.5; return v - Math.floor(v); };
+        if (this.reduceMotion || rnd(0) > 0.35) {
+          for (let k = 0; k < 2; k++) {
+            const bx = w.x + (rnd(k + 1) - 0.5) * 2.2, bz = w.z + (rnd(k + 5) - 0.5) * 1.5;
+            ctx.strokeStyle = colors.bolt; ctx.lineWidth = 2; ctx.beginPath();
+            let px = bx, pz = bz;
+            for (let j = 0; j <= 5; j++) {
+              const y = 1.6 - j * 0.32;
+              const s = this.project(px, y, pz);
+              if (s) (j ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y));
+              px += (rnd(k * 10 + j) - 0.5) * 0.25; pz += (rnd(k * 20 + j) - 0.5) * 0.15;
+            }
+            ctx.stroke();
+          }
+        }
+      }
+    }
+  }
+
   draw(now) {
     const { ctx, colors } = this;
     ctx.clearRect(0, 0, this.w, this.h);
@@ -114,89 +245,150 @@ export class NetworkMap {
       ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
     }
 
+    this._drawWeather(now);
+
+    const sel = this.selection;
     ctx.strokeStyle = colors.route; ctx.lineWidth = 1;
+    ctx.globalAlpha = sel ? 0.5 : 1;
     for (const [from, to] of this.routes) {
       const a = this.byCode[from], b = this.byCode[to];
       if (!a || !b) continue;
-      ctx.beginPath();
-      for (let i = 0; i <= 40; i++) {
-        const q = this.arcPoint(a, b, i / 40), s = this.project(q.x, q.y, q.z);
-        if (!s) continue;
-        i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y);
+      this._arcPath(a, b, 0, 1, 40); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // the selected flight's path: flown part solid, the rest dashed
+    const selCodes = new Set();
+    if (sel) {
+      const col = sel.tone === 'warn' ? colors.warn : sel.dir === 'out' ? colors.out : colors.inn;
+      if (sel.planned) {
+        const a = this.byCode[sel.planned.from], b = this.byCode[sel.planned.to];
+        if (a && b) {
+          ctx.strokeStyle = col; ctx.globalAlpha = 0.45; ctx.lineWidth = 1.5; ctx.setLineDash([3, 5]);
+          this._arcPath(a, b, 0, 1); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+          selCodes.add(a.code); selCodes.add(b.code);
+        }
       }
-      ctx.stroke();
+      for (const leg of sel.legs) {
+        const a = this.byCode[leg.from], b = this.byCode[leg.to];
+        if (!a || !b) continue;
+        selCodes.add(a.code); selCodes.add(b.code);
+        ctx.strokeStyle = col;
+        if (leg.p > 0) { ctx.lineWidth = 3.5; this._arcPath(a, b, 0, leg.p); ctx.stroke(); }
+        if (leg.p < 1) { ctx.lineWidth = 2; ctx.setLineDash([7, 6]); this._arcPath(a, b, leg.p, 1); ctx.stroke(); ctx.setLineDash([]); }
+      }
     }
 
     for (const a of this.airports) {
       const s = this.project(a.x, 0, a.z);
       if (!s) continue;
       const isMci = a.code === 'MCI';
-      ctx.fillStyle = isMci ? colors.accent : colors.label;
-      ctx.beginPath(); ctx.arc(s.x, s.y, isMci ? 5 : 2.4, 0, Math.PI * 2); ctx.fill();
+      const hot = selCodes.has(a.code);
+      const alert = isMci && this.weather && this.weather.alert;
+      ctx.fillStyle = isMci ? (alert ? colors.bad : colors.accent) : hot ? colors.ink : colors.label;
+      ctx.beginPath(); ctx.arc(s.x, s.y, isMci ? 5 : hot ? 4 : 2.4, 0, TAU); ctx.fill();
       if (isMci) {
-        const pulse = this.reduceMotion ? 0.5 : (now / 1600) % 1;
-        ctx.strokeStyle = colors.accent; ctx.globalAlpha = 1 - pulse; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.ellipse(s.x, s.y, 8 + pulse * 26, (8 + pulse * 26) * Math.cos(this.tilt) * 0.9 + 2, 0, 0, Math.PI * 2); ctx.stroke();
+        const pulse = this.reduceMotion ? 0.5 : (now / (alert ? 1000 : 1600)) % 1;
+        ctx.strokeStyle = alert ? colors.bad : colors.accent; ctx.globalAlpha = 1 - pulse; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.ellipse(s.x, s.y, 8 + pulse * 26, (8 + pulse * 26) * Math.cos(this.tilt) * 0.9 + 2, 0, 0, TAU); ctx.stroke();
         ctx.globalAlpha = 1;
       }
-      if (isMci || a.base || this.labels.has(a.code) || (this.hover && this.hover.codes.includes(a.code))) {
+      if (isMci || a.base || hot || this.labels.has(a.code) || (this.hover && this.hover.codes.includes(a.code))) {
         ctx.fillStyle = colors.ink;
-        ctx.font = `${isMci ? 700 : 400} ${isMci ? 13 : 11}px 'Atkinson Hyperlegible', system-ui, sans-serif`;
+        ctx.font = `${isMci || hot ? 700 : 400} ${isMci ? 13 : hot ? 13 : 11}px 'Atkinson Hyperlegible', system-ui, sans-serif`;
         ctx.fillText(a.code, s.x + 7, s.y - 6);
       }
     }
 
-    this.hits = [];
-    for (const p of this.planes) {
-      const a = this.byCode[p.from], b = this.byCode[p.to];
-      if (!a || !b) continue;
-      const highlight = this.hover && this.hover.id === p.id;
-      if (highlight) {
-        ctx.strokeStyle = p.dir === 'out' ? colors.out : colors.inn; ctx.lineWidth = 2; ctx.beginPath();
-        for (let i = 0; i <= 40; i++) {
-          const q = this.arcPoint(a, b, i / 40), s = this.project(q.x, q.y, q.z);
-          if (s) (i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y));
-        }
-        ctx.stroke();
+    // holding orbits, drawn under the planes
+    const orbits = new Map();
+    for (const p of this.planes) if (p.kind === 'orbit') orbits.set(`${p.orbit.r}|${p.orbit.alt}`, p.orbit);
+    ctx.strokeStyle = colors.warn; ctx.lineWidth = 1; ctx.globalAlpha = 0.55; ctx.setLineDash([2, 4]);
+    for (const o of orbits.values()) {
+      ctx.beginPath();
+      for (let i = 0; i <= 48; i++) {
+        const a = i / 48 * TAU, s = this.project(Math.cos(a) * o.r * 1.3, o.alt, Math.sin(a) * o.r);
+        if (s) (i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y));
       }
-      const q = this.arcPoint(a, b, p.progress), q2 = this.arcPoint(a, b, Math.min(1, p.progress + 0.02));
-      const s = this.project(q.x, q.y, q.z), s2 = this.project(q2.x, q2.y, q2.z);
-      if (!s || !s2) continue;
+      ctx.stroke();
+    }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+    this.hits = [];
+    const drawPlane = (p, emphasised) => {
+      const at = this._planeAt(p, now);
+      if (!at) return;
+      const s = this.project(at[0].x, at[0].y, at[0].z), s2 = this.project(at[1].x, at[1].y, at[1].z);
+      if (!s || !s2) return;
       const ang = Math.atan2(s2.y - s.y, s2.x - s.x);
-      const size = Math.max(5, Math.min(11, s.s * 0.32));
+      const size = Math.max(5, Math.min(11, s.s * 0.32)) * (emphasised ? 1.45 : 1);
+      const col = p.tone === 'warn' ? colors.warn : p.dir === 'out' ? colors.out : colors.inn;
+      if (emphasised) {
+        ctx.fillStyle = col; ctx.globalAlpha = 0.18;
+        ctx.beginPath(); ctx.arc(s.x, s.y, size * 1.9, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+      }
       ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(ang);
-      ctx.fillStyle = p.dir === 'out' ? colors.out : colors.inn;
+      ctx.globalAlpha = sel && !emphasised ? 0.35 : (p.kind === 'ground' ? 0.8 : 1);
+      ctx.fillStyle = col;
       ctx.beginPath();
       ctx.moveTo(size, 0); ctx.lineTo(-size * 0.7, size * 0.55); ctx.lineTo(-size * 0.35, 0); ctx.lineTo(-size * 0.7, -size * 0.55);
       ctx.closePath(); ctx.fill();
-      ctx.restore();
+      if (emphasised) { ctx.strokeStyle = colors.surface; ctx.lineWidth = 1.5; ctx.stroke(); }
+      ctx.restore(); ctx.globalAlpha = 1;
       this.hits.push({ x: s.x, y: s.y, plane: p });
+    };
+    let selected = null;
+    for (const p of this.planes) { if (sel && p.id === sel.id) selected = p; else drawPlane(p, this.hover && this.hover.id === p.id); }
+    if (selected) drawPlane(selected, true);
+    else if (sel && sel.gate) {          // not flying yet: mark it at its gate
+      const g = this.byCode[sel.gate];
+      const s = g && this.project(g.x, 0, g.z);
+      if (s) {
+        ctx.strokeStyle = sel.dir === 'out' ? colors.out : colors.inn; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 9, 0, TAU); ctx.stroke();
+      }
     }
+  }
+
+  _pick(e) {
+    const r = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    let best = null, bd = 14;
+    for (const h of this.hits || []) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bd) { bd = d; best = h; } }
+    return { best, mx, my };
   }
 
   _bind() {
     let drag = null;
-    this.canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, yaw: this.yaw, tilt: this.tilt }; this.canvas.setPointerCapture(e.pointerId); });
-    this.canvas.addEventListener('pointerup', () => { drag = null; });
+    this.canvas.addEventListener('pointerdown', (e) => {
+      drag = { x: e.clientX, y: e.clientY, yaw: this.yaw, tilt: this.tilt, moved: false };
+      this.canvas.setPointerCapture(e.pointerId);
+    });
+    this.canvas.addEventListener('pointerup', (e) => {
+      if (drag && !drag.moved && this.onSelect) {
+        const { best } = this._pick(e);
+        this.onSelect(best ? best.plane.id : null);
+      }
+      drag = null;
+    });
     this.canvas.addEventListener('pointermove', (e) => {
       if (drag) {
+        if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) drag.moved = true;
         this.yaw = drag.yaw + (e.clientX - drag.x) * 0.005;
         this.tilt = Math.max(0.55, Math.min(1.45, drag.tilt - (e.clientY - drag.y) * 0.004));
         return;
       }
-      const r = this.canvas.getBoundingClientRect();
-      const mx = e.clientX - r.left, my = e.clientY - r.top;
-      let best = null, bd = 14;
-      for (const h of this.hits || []) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bd) { bd = d; best = h; } }
+      const { best, mx, my } = this._pick(e);
       if (best) {
         const p = best.plane;
         this.hover = { id: p.id, codes: [p.from, p.to] };
+        this.canvas.style.cursor = 'pointer';
         this.tooltip.hidden = false;
-        this.tooltip.innerHTML = `<b>${p.id}</b><br>${p.fromName} to ${p.toName}<br>${p.status}`;
+        this.tooltip.innerHTML = `<b>${p.id}</b><br>${p.fromName} to ${p.toName}<br>${p.status}<br><span class="muted">Click to follow</span>`;
         this.tooltip.style.left = Math.min(mx + 14, this.w - 250) + 'px';
         this.tooltip.style.top = (my + 14) + 'px';
       } else {
-        this.hover = null; this.tooltip.hidden = true;
+        this.hover = null; this.tooltip.hidden = true; this.canvas.style.cursor = '';
       }
     });
     this.canvas.addEventListener('pointerleave', () => { this.hover = null; this.tooltip.hidden = true; });

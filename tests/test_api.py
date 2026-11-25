@@ -35,4 +35,15 @@ def test_unknown_run_is_404(db):
 def test_api_is_read_only_and_never_reads_passenger_details():
     src = (ROOT / "backend" / "api" / "day.py").read_text(encoding="utf-8")
     assert not re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE)\b", src, re.I)
-    assert "passengers" not in src and "full_name" not in src and "booking_ref" not in src
+    assert not re.search(r"\b(FROM|JOIN)\s+passengers\b", src, re.I)   # counts on a picture are fine, the table is not
+    assert "full_name" not in src and "booking_ref" not in src
+
+
+def test_day_carries_situation_pictures_and_weather_inputs(db):
+    db.execute("INSERT INTO events (occurred_at, type, actor, actor_name, run_id, payload) "
+               "VALUES ('2026-10-06 11:30-05', 'ground_stop_started', 'simulator', 'faa', 'api-test-today', "
+               "'{\"reason\": \"thunderstorms\", \"program\": \"ground_stop\"}')")
+    db.connection.commit()
+    body = client.get("/api/day/api-test-today").json()    # events are append-only; the test database is reset each run
+    assert body["situation"] == []                          # no co-pilot in this run, so no picture
+    assert body["world"][0]["type"] == "ground_stop_started" and body["world"][0]["t"] == 690

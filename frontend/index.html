@@ -46,20 +46,51 @@
   </div>
 </section>
 
+<section id="alert" class="alert" aria-live="polite" hidden></section>
+
 <main class="layout">
   <section class="card map-card" aria-label="Network map">
-    <div class="map-status" id="status-chips"></div>
+    <div class="map-top">
+      <div class="map-status" id="status-chips"></div>
+      <div class="agent-strip" id="agent-strip" aria-label="Co-pilot agents"></div>
+    </div>
     <canvas id="map" aria-label="Map of today's flights to and from Kansas City" role="img"></canvas>
     <div id="tooltip" class="tooltip" hidden></div>
+    <div id="tracker" class="tracker" aria-live="polite" hidden></div>
     <div class="map-legend">
       <span><i class="lg lg-out"></i>Leaving MCI</span>
       <span><i class="lg lg-in"></i>Coming to MCI</span>
-      <span><i class="lg lg-route"></i>Today's routes</span>
-      <span class="hint">Drag to turn, scroll to zoom</span>
+      <span><i class="lg lg-warn"></i>Holding or diverted</span>
+      <span class="hint">Click a plane or a flight to follow it. Drag to turn, scroll to zoom</span>
     </div>
   </section>
 
   <aside class="side">
+    <section class="card wx-card" id="wx-card" aria-label="Weather at MCI">
+      <div class="card-head">
+        <h2>Weather at MCI</h2>
+        <span class="tag" title="The simulator has no weather readings. This picture follows the day's events only, and no agent uses it.">Simulated</span>
+      </div>
+      <div class="wx-body">
+        <svg id="wx-dial" class="wx-dial" viewBox="0 0 100 100" role="img" aria-label="Wind direction">
+          <circle cx="50" cy="50" r="44" class="dial-ring"/>
+          <g class="dial-ticks">
+            <path d="M50 8v8M50 84v8M8 50h8M84 50h8"/>
+          </g>
+          <text x="50" y="27" class="dial-n">N</text>
+          <text x="76" y="54" class="dial-l">E</text>
+          <text x="50" y="81" class="dial-l">S</text>
+          <text x="24" y="54" class="dial-l">W</text>
+          <g id="wx-arrow"><path class="dial-arrow" d="M50 18l9 22h-6v32h-6V40h-6z"/></g>
+          <circle cx="50" cy="50" r="4" class="dial-hub"/>
+        </svg>
+        <div class="wx-text">
+          <p class="wx-cond" id="wx-cond">Clear</p>
+          <p class="wx-trend" id="wx-trend"></p>
+          <dl class="wx-facts" id="wx-facts"></dl>
+        </div>
+      </div>
+    </section>
     <section class="card" aria-label="MCI right now">
       <h2>MCI right now</h2>
       <div class="stats" id="stats"></div>
@@ -75,19 +106,6 @@
       <div class="board-wrap"><table class="board" id="board"></table></div>
     </section>
   </aside>
-
-  <section class="card feed-card" aria-label="Co-pilot activity">
-    <div class="feed-head">
-      <h2>What the co-pilot is doing</h2>
-      <span class="muted" id="queue-note"></span>
-    </div>
-    <ol class="feed" id="feed"></ol>
-  </section>
-
-  <section class="card agents-card" aria-label="Agents">
-    <h2>Agents</h2>
-    <div class="agents" id="agents"></div>
-  </section>
 </main>
 
 <script type="module" src="/app.js"></script>
