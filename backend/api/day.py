@@ -49,15 +49,16 @@ def _hhmm(value) -> str:
 
 
 def runs() -> list[dict]:
+    """The simulated days the front end can show: runs of a known mode only (test and batch runs are left out)."""
+    labels = {"today": "Today's process", "copilot": "Co-pilot advises", "orchestrated": "Co-pilot, approved decisions applied",
+              "live": "Live: you are the human in the loop"}
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT run_id, count(*) FROM events WHERE run_id IS NOT NULL AND run_id NOT LIKE 'chaos-%%' "
-                    "GROUP BY run_id ORDER BY run_id")
+        cur.execute("SELECT run_id, count(*) FROM events WHERE run_id IS NOT NULL GROUP BY run_id ORDER BY run_id")
         out = []
         for run_id, n in cur.fetchall():
-            mode = run_id.rsplit("-", 1)[-1]
-            out.append({"run_id": run_id, "mode": mode, "events": n,
-                        "label": {"today": "Today's process", "copilot": "Co-pilot advises",
-                                  "orchestrated": "Co-pilot, approved decisions applied"}.get(mode, mode)})
+            mode = "live" if "-live-" in run_id else run_id.rsplit("-", 1)[-1]
+            if mode in labels:
+                out.append({"run_id": run_id, "mode": mode, "events": n, "label": labels[mode]})
         return out
 
 

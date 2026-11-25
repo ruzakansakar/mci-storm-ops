@@ -24,6 +24,7 @@ event_feeds:
     network_proposal_reviewed: [proposal_id, action, flight_id, new_departure, crew_id, crew_role, role, rule_check_ok]
     network_approval_recorded: [proposal_id, plan_version, status, role, decided_at]
     recovery_action_applied: [proposal_id, plan_version, action, flight_id, new_departure, crew_id, role]   # 5b: done in the world
+    human_rejected: [agent, action, recommendation, target, reason, final, count]   # live mode: a person's final "no"
   reservations:                        # fix-seats: the seat inventory, as the reservations system publishes it
     seats_updated: [flight_id, seats, booked, sellable]
   flight_ops:

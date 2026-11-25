@@ -588,7 +588,7 @@ CREATE TABLE metric_runs (
     id             bigserial PRIMARY KEY,
     run_id         text NOT NULL,
     seed           bigint NOT NULL,
-    mode           text NOT NULL CHECK (mode IN ('today','copilot','orchestrated')),
+    mode           text NOT NULL CHECK (mode IN ('today','copilot','orchestrated','live')),
     scenario       text NOT NULL,
     metrics        jsonb NOT NULL,
     finished_at    timestamptz NOT NULL DEFAULT now()
@@ -602,4 +602,68 @@ CREATE TABLE data_issues (
     issue       text NOT NULL,
     resolution  text NOT NULL,                           -- what the loader did about it
     severity    text NOT NULL DEFAULT 'info'             -- info | warning
+);
+
+-- Live human-in-the-loop mode (simulator/live.py): the user answers the co-pilot's questions; everything is kept.
+CREATE TABLE live_sessions (
+    run_id         text PRIMARY KEY,
+    seed           bigint NOT NULL,
+    scenario       text NOT NULL,
+    roles          jsonb NOT NULL DEFAULT '[]'::jsonb,
+    status         text NOT NULL CHECK (status IN ('running','paused','finished','stopped')),
+    sim_minute     int NOT NULL DEFAULT 0,
+    speed_idle     real NOT NULL,
+    speed_pending  real NOT NULL,
+    live_from      int NOT NULL,
+    focus_passenger text,
+    results        jsonb,
+    error          text,
+    started_at     timestamptz NOT NULL DEFAULT now(),
+    ended_at       timestamptz
+);
+CREATE TABLE live_questions (
+    run_id          text NOT NULL,
+    id              int NOT NULL,
+    agent           text NOT NULL,
+    action          text NOT NULL,
+    role            text,
+    target          jsonb NOT NULL DEFAULT '{}'::jsonb,
+    asked_minute    int NOT NULL,
+    deadline_minute int NOT NULL,
+    urgent          boolean NOT NULL DEFAULT false,
+    status          text NOT NULL,
+    group_key       text,
+    depends_on      int[] NOT NULL DEFAULT '{}',
+    priority_score  real,
+    why             jsonb NOT NULL DEFAULT '{}'::jsonb,
+    answer          jsonb,
+    title           text,
+    recommendation  bigint,
+    last_option     boolean NOT NULL DEFAULT false,
+    consequence     text,
+    previous        int,
+    snoozed_until   int,
+    escalated       boolean NOT NULL DEFAULT false,
+    answered_minute int,
+    PRIMARY KEY (run_id, id)
+);
+CREATE TABLE live_decision_traces (
+    id          bigserial PRIMARY KEY,
+    run_id      text NOT NULL,
+    question_id int NOT NULL,
+    snapshot    text NOT NULL CHECK (snapshot IN ('asked','answered')),
+    at_minute   int NOT NULL,
+    trace       jsonb NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE live_minutes (
+    run_id                    text NOT NULL,
+    minute                    int NOT NULL,
+    wrong_now                 int NOT NULL,
+    wrong_minutes_total       int NOT NULL,
+    today_wrong_now           int,
+    today_wrong_minutes_total int,
+    pending                   int NOT NULL DEFAULT 0,
+    focus                     jsonb,
+    PRIMARY KEY (run_id, minute)
 );

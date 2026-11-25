@@ -245,6 +245,12 @@ class Orchestrator(Copilot):
         for q in due:
             decision, inc = self.own.get(q.rec_id, (None, None))
             rec = self.octx.saved.get(("recommendations", q.rec_id))
+            if q.answer.get("decision") == "rejected":          # live mode: a person said no; the incident does not move on
+                if rec is not None:
+                    rec["status"] = "rejected"
+                self.octx.record_event("incident_updated", {"incident_id": inc, "decision": decision, "rejected_by": q.role,
+                                                            "status": "unchanged"})
+                continue
             if rec is not None:
                 rec["status"] = "approved"
             for kind, payload in self.incidents.approved(decision, inc, now, self._close_contexts):
