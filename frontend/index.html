@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ground-Stop Co-Pilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<script>
+  try { const s = localStorage.getItem('gsc-theme'); if (s) document.documentElement.dataset.theme = s; } catch (e) {}
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 18.5l16-6-4 9-3.5-2.5-2.5 3-1-4.5z" fill="currentColor"/></svg>
+    <div>
+      <div class="brand-name">Ground-Stop Co-Pilot</div>
+      <div class="brand-sub">Kansas City (MCI) station view</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <label class="field">
+      <span class="field-label">Simulated day</span>
+      <select id="run"></select>
+    </label>
+    <button id="theme" class="btn ghost" type="button" aria-label="Switch between light and dark mode">Dark mode</button>
+  </div>
+</header>
+
+<section class="playbar" aria-label="Replay controls">
+  <button id="play" class="btn primary play" type="button" aria-label="Play">
+    <svg id="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+  </button>
+  <div class="clock"><span id="clock">08:00</span><span class="clock-sub" id="date">Tue Oct 6</span></div>
+  <label class="slider">
+    <span class="sr-only">Time of day</span>
+    <input id="time" type="range" min="300" max="1439" step="1" value="480">
+    <span class="ticks" aria-hidden="true"><span>05:00</span><span>09:00</span><span>13:00</span><span>17:00</span><span>21:00</span></span>
+  </label>
+  <div class="speed" role="group" aria-label="Replay speed">
+    <button class="btn chip" data-speed="1" type="button">1 min/s</button>
+    <button class="btn chip active" data-speed="5" type="button">5 min/s</button>
+    <button class="btn chip" data-speed="15" type="button">15 min/s</button>
+  </div>
+</section>
+
+<main class="layout">
+  <section class="card map-card" aria-label="Network map">
+    <div class="map-status" id="status-chips"></div>
+    <canvas id="map" aria-label="Map of today's flights to and from Kansas City" role="img"></canvas>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <div class="map-legend">
+      <span><i class="lg lg-out"></i>Leaving MCI</span>
+      <span><i class="lg lg-in"></i>Coming to MCI</span>
+      <span><i class="lg lg-route"></i>Today's routes</span>
+      <span class="hint">Drag to turn, scroll to zoom</span>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card" aria-label="MCI right now">
+      <h2>MCI right now</h2>
+      <div class="stats" id="stats"></div>
+    </section>
+    <section class="card board-card" aria-label="Flight board">
+      <div class="board-head">
+        <h2>Flight board</h2>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" aria-selected="true" data-board="dep" type="button">Departures</button>
+          <button class="tab" role="tab" aria-selected="false" data-board="arr" type="button">Arrivals</button>
+        </div>
+      </div>
+      <div class="board-wrap"><table class="board" id="board"></table></div>
+    </section>
+  </aside>
+
+  <section class="card feed-card" aria-label="Co-pilot activity">
+    <div class="feed-head">
+      <h2>What the co-pilot is doing</h2>
+      <span class="muted" id="queue-note"></span>
+    </div>
+    <ol class="feed" id="feed"></ol>
+  </section>
+
+  <section class="card agents-card" aria-label="Agents">
+    <h2>Agents</h2>
+    <div class="agents" id="agents"></div>
+  </section>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

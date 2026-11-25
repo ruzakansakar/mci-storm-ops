@@ -688,3 +688,18 @@ scripts/summary.py         human-readable check
 tests/                     pytest checks
 data/raw/                  the class files
 ```
+
+## Front end (step 0: the command map on a normal day)
+
+A read-only web app that replays a simulated day. It never writes to the database and never reads passenger names.
+
+```
+pip install -r requirements.txt
+python -m scripts.reset_db
+python -m simulator.run --seed 7 --scenario a31_storm --mode orchestrated
+python -m backend.api
+```
+
+Then open http://127.0.0.1:8000 (it opens by itself). Press play, drag the time bar, switch light/dark, or pick another simulated day at the top.
+
+What step 0 shows: a tilted, simulated 3D map of today's routes around MCI with flights moving in real time, MCI's status (operations, ramp, weather), the numbers right now, a departures and arrivals board, what the co-pilot is doing, and which agents have checked in. The storm, incident, approvals and other pages come in the next steps.
