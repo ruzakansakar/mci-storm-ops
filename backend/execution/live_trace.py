@@ -200,13 +200,17 @@ class Tracer:
     def why(self, q, now):
         rec = self.rec(q.agent, q.rec_id)
         plan = rec.get("title") or q.title
+        p = q.proposal or {}
         if rec.get("why"):
             plan = f"{plan}. {rec['why']}"
+        elif p.get("reason"):                                # a human-only question: the agent's reason for asking
+            plan = f"{plan}. {p['reason']}"
         return {"plan": plan, "trigger": self.triggers(q.agent, now, q.flights),
                 "inputs": self.inputs(q.agent, now, q.proposal),
                 "options_considered": self.options_considered(q.agent, q.action, q.proposal, now),
-                "rule_check": {"ok": rec.get("rule_check_ok", True), "rules": list(rec.get("rule_ids") or []),
-                               "text": "; ".join(rec.get("rule_check_notes") or []) or "passed every rule it was checked against"},
+                "rule_check": p.get("rule_check") or {"ok": rec.get("rule_check_ok", True), "rules": list(rec.get("rule_ids") or []),
+                                                    "text": "; ".join(rec.get("rule_check_notes") or [])
+                                                    or "passed every rule it was checked against"},
                 "why_human": self.why_human(q.agent, q.action, q.proposal, q.role)}
 
     # ------------------------------------------------------------ provenance: a plan built on a still-open proposal

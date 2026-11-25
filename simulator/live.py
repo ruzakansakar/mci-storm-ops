@@ -21,6 +21,7 @@ from random import Random
 
 from backend.execution.copilot import serial
 from backend.execution.live_human import OPEN, DecideError, LiveHumans, load_settings
+from backend.execution.live_after import After
 from backend.execution.live_trace import hhmm, make_tracer
 from simulator.clock import at, fmt, hhmm as clock_min
 from simulator.comparison import FIELDS
@@ -195,7 +196,7 @@ class LiveSession:
         self.auto_paused = False
         self.baseline = baseline
         self.orchestrated = None
-        self.humans = self.copilot = self.world = self.channels = self.comparison = self.tracer = None
+        self.humans = self.copilot = self.world = self.channels = self.comparison = self.tracer = self.after = None
         self.focus = self.focus_name = None
         self.focus_since = {}            # channel -> (wrong?, since minute)
         self.trip_changes = {}
@@ -236,6 +237,7 @@ class LiveSession:
                                    humans=self._humans, on_ready=self._ready, on_tick=self._tick, until=until, **kw)
             self.status = "finished"
             self.results_obj = self.results()
+            self._final_traces()
         except Stop:
             if self.status not in ("finished",):
                 self.status = "stopped"
@@ -262,7 +264,9 @@ class LiveSession:
         from simulator.comparison import focus_passenger
         self.world, self.channels, self.copilot, self.comparison = world, channels, copilot, comparison
         self.tracer = make_tracer(copilot)
-        self.humans.tracer, self.humans.queue = self.tracer, copilot.queue
+        self.after = After(copilot, channels, self.s)
+        self.humans.tracer, self.humans.queue, self.humans.after = self.tracer, copilot.queue, self.after
+        copilot.human_only_port = self.humans.human_only        # human-only decisions come to you (live mode only)
         self.humans.wrong_pax = channels.dis_pax
         if self.scenario != "random":
             self.focus = focus_passenger({"passengers": list(world.passengers.values())})
@@ -330,7 +334,7 @@ class LiveSession:
             p = serial(payload)
             self.world.events.append({"t": t, "type": kind, "actor": actor, "actor_name": actor, "station": None,
                                       "payload": p, "incident": False})
-            if kind == "human_rejected":
+            if kind in ("human_rejected", "human_decision_recorded"):     # what agents may read (their contracts decide)
                 self.copilot.side_event_id -= 1      # its own id namespace (fix-seats side feeds), so nothing is renumbered
                 self.copilot.store.events.append({"id": self.copilot.side_event_id, "occurred_at": at(t), "published_at": None,
                                                   "type": kind, "station": None, "payload": p})
@@ -433,8 +437,26 @@ class LiveSession:
         return self.humans.by_id.get(qid) if self.humans else None
 
     def trace(self, qid):
+        """The latest saved snapshot; once answered, continued with what the decision did (changes, messages, destinations)."""
+        from copy import deepcopy
         snaps = [t for i, _, t in self.humans.traces if i == qid]
-        return snaps[-1] if snaps else None
+        q = self.question(qid)
+        if not snaps or q is None:
+            return None
+        t = deepcopy(snaps[-1])
+        if t["snapshot"] == "answered" and self.world is not None and not t.get("continued"):
+            t.pop("preview", None)
+            self.after.extend(t, q, self.world.events)
+            t["continued"] = True                                  # the after-the-answer part is in (never added twice)
+        return t
+
+    def _final_traces(self):
+        """At the end: every answered question's flowchart, continued to its destinations, is saved once more."""
+        for q in self.humans.questions if self.humans else []:
+            if q.answered_at is not None:
+                t = self.trace(q.id)
+                if t is not None:
+                    self.humans.traces.append((q.id, "answered", t))
 
     def history(self):
         names = {"rejected_once": "rejected", "refused_rejected_before": "rejected", "handed_off": "handed_off"}
@@ -461,6 +483,13 @@ class LiveSession:
             if q.status in OPEN:
                 waiting[q.agent] = waiting.get(q.agent, 0) + 1
         agents, edges = self.tracer.flow(self.now(), since, waiting) if self.tracer else ([], [])
+        if self.after is not None:                               # Communication: each batch of messages it drafts or sends
+            comm = next(a for a in agents if a["key"] == "communication")
+            comm["versions"] = self.after.comm_versions(self.now(), since)
+            for v in comm["versions"]:
+                for u in v["used"]:
+                    edges.append({"from": f"{u['kind']}:{u['ref']}", "to": f"communication:{v['v']}", "t": hhmm(v["t"])})
+                v["t"] = hhmm(v["t"])
         incidents = [i for i in (self.copilot.incidents.all if self.copilot else []) if i.status != "resolved"]
         return {"agents": agents, "orchestrator": {"open_incidents": len(incidents), "queue": self.pending_count()}, "edges": edges}
 

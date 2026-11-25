@@ -71,7 +71,26 @@ consequences:
   send_crew_message: "the crew is not told by the co-pilot; crew scheduling tells them as today"
   assign_gates: "{flight} gets no co-pilot gate; today's gate process assigns one"
   move_gate_agents: "{flight} gets no co-pilot staff plan; today's staffing process handles it"
+  extend_crew_duty: "{flight}'s pilots get no extension; if no legal crew is found, today's process decides (it may cancel {flight})"
+  human_only: "nothing is decided; today's process handles it"
   default: "the co-pilot does not do this; today's process handles it"
+
+# HUMAN-ONLY decisions (decided_by level human_only, e.g. D02): put to the user as the named person. The rule check still runs;
+# only its "human-only: the co-pilot can only show facts" block is expected (any other block keeps it from the user). The duty
+# manager never answers these and they cannot be handed off. The catalog's joint roles go to the queue role that holds them.
+human_only:
+  roles:
+    captain_and_crew_scheduling: crew_scheduling       # the brief: D02 (extend crew duty) goes to crew scheduling
+    dispatcher_and_captain: network_operations_control # assumption: dispatch sits in network operations control
+    airport_police_and_station_manager: station_manager  # assumption: the station manager is the airline's side of it
+  expected_blocks: [agent_contract]                    # plus action_<action>: the rules saying the co-pilot may not do it itself
+
+destinations:
+  staff_roles:                    # a staff member's roster role -> the destination key shown on a decision's flowchart
+    gate_agent: gate_agents
+    ramp: ramp
+    customer_service: counter
+    wheelchair: wheelchair_agents
 
 focus:
   random_day: most_trip_changes   # a random day follows the tracked passenger with the most trip changes so far (picked once)

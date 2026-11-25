@@ -29,7 +29,7 @@ def today(data):
 @pytest.fixture(scope="module")
 def scripted(data, today):
     seen = {"crew": [], "delay": None, "delay_rejects": [], "wait": None, "hand": None, "approved": [], "blocked_wait": None,
-            "errors": []}
+            "errors": [], "d02": [], "d02_hand": None}
 
     def user(s, t):
         items = s.queue_items()
@@ -41,7 +41,19 @@ def scripted(data, today):
             lq = s.question(q["id"])
             if lq.status not in ("waiting", "snoozed"):
                 continue
-            if q["action"] == "call_in_reserve_crew" and len(seen["crew"]) < 1:
+            if q["action"] == "extend_crew_duty" and (len(seen["d02"]) < 2 or seen["d02_hand"] is None):
+                if len(seen["d02"]) < 2 and (not seen["d02"] or seen["d02"][0]["flight"] == q["target"]["flight_id"]):
+                    r = s.decide([q["id"]], "reject", reason="no extension today")          # a human-only "no", twice
+                    seen["d02"].append({"t": t, "id": q["id"], "flight": q["target"]["flight_id"], "last_option": q["last_option"],
+                                        "r": r, "role": q["role"], "why": q["why"]})
+                else:
+                    seen["d02_hand"] = {"id": q["id"], "r": s.decide([q["id"]], "hand_off")}  # refused: you are the person
+                    seen["approved"].append(q["id"])
+                    s.decide([q["id"]], "approve")
+            elif lq.proposal.get("human_only"):
+                s.decide([q["id"]], "approve")
+                seen["approved"].append(q["id"])
+            elif q["action"] == "call_in_reserve_crew" and len(seen["crew"]) < 1:
                 r = s.decide([q["id"]], "reject", reason="not this reserve")
                 seen["crew"].append({"t": t, "id": q["id"], "flight": q["target"]["flight_id"], "crew": q["target"]["crew_id"], "r": r})
             elif q["action"] == "delay_flight" and seen["delay"] in (None, q["target"]["flight_id"]) and len(seen["delay_rejects"]) < 2:
@@ -51,7 +63,7 @@ def scripted(data, today):
                                               "consequence": q["consequence_if_rejected"]})
             elif seen["wait"] is None and q["can_wait"] and q["minutes_left"] < 15:
                 seen["wait"] = {"id": q["id"], "t": t, "deadline": lq.deadline_at, "r": s.decide([q["id"]], "wait", minutes=10)}
-            elif seen["hand"] is None and t >= 700 and (seen["wait"] or {}).get("id") != q["id"]:
+            elif seen["hand"] is None and t >= 700 and (seen["wait"] or {}).get("id") != q["id"] and not lq.proposal.get("human_only"):
                 seen["hand"] = {"id": q["id"], "t": t, "urgent": lq.urgent, "r": s.decide([q["id"]], "hand_off")}
             elif (seen["wait"] or {}).get("id") != q["id"]:
                 r = s.decide([q["id"]], "approve")
@@ -349,3 +361,126 @@ def test_a_full_seed7_live_day_with_every_question_approved_reaches_the_end(data
     r = s.results()
     assert set(r) == {"you", "today", "orchestrated", "decisions"} and r["you"]["cancelled"] is not None
     assert r["decisions"]["approved"] > 0 and r["you"]["focus_final_trip"]
+
+
+# ------------------------------------------------------------ follow-up: the flowchart after the answer, human-only, Communication
+def _reach(t, start):
+    """Every node reachable forward from start."""
+    seen, todo = set(), {start}
+    while todo:
+        n = todo.pop()
+        seen.add(n)
+        todo |= {e["to"] for e in t["edges"] if e["from"] == n} - seen
+    return seen
+
+
+def client_trace(s, qid):
+    L.SESSIONS[s.run_id] = s
+    try:
+        r = client.get(f"/api/live/{s.run_id}/questions/{qid}/trace")
+        assert r.status_code == 200
+        return r.json()
+    finally:
+        L.SESSIONS.pop(s.run_id, None)
+
+
+def test_an_answered_decision_continues_to_its_changes_messages_and_destinations(scripted):
+    s, _ = scripted
+    world = {(e["type"], e["t"]) for e in s.world.events}
+    texts = {e["payload"].get("text") for e in s.world.events if e["type"] in ("message_delivered", "crew_message_delivered")}
+    for action in ("delay_flight", "call_in_reserve_crew"):
+        q = next(q for q in s.humans.questions if q.action == action and q.status == "approved")
+        t = client_trace(s, q.id)
+        assert "preview" not in t and [n["kind"] for n in t["nodes"]].count("human") == 1
+        human = next(n for n in t["nodes"] if n["kind"] == "human")
+        nodes = {n["id"]: n for n in t["nodes"]}
+        after = [nodes[n] for n in _reach(t, human["id"])]
+        changes = [n for n in after if n["kind"] == "change"]
+        comms = [n for n in after if n["kind"] == "communication"]
+        dests = [n for n in after if n["kind"] in ("channel", "staff")]
+        assert changes and comms and dests, action
+        for c in changes:                                    # every change is a real confirmation event, at its minute
+            h, m = c["t"].split(":")
+            assert (c["detail"]["event"], int(h) * 60 + int(m)) in world
+        for d in dests:
+            det = d["detail"]
+            assert det["status"] in ("delivered", "failed", "waiting") and det["text"] and det["key"]
+            assert det["key"] in ("app", "sms", "gate_screen", "call_center", "counter", "gate_agents", "call_center_agents",
+                                  "crew", "ramp", "hotel_desk", "wheelchair_agents")
+            assert (d["kind"] == "channel") == (det["key"] in ("app", "sms", "gate_screen", "call_center"))
+            if det["status"] == "delivered" and det["key"] in ("app", "sms", "crew"):
+                assert det["text"] in texts                  # the exact words that were delivered (never invented)
+        assert {"sent to", "confirmed"} <= {e["label"] for e in t["edges"]}
+    crew = next(q for q in s.humans.questions if q.action == "call_in_reserve_crew" and q.status == "approved")
+    assert "crew" in {n["detail"].get("key") for n in client_trace(s, crew.id)["nodes"]}   # the reserve was told
+
+
+def test_before_the_answer_the_trace_has_a_preview_from_the_proposal(paused):
+    s = paused
+    open_ = [q for q in s.humans.questions if q.status in ("waiting", "snoozed")]
+    assert open_
+    for q in open_:
+        t = s.trace(q.id)
+        assert set(t["preview"]) == {"changes", "destinations"}
+        assert not [n for n in t["nodes"] if n["kind"] in ("change", "channel", "staff")]   # nothing has happened yet
+        assert all(set(d) == {"key", "label"} for d in t["preview"]["destinations"])
+    first = {i: tr for i, snap, tr in reversed(s.humans.traces) if snap == "asked"}
+    delay = next(q for q in s.humans.questions if q.action == "delay_flight")
+    assert delay.target["flight_id"] in first[delay.id]["preview"]["changes"][0]["label"]
+    assert first[delay.id]["preview"]["destinations"]              # its passengers' screens
+    msg = next((q for q in s.humans.questions if (q.proposal or {}).get("messages")), None)
+    assert msg is not None
+    chans = {m.get("channel") for m in msg.proposal["messages"]}
+    assert {d["key"] for d in first[msg.id]["preview"]["destinations"]} <= chans | {"gate_agents", "call_center_agents"}
+
+
+def test_human_only_decisions_reach_the_named_person_with_why_trace_and_last_option(scripted):
+    s, seen = scripted
+    hq = [q for q in s.humans.questions if (q.proposal or {}).get("human_only")]
+    d02 = [q for q in hq if q.action == "extend_crew_duty"]
+    assert d02 and {q.role for q in d02} == {"crew_scheduling"}
+    q = d02[0]
+    assert q.proposal["decision_ids"] == ["D02"] and q.why["why_human"].startswith("D02")
+    rc = q.why["rule_check"]                                 # the rule check ran: only its human-only block, nothing else
+    assert rc["ok"] and set(rc["rules"]) <= {"action_extend_crew_duty", "agent_contract"}
+    assert {n["kind"] for n in s.trace(q.id)["nodes"]} >= {"rule_check", "orchestrator", "question"}
+    one, two = seen["d02"]
+    assert one["r"][0]["status"] == "rejected_once" and two["last_option"] and two["r"][0]["status"] == "rejected"
+    rec = [e for e in s.world.events if e["type"] == "human_decision_recorded" and e["payload"].get("question_id") == two["id"]]
+    assert rec and rec[0]["payload"]["decision_id"] == "D02" and rec[0]["payload"]["answer"] == "rejected"
+    assert rec[0]["actor"] == "human:crew_scheduling"
+    assert seen["d02_hand"]["r"][0]["code"] == 409            # it can't be handed to the duty manager
+    assert not [x for x in hq if x.status == "answered_by_duty_manager"]   # the duty manager never decides them
+    approved = [x for x in hq if x.status == "approved"]
+    assert approved and all(any(e["type"] == "human_decision_recorded" and e["payload"].get("question_id") == x.id
+                                for e in s.world.events) for x in approved)
+
+
+def test_human_only_questions_exist_only_in_live_mode(data):
+    from simulator.run import simulate
+    r = simulate(7, "a31_storm", mode="orchestrated", data=data, until=12 * 60)
+    assert not hasattr(r.copilot, "human_only_port")
+    assert not [i for i in r.copilot.queue.items for m in i.members if (m[2] or {}).get("human_only")]
+    assert not [e for e in r.world.events if e["type"] in ("human_only_question", "human_decision_recorded")]
+
+
+def test_flow_gives_communication_versions_built_on_plan_and_situation_versions(scripted):
+    s, _ = scripted
+    L.SESSIONS[s.run_id] = s
+    try:
+        fl = client.get(f"/api/live/{s.run_id}/flow?since=660").json()
+    finally:
+        L.SESSIONS.pop(s.run_id, None)
+    comm = next(a for a in fl["agents"] if a["key"] == "communication")
+    assert comm["versions"]
+    plans = {r["version"] for r in s.copilot.store.records["recovery_plans"]}
+    sits = {r["version"] for r in s.copilot.store.records["situation_assessments"]}
+    kinds = set()
+    for v in comm["versions"]:
+        assert re.match(r"\d\d:\d\d$", v["t"]) and v["used"]
+        for u in v["used"]:
+            kinds.add(u["kind"])
+            assert u["ref"] in (plans if u["kind"] == "network_recovery" else sits)
+            assert {"from": f"{u['kind']}:{u['ref']}", "to": f"communication:{v['v']}", "t": v["t"]} in fl["edges"]
+    assert kinds == {"network_recovery", "situation"}
+    assert [v["v"] for v in comm["versions"]] == sorted(v["v"] for v in comm["versions"])

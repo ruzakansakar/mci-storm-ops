@@ -15,7 +15,6 @@ approval queue (backend/orchestrator/queue.py). So nothing an agent or the orche
     consequence happens through the existing fallback path (today's process). A target rejected for good is never asked again.
   - Every answer is an event with actor "human:<role>".
 """
-from copy import copy
 from dataclasses import dataclass, field
 from datetime import timedelta
 from statistics import median
@@ -97,7 +96,7 @@ class LiveHumans:
         self.events: list = []         # (actor, kind, payload, now) for the session to record (events + agents' feed)
         self.traces: list = []         # (question id, snapshot, trace) to save
         self.dirty = set()             # question ids changed since the last save
-        self.tracer = self.queue = None
+        self.tracer = self.queue = self.after = None
         self.wrong_pax = {}            # passenger -> wrong fields now (the channels' own count), set by the session
         self.now = None
 
@@ -176,6 +175,8 @@ class LiveHumans:
             q.answer["decision"] = "acknowledged"
 
     def _duty_ask(self, agent, rec_id, proposal, now):
+        if proposal.get("human_only"):                   # a human-only decision: the duty manager never decides it for you
+            return Question(rec_id, agent, proposal.get("action"), self.duty_role, now, None, False, proposal, status="not_handled")
         urgent = bool(proposal.get("urgent"))
         lo, hi = self.sim.s["response_min"][self.duty_role]["urgent" if urgent else "normal"]
         dq = Question(rec_id, agent, proposal.get("action"), self.duty_role, now, now + timedelta(minutes=self.rng.randint(lo, hi)),
@@ -197,7 +198,9 @@ class LiveHumans:
         self.by_id[lq.id] = lq
         self.dirty.add(lq.id)
         self.refresh(now)
-        self.traces.append((lq.id, "asked", self.tracer.trace(lq, now, "asked")))
+        trace = self.tracer.trace(lq, now, "asked")
+        trace["preview"] = self.after.preview(lq, now) if self.after is not None else {"changes": [], "destinations": []}
+        self.traces.append((lq.id, "asked", trace))
         return lq
 
     def consequence(self, lq):
@@ -207,7 +210,7 @@ class LiveHumans:
         key = lq.action
         if key == "cancel_flight" and not self.alternative(lq):
             key = "cancel_flight_no_alternative"
-        text = c.get(key) or c["default"]
+        text = c.get(key) or (c["human_only"] if p.get("human_only") else c["default"])
         return text.format(flight=lq.target.get("flight_id") or ", ".join(lq.flights) or "the flight",
                            n=len(lq.passenger_ids) or lq.pax, who=who, crew=lq.target.get("crew_id") or "")
 
@@ -295,6 +298,52 @@ class LiveHumans:
         self._close(lq, "approved", now, reason)
         self.ready.append((lq.question, "approved", {}))
         self._event(lq, "human_approved", now)
+        self._human_only_record(lq, "approved", now, reason)
+
+    def _human_only_record(self, lq, answer, now, reason=None):
+        """A human-only decision: your answer IS the decision. It is recorded and published (decisions feed) for whoever reads
+        it; nothing in the co-pilot carries it out."""
+        p = lq.proposal or {}
+        if not p.get("human_only"):
+            return
+        self._event(lq, "human_decision_recorded", now, decision_id=(p.get("decision_ids") or [None])[0], answer=answer,
+                    decided_by_role=lq.role, flight_id=p.get("flight_id"), crew_id=p.get("crew_id"),
+                    answered_at=now.isoformat(), reason=reason)
+
+    # ------------------------------------------------------------ human-only decisions (live mode only)
+    def human_only(self, agent, payloads, now):
+        """An agent handed a human-only decision to a person (ask_human: human_decision_needed). In live mode the user is that
+        person: it becomes a queue item for the right role, rule-checked like everything else. The rule check's "the co-pilot
+        can only show facts" block is expected here; any other block keeps it from the user (recorded, never shown)."""
+        if now < self.live_from or self.queue is None:
+            return
+        from backend.contracts.decisions import load_decisions
+        from backend.execution.executor import check_only
+        cat = getattr(self, "_catalog", None) or load_decisions()
+        self._catalog = cat
+        for p in payloads:
+            d = cat.get(p.get("decision_id")) or {}
+            if not d:
+                continue
+            facts = p.get("facts") or {}
+            role = (p.get("decided_by") or {}).get("role") or (d.get("decided_by") or {}).get("role")
+            role = self.s["human_only"]["roles"].get(role, role)
+            self.human_seq = getattr(self, "human_seq", 0) - 1        # its own ids (negative): never an agent's recommendation
+            rung = d.get("safety_rung")
+            flight = facts.get("flight_id")
+            prop = {"id": self.human_seq, "agent": agent, "action": d["action"], "decision_ids": [d["id"]], "data_as_of": now,
+                    "requested_level": "human_only", "human_only": True, "title": d["question"] + (f" ({flight})" if flight else ""),
+                    "flight_id": flight, "crew_id": facts.get("crew_id"), "facts": facts, "reason": p.get("reason"),
+                    "safety_rung": int(rung) if str(rung).isdigit() else None}
+            verdict = check_only(prop, {"now": now, "flights": {}})
+            expected = set(self.s["human_only"]["expected_blocks"]) | {f"action_{d['action']}"}
+            ok = verdict["result"] == "pass" or set(verdict["rule_ids"]) <= expected
+            prop["rule_check"] = {"ok": ok, "rules": list(verdict["rule_ids"]),
+                                  "text": "; ".join(verdict["reasons"]) or "passed every rule it was checked against"}
+            self.events.append(("system:live", "human_only_question", {"agent": agent, "decision_id": d["id"], "role": role,
+                                                                       "recommendation": self.human_seq, "rule_check_ok": ok,
+                                                                       "flight_id": flight}, now))
+            self.queue.ask(agent, self.human_seq, prop, role, now, ok)
 
     def _reject(self, lq, now, reason, minutes):
         reason = (reason or "").strip()
@@ -309,6 +358,7 @@ class LiveHumans:
             self.ready.append((lq.question, "rejected", {"reason": reason}))
             self._event(lq, "human_rejected", now, reason=reason, final=True, count=2 if lq.last_option else 1,
                         **({"consequence_applied": lq.consequence} if lq.last_option else {"different_plan": alt}))
+            self._human_only_record(lq, "rejected", now, reason)
             return
         lq.status = "rejected_once"                      # no other plan: asked once more, as the last option, with its consequence
         self._close(lq, "rejected", now, reason)
@@ -332,6 +382,8 @@ class LiveHumans:
         self._event(lq, "human_waited", now, minutes=minutes, until=hhmm(lq.snoozed_until))
 
     def _hand_off(self, lq, now, reason, minutes):
+        if (lq.proposal or {}).get("human_only"):
+            raise DecideError(409, "a human-only decision: you are the named person, so it can't be handed to the duty manager")
         lq.status = "handed_off"
         lq.handed_off = True
         self._duty_ask(lq.agent, lq.rec_id, lq.proposal, now)
@@ -349,5 +401,3 @@ class LiveHumans:
                 "escalated": sum(1 for q in qs if q.escalated or (q.status == "answered_by_duty_manager" and not q.handed_off)),
                 "median_answer_min": median(mins) if mins else 0}
 
-    def copy_question(self, lq):
-        return copy(lq)

@@ -93,6 +93,11 @@ class Orchestrator(Copilot):
                 o, a = self.communicate(now, deliver, approved_now, human_out)
             else:
                 o, a = self.run_agent(name, now)
+            port = getattr(self, "human_only_port", None)      # live mode only: human-only questions go to the person
+            if port is not None:
+                asks = [p for _, k, p in o if k == "human_decision_needed"]
+                if asks:
+                    port(name, asks, now)
             if name == "situation":
                 self._incidents(now)
                 self._attribute_flights()

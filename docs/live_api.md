@@ -101,23 +101,78 @@ This call is also the heartbeat.
 - `last_option: true`: you said no once and the agent has no other plan. A second no applies `consequence_if_rejected` through
   today's process.
 - `why.options_considered`: only options the agent itself produced. It is often empty.
+- **Human-only decisions** (for example D02, extend crew duty) come to you as the named person, in the queue of the role that
+  holds them. D02 goes to `crew_scheduling` (config/live.yaml `human_only.roles`).
+  - The rule check still runs. Its "human-only: the co-pilot can only show facts" block is expected; any other block keeps the
+    question from you.
+  - They cannot be handed off (`409`), and the duty manager never answers them, even after the deadline.
+  - Your answer is recorded as `human_decision_recorded` (actor `human:<role>`). Nothing in the co-pilot carries it out.
+  - The same why, trace and last-option rules apply.
 
 ## GET /api/live/{run_id}/questions/{id}/trace
 
-The latest saved snapshot of the trace (taken when asked, and again when answered). It is a graph from the outside world to the
-question.
+The flowchart of one decision: from the outside world to the question, and after you answer, on to what it did. It is saved
+when asked and when answered; at the end of the day the continued flowchart is saved once more.
 
 ```
 {"question_id":12,"snapshot":"asked"|"answered",
- "nodes":[{"id":"n1","kind":"feed"|"situation"|"network_recovery"|"passenger_care"|"station_staff"|"communication"|"orchestrator"|"rule_check"|"question"|"human",
+ "nodes":[{"id":"n1","kind":"feed"|"situation"|"network_recovery"|"passenger_care"|"station_staff"|"communication"|"orchestrator"
+                            |"rule_check"|"question"|"human"|"change"|"channel"|"staff",
            "label":"","t":"11:30","detail":{}}],
- "edges":[{"from":"n1","to":"n2","label":"used","t":"11:30"}]}
+ "edges":[{"from":"n1","to":"n2","label":"used"|"sent to"|"answered"|"confirmed","t":"11:30"}],
+ "preview":{"changes":[{"label":""}],"destinations":[{"key":"","label":""}]}}
 ```
 
-Edge labels:
-- `used`: a feed or version the next agent used;
-- `sent to`: agent → rule check → orchestrator → question;
-- `answered`: question → human.
+Before the answer, the nodes run from the world to the question:
+- the events that started it (`feed`);
+- the shared versions it was built on (`situation`, `network_recovery`, ...);
+- the proposing agent, then `rule_check`, then `orchestrator`, then `question`.
+
+Edges: `used` from each input to the next agent; `sent to` from agent to rule check, rule check to orchestrator, and orchestrator
+to question.
+
+**Before the answer, `preview`** says what would change and who would be told. It is built from the proposal only, and left
+empty where unknown:
+- **Changes:**
+  - a delay: `"WN1034 departs at 13:43"`;
+  - a cancellation: `"WN1034 is cancelled"`;
+  - a crew action: `"crew R07 flies WN1030 as its flight attendants"`;
+  - care, station and human-only questions: their title.
+- **Destinations:**
+  - a delay or cancellation: the flight's passengers' screens, from the trip records the agents were given;
+  - a rebooking: its passengers' screens;
+  - a station task: the staff roles it names;
+  - a message proposal: the channels it lists (a staff note goes to `gate_agents` and `call_center_agents`).
+
+**After the answer**, there is a `human` node (edge `answered`), then:
+- `change`: each change the decision made. Each one is a real confirmation event, and `detail.event` names it:
+  - `recovery_action_applied`;
+  - `reserve_crew_assigned` / `crew_reassigned`;
+  - a flight's new time (`flight_delayed` / `flight_delay_updated`) and `flight_cancelled`;
+  - `gate_assigned`, `staff_assigned`, `staff_called_in`, `hotel_room_assigned`;
+  - the care and station decision records;
+  - `decision_applied` / `decision_refused` (a refusal is shown as "not carried out: <reason>");
+  - `human_decision_recorded`.
+- `communication`: the Communication messages it caused:
+  - recovery messages drafted for the proposal (one node per audience, with its statuses);
+  - the messages of an approved message proposal;
+  - the messages backed by an approved care decision (hotel or ride).
+- **destinations**: one node per destination, either `channel` (`app`, `sms`, `gate_screen`, `call_center`) or `staff`
+  (`counter`, `gate_agents`, `call_center_agents`, `crew`, `ramp`, `hotel_desk`, `wheelchair_agents`).
+  - `detail.status`:
+    - `"waiting"` if any message has not arrived yet (or is held for approval);
+    - otherwise `"failed"` if any failed or was dropped;
+    - otherwise `"delivered"`.
+  - Counts are in `detail.delivered`, `detail.failed` and `detail.waiting`.
+  - `detail.text`: the exact words sent.
+  - `detail.key`: the destination key.
+  - `detail.confirmed_by`: which record says so. It comes from `message_delivered`, `message_dropped`, `channel_update_failed`,
+    `crew_message_delivered`, `staff_note_published` or `channel_view_updated`. An internal staff note has no delivery receipt;
+    Communication records it sent itself, and the node says so.
+  - Screen updates (`channel_view_updated`) appear only when the change actually changed passengers' trip records.
+
+Edges: `confirmed` from the human to each confirmed change and to each delivered destination; `sent to` from the change (or
+the human) to Communication, and to a destination that is still waiting or failed.
 
 ## POST /api/live/{run_id}/decide
 
@@ -146,7 +201,12 @@ body {"question_ids":[12],"action":"approve"|"reject"|"wait"|"hand_off","reason"
 ```
 
 - `versions`: the shared versions each agent wrote since `since`, each with the upstream versions it recorded using.
-- Communication writes no shared table, so its `versions` list is empty.
+- Communication's versions: each batch of recovery messages it drafts or sends, and each passenger or mass message proposal it
+  drafts or sends, is one version.
+  - It is numbered over the whole day, so a version keeps its number.
+  - Each version has `what` and `messages` (how many), and `used` points to the recovery-plan version
+    (`{"kind":"network_recovery"}`) or the Situation version (`{"kind":"situation"}`) it was built on. Each `used` is also an
+    edge to `communication:<v>`.
 - `queue` counts the questions waiting for you.
 
 ## GET /api/live/{run_id}/history
