@@ -525,9 +525,9 @@ class PracticeApi {
     const waits = s.decisions.filter((d) => d.answer === 'approved' || d.answer === 'rejected').map((d) => d.waited_min).sort((a, b) => a - b);
     const swapOk = s.approvedKeys.has('swap');
     return {
-      you: { wrong_minutes: Math.round(s.wrongTotal), cancelled: swapOk ? 3 : 4, stranded_overnight: swapOk ? 290 : 433, focus_final: this._maya(Math.floor(s.minute)).true_status },
-      today: { wrong_minutes: Math.round(s.todayTotal), cancelled: 5, stranded_overnight: 559, focus_final: 'WN1033 cancelled. Rebooked WN3005, 06:30 tomorrow' },
-      orchestrated: { wrong_minutes: 6080, cancelled: 3, stranded_overnight: 290, focus_final: 'WN1033 to Baltimore left 15:14' },
+      you: { wrong_screen_passenger_minutes: Math.round(s.wrongTotal), cancelled: swapOk ? 3 : 4, stranded_overnight: swapOk ? 290 : 433, focus_final_trip: this._maya(Math.floor(s.minute)).true_status },
+      today: { wrong_screen_passenger_minutes: Math.round(s.todayTotal), cancelled: 5, stranded_overnight: 559, focus_final_trip: 'WN1033 cancelled. Rebooked WN3005, 06:30 tomorrow' },
+      orchestrated: { wrong_screen_passenger_minutes: 6080, cancelled: 3, stranded_overnight: 290, focus_final_trip: 'WN1033 to Baltimore left 15:14' },
       decisions: { approved: count('approved'), rejected: count('rejected'), waited: count('waited'), handed_off: count('handed off'),
         escalated: s.decisions.filter((d) => d.by === 'director_of_operations').length, median_answer_min: waits.length ? waits[Math.floor(waits.length / 2)] : 0 },
     };

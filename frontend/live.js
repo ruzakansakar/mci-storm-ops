@@ -446,13 +446,14 @@ async function refreshSummary() {
     ${h.open?.length ? `<h3>Still open</h3><ul class="plain">${h.open.map((x) => `<li>${esc(plain(x.title))}</li>`).join('')}</ul>` : ''}` : '<p class="muted">No handover yet.</p>';
   $('handover-now')?.addEventListener('click', () => { ui.handoverSince = ui.state?.clock; refreshSummary(); });
   const r = await ui.api.results(ui.run).catch(() => null);
+  if (!r) $('results').innerHTML = `<div class="card"><h2>How the day went</h2><p class="muted">The comparison with today's process is ready when the day ends at 23:59.</p></div>`;
   if (r) {
     const cols = [['Your day', r.you, 'you'], ["Today's process", r.today, 'today'], ['Co-pilot, approving everything', r.orchestrated, 'auto']].filter((c) => c[1]);
     const row = (label, key, fmt = num) => `<tr><th>${label}</th>${cols.map(([, v, cls]) => `<td class="${cls}">${v[key] != null ? fmt(v[key]) : '-'}</td>`).join('')}</tr>`;
     const d = r.decisions || {};
     $('results').innerHTML = `<div class="card results-hero"><h2>${ui.state?.status === 'finished' ? 'How the day went' : 'How the day is going'}</h2>
       <div class="board-wrap"><table class="board results-table"><thead><tr><th></th>${cols.map(([n]) => `<th>${esc(n)}</th>`).join('')}</tr></thead>
-      <tbody>${row('Customer-minutes on a wrong screen', 'wrong_minutes')}${row('Flights cancelled', 'cancelled')}${row('Customers stranded overnight', 'stranded_overnight')}${row('Where Maya is', 'focus_final', (x) => esc(plain(x)))}</tbody></table></div>
+      <tbody>${row('Customer-minutes on a wrong screen', 'wrong_screen_passenger_minutes')}${row('Flights cancelled', 'cancelled')}${row('Customers stranded overnight', 'stranded_overnight')}${row(`Where ${esc(ui.state?.focus?.name || 'the Customer we follow')} ended up`, 'focus_final_trip', (x) => esc(plain(x)))}</tbody></table></div>
       <div class="stats five">${[['Approved', d.approved], ['Declined', d.rejected], ['Reminders', d.waited], ['Sent to duty manager', d.handed_off], ['Escalated', d.escalated], ['Median time to decide', `${d.median_answer_min ?? 0} min`]]
         .map(([l, v]) => `<div class="stat"><span class="stat-label">${l}</span><span class="stat-value">${v ?? 0}</span></div>`).join('')}</div></div>`;
   }
