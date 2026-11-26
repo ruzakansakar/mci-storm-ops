@@ -81,7 +81,189 @@ class Views:
         return {"id": fid, "from": f["origin"], "to": f["destination"], "sched_dep": fmt(f["sched_dep"]), "est_dep": fmt(f.get("est_dep")),
                 "sched_arr": fmt(f["sched_arr"]), "est_arr": fmt(f.get("est_arr")), "status": f["status"], "gate": self.gate_of(fid),
                 "crew": {"id": crew_id, "legal_until": fmt(legal)}, "customers": int(f.get("pax_total") or 0), "connections": int(conn),
-                "script": script, "notes": list(self.s.notes.get(fid, [])), "on_screens": shown}
+                "script": script, "notes": list(self.s.notes.get(fid, [])), "on_screens": shown,
+                "truth": self.truth_of(f), "one_story": self.one_story(fid)}
+
+    STATUS_WORDS = {"scheduled": "on time", "ground_stop": "waiting for the ground stop to lift", "delayed": "delayed",
+                    "held": "held at MCI", "departed": "on its way", "arrived": "arrived", "cancelled": "cancelled",
+                    "diverted": "diverted", "airborne": "in the air", "holding": "holding in the air"}
+
+    def truth_of(self, f):
+        """The flight's real status now, in one sentence, from the operational record."""
+        city = self.s.plain.cities.get(f["destination"] if f["origin"] == "MCI" else f["origin"], "") if self.s.plain else ""
+        where = f"{f['id']} {'to' if f['origin'] == 'MCI' else 'from'} {city}".strip()
+        words = self.STATUS_WORDS.get(f["status"], f["status"].replace("_", " "))
+        bits = [f"{where} is {words}"]
+        if f["status"] in WAITING_DEP and f.get("est_dep") is not None:
+            late = f["est_dep"] - f["sched_dep"]
+            bits.append(f"now expected to leave at {fmt(f['est_dep'])}" + (f" ({late} min late)" if late > 0 else ""))
+        elif f["status"] == "diverted" and f.get("diverted_to"):
+            bits.append(f"to {f['diverted_to']}")
+        elif f["status"] in ("departed", "arrived") and f.get("actual_dep") is not None:
+            bits.append(f"it left at {fmt(f['actual_dep'])}")
+        return ", ".join(bits) + "."
+
+    def last_change(self, fid):
+        """The last minute the flight's status or time changed (the record a message must have caught up with)."""
+        kinds = ("flight_delayed", "flight_delay_updated", "flight_cancelled", "flight_departed", "flight_diverted", "flight_arrived",
+                 "flight_resumed")
+        return max((e["t"] for e in self.w.events if e["type"] in kinds and (e.get("payload") or {}).get("flight_id") == fid),
+                   default=None)
+
+    def one_story(self, fid):
+        """What every place is saying about this flight now, word for word, and whether it agrees with the truth.
+        Screens: what most of the flight's tracked Customers see (the screen's own text); staff places: the latest staff note
+        or crew message about this flight. A place nothing was sent to is null."""
+        out = []
+        pids = self.tracked_on(fid)
+        for ch in ("app", "sms", "gate_screen", "call_center"):
+            have = [p for p in pids if ch in self.s.channels.screens.get(p, ())]
+            if not have:
+                out.append({"place": ch, "says": None, "matches": None, "since": None})
+                continue
+            texts = Counter(self.s.channels.shown[(p, ch)].get("message") for p in have)
+            says = texts.most_common(1)[0][0]
+            showing = [p for p in have if self.s.channels.shown[(p, ch)].get("message") == says]
+            ok = not any((p, ch, k) in self.s.channels.dis for p in showing for k in ("itinerary", "status", "destination"))
+            since = min((self.s.channels.shown[(p, ch)].get("updated_at") for p in showing
+                         if self.s.channels.shown[(p, ch)].get("updated_at") is not None), default=None)
+            out.append({"place": ch, "says": says, "matches": ok, "since": fmt(since) if since is not None else None})
+        changed = self.last_change(fid)
+        note = self._latest_sent(fid, ("staff",))
+        crew = next((e for e in reversed(self.w.events) if e["type"] == "crew_message_delivered"
+                     and (e.get("payload") or {}).get("flight_id") == fid), None)
+        for place, sent in (("counter", None), ("gate_agents", note), ("crew", (crew["t"], crew["payload"].get("text")) if crew else None)):
+            if sent is None:
+                out.append({"place": place, "says": None, "matches": None, "since": None})
+            else:
+                out.append({"place": place, "says": sent[1], "matches": changed is None or sent[0] >= changed, "since": fmt(sent[0])})
+        return out
+
+    def _latest_sent(self, fid, audiences):
+        """(minute, text) of the newest staff note about this flight that was sent."""
+        from backend.execution.live_trace import minute
+        best = None
+        for h in self.s.copilot.recovery.history:
+            if h.get("flight_id") == fid and h.get("status") == "sent" and h.get("audience") in audiences:
+                t = minute(_dt(h.get("as_of") or h.get("created")))
+                if best is None or t >= best[0]:
+                    best = (t, h.get("text"))
+        return best
+
+    # ------------------------------------------------------------ 6. everything sent, newest last
+    def sent(self, since=0):
+        """Every message delivered, staff note, crew message and refund / hotel / rebooking confirmation since a minute. A mass
+        send (one recommendation, one channel, one minute) is one row with its count; the text is its first message's words."""
+        names = {pid: p.get("full_name") for pid, p in self.w.passengers.items()}
+        log = {m["id"]: m for m in self.s.copilot.messages.log if m.get("id")}
+        rows, groups = [], {}
+        for e in self.w.events:
+            if e["t"] < since:
+                continue
+            p, k = e.get("payload") or {}, e["type"]
+            if k == "message_delivered":
+                key = (e["t"], p.get("recommendation"), p.get("proposal_id"), p.get("channel"), p.get("type"))
+                g = groups.get(key)
+                if g is None:
+                    g = groups[key] = {"t": fmt(e["t"]), "minute": e["t"], "to": None, "channel": p.get("channel"), "kind": "message",
+                                       "text": p.get("text"), "count": 0, "_pids": [], "_flights": set()}
+                    rows.append(g)
+                g["count"] += 1
+                g["_pids"].append(p.get("passenger_id"))
+                m = log.get(p.get("message_id")) or {}
+                facts = m.get("trip_facts") or {}
+                g["_flights"] |= set(facts.get("itinerary") or [])
+            elif k == "staff_note_published":
+                rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": "Gate agents and call center", "channel": "staff_note",
+                             "kind": "message", "text": p.get("text"), "count": 1})
+            elif k == "crew_message_delivered":
+                rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": f"Crew {p.get('crew_id')}" if p.get("crew_id") else "Crew",
+                             "channel": "crew", "kind": "message", "text": p.get("text"), "count": 1})
+            elif k == "care_decision_recorded" and p.get("action") == "offer_refund":
+                who = [names.get(x) or x for x in p.get("passenger_ids") or []]
+                rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": ", ".join(who) or None, "channel": None, "kind": "refund",
+                             "text": "Refund offered if the new trip is declined (Passenger Care's legal-floor refund).",
+                             "count": max(1, len(who))})
+            elif k == "hotel_room_assigned":
+                rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": names.get(p.get("passenger_id")) or p.get("passenger_id"),
+                             "channel": None, "kind": "hotel", "text": f"Room booked at {self._hotel_name(p.get('hotel_id'))}.",
+                             "count": 1})
+            elif (k == "decision_applied" and p.get("action") == "rebook_passenger") or k == "customer_rebooked":
+                moved = p.get("moved") or p.get("facts", {}).get("passenger_ids") or [p.get("passenger_id")]
+                to = (p.get("facts") or {}).get("flight_id") or p.get("flight_id")
+                who = [names.get(x) or x for x in moved if x]
+                rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": who[0] if len(who) == 1 else f"{len(who)} Customers",
+                             "channel": None, "kind": "rebook", "text": f"Rebooked onto {to}.", "count": max(1, len(who))})
+        merged = []                                       # confirmations of one kind in one minute: one row with its count
+        for r in rows:
+            if r["kind"] in ("refund", "hotel", "rebook") and merged and merged[-1]["kind"] == r["kind"]                     and merged[-1]["minute"] == r["minute"] and merged[-1].get("text") == r.get("text"):
+                m = merged[-1]
+                m["count"] += r["count"]
+                m["_who"] = m.get("_who", [m["to"]]) + [r["to"]]
+                m["to"] = f"{m['count']} Customers"
+                continue
+            merged.append(r)
+        for m in merged:
+            m.pop("_who", None)
+        rows = merged
+        for g in groups.values():
+            pids, fl = g.pop("_pids"), g.pop("_flights")
+            if g["count"] == 1:
+                g["to"] = names.get(pids[0]) or pids[0]
+            else:
+                one = sorted(fl)[0] if len(fl) == 1 else None
+                g["to"] = f"{g['count']} Customers" + (f" on {one}" if one else "")
+        rows.sort(key=lambda r: r["minute"])
+        return rows
+
+    def _hotel_name(self, hid):
+        care = self.s.copilot.care
+        h = next((x for x in (care.context.rows.get("hotels", []) if care else []) if x.get("id") == hid), None)
+        return (h or {}).get("name") or hid
+
+    # ------------------------------------------------------------ 1. a Passenger Care question: who, what and the words
+    CARE_ACTIONS = {"rebook_passenger": "rebook", "issue_compensation": "hotel", "offer_refund": "refund",
+                    "arrange_ground_transport": "ride"}
+
+    def care_block(self, q):
+        """For a Passenger Care question: each Customer, what is proposed for them (flights, hotel, amount) and why; the exact
+        words they will get if a message already exists for it; and what Passenger Care already did on its own."""
+        if q.agent != "passenger_care":
+            return None
+        from backend.execution.live_plain import clean
+        care = self.s.copilot.care
+        rec = care.context.saved.get(("recommendations", q.rec_id)) or {}
+        opt = (rec.get("options") or [{}])[0]
+        p = q.proposal or {}
+        action = self.CARE_ACTIONS.get(q.action)
+        if q.action == "issue_compensation" and p.get("kind") != "assign":
+            action = None                                    # a compensation question that is not a room (who pays): no Customer line
+        hotels = {h["id"]: h for h in care.context.rows.get("hotels", [])}
+        customers = []
+        for pid in q.passenger_ids if action else []:
+            detail = {"flights": [], "hotel": None, "amount": None, "currency": "USD"}
+            if action == "rebook" and opt.get("flight_id") in self.w.flights:
+                f = self.w.flights[opt["flight_id"]]
+                detail["flights"] = [{"flight_id": f["id"], "dep": fmt(f.get("est_dep")), "arr": fmt(f.get("est_arr"))}]
+            elif action == "hotel":
+                h = hotels.get(p.get("hotel_id")) or {}
+                detail["hotel"] = {"name": h.get("name"), "price": opt.get("cost_usd"), "shuttle": h.get("shuttle")}
+                detail["amount"] = opt.get("cost_usd")
+            elif action == "ride":
+                detail["amount"] = opt.get("cost_usd")             # the whole ride (shared when several Customers go together)
+            customers.append({"id": pid, "name": (self.w.passengers.get(pid) or {}).get("full_name"), "action": action,
+                              "detail": detail, "why": clean(rec.get("why") or "")})
+        msg = next((m for m in self.s.copilot.messages.log if str(m.get("backed_by")) == str(q.rec_id)), None)
+        auto = {}
+        for a in self.s.humans.questions:
+            if a.status != "auto" or a.agent != "passenger_care":
+                continue
+            r = care.context.saved.get(("recommendations", a.rec_id)) or {}
+            k = self.CARE_ACTIONS.get(a.action, a.action)
+            x = auto.setdefault(k, {"action": k, "count": 0, "total": 0})
+            x["count"] += 1
+            x["total"] += float(((r.get("options") or [{}])[0]).get("cost_usd") or 0)
+        return {"customers": customers, "message_text": (msg or {}).get("text"), "auto_done": list(auto.values())}
 
     def script(self, fid):
         """What to tell Customers: the newest message the co-pilot actually sent about this flight (a staff note first)."""
@@ -134,13 +316,55 @@ class Views:
             shown = self.s.channels.shown[(pid, ch)]
             screens.append({"channel": ch, "shows": screen_text(shown),
                             "wrong": any((pid, ch, f) in self.s.channels.dis for f in ("itinerary", "status", "destination"))})
-        care = self.care_entry(pid)
-        hotel = None
-        if care and care.get("hotel_name"):
-            hotel = {"name": care.get("hotel_name"), "status": care.get("hotel_status"), "shuttle": care.get("shuttle")}
         return {"id": pid, "name": p.get("full_name"), "trip": self.trip(pid), "true_status": screen_text(t), "screens": screens,
                 "needs": [NEEDS[p["segment"]]] if p.get("segment") in NEEDS else [],
-                "rebooking": self.rebooking(pid), "hotel": hotel, "refund_due": self.refund_due(pid)}
+                "rebooking": self.rebooking(pid), "hotel": self.hotel(pid), "refund_due": self.refund_due(pid),
+                "messages": self.messages_to(pid), "refunds": self.refunds(pid)}
+
+    def messages_to(self, pid):
+        """The exact words this Customer received: every message delivered to one of their channels."""
+        return [{"t": fmt(e["t"]), "channel": e["payload"].get("channel"), "text": e["payload"].get("text")}
+                for e in self.w.events if e["type"] == "message_delivered" and e["payload"].get("passenger_id") == pid]
+
+    def _care_rec(self, key):
+        care = self.s.copilot.care
+        rid = care.memory.proposed.get(key) if care else None
+        return (rid, care.context.saved.get(("recommendations", rid)) or {}) if rid is not None else (None, {})
+
+    def issued(self, rid):
+        """When Passenger Care's decision was carried out (its care_decision_recorded confirmation), or None."""
+        e = next((e for e in self.w.events if e["type"] == "care_decision_recorded" and e["payload"].get("recommendation") == rid), None)
+        return e["t"] if e else None
+
+    def refunds(self, pid):
+        """Passenger Care's refund offer for this Customer: issued once its decision was carried out, else due if one is owed.
+        The amount is the ticket price, which is not on record, so it is null."""
+        rid, rec = self._care_rec(("refund", pid))
+        if rid is None:
+            return [{"amount": None, "status": "due", "t": None}] if self.refund_due(pid) else []
+        t = self.issued(rid)
+        if t is not None:
+            return [{"amount": None, "status": "issued", "t": fmt(t)}]
+        return [{"amount": None, "status": "due", "t": None}] if self.refund_due(pid) else []
+
+    def hotel(self, pid):
+        """The room Passenger Care planned (name, price, shuttle from the hotel list it was given) and where it stands."""
+        care = self.s.copilot.care
+        entry = self.care_entry(pid) or {}
+        hid, rid = (care.memory.pending_assign.get(pid) if care else None) or (None, None)
+        assigned = next((e for e in reversed(self.w.events) if e["type"] == "hotel_room_assigned"
+                         and e["payload"].get("passenger_id") == pid), None)
+        if assigned is not None:
+            hid = assigned["payload"].get("hotel_id")
+        if hid is None and not entry.get("hotel_name"):
+            return None
+        hotels = {h["id"]: h for h in (care.context.rows.get("hotels", []) if care else [])}
+        h = hotels.get(hid) or next((x for x in hotels.values() if x.get("name") == entry.get("hotel_name")), {})
+        rec = (care.context.saved.get(("recommendations", rid)) or {}) if care and rid is not None else {}
+        price = ((rec.get("options") or [{}])[0]).get("cost_usd")
+        return {"name": h.get("name") or entry.get("hotel_name"), "price": price if price is not None else h.get("rate_usd"),
+                "currency": "USD", "shuttle": h.get("shuttle") or entry.get("shuttle"),
+                "status": "assigned" if assigned is not None else entry.get("hotel_status")}
 
     def care_entry(self, pid):
         rows = self.s.copilot.store.records["care_plans"]
@@ -320,6 +544,11 @@ class Views:
                 f"(today's process at this minute: {st['truth']['today_wrong_now']}).")
         return {"since": fmt(start), "decisions": len(answered), "open": open_, "watch": [clean(x) for x in watch],
                 "auto_done": len(auto), "text": clean(text)}
+
+
+def _dt(v):
+    from datetime import datetime
+    return datetime.fromisoformat(v) if isinstance(v, str) else v
 
 
 def fmt_iso(v):

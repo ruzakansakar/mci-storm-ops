@@ -30,6 +30,10 @@ OPEN = ("waiting", "snoozed")
 CREW_ACTS = ("call_in_reserve_crew", "swap_crews", "deadhead_crew")
 
 
+def q_views(h):
+    return getattr(h, "views", None) is not None
+
+
 def load_settings() -> dict:
     return yaml.safe_load((ROOT / "config" / "live.yaml").read_text(encoding="utf-8"))
 
@@ -105,6 +109,8 @@ class LiveHumans:
         self.tracer = self.queue = self.after = self.plain = self.copilot = None
         self.autonomy = None           # config/autonomy.yaml (validated at load): what is done automatically
         self.applies = []              # (question, action, facts): human-only decisions to carry out at the next minute
+        self.care_moves = []           # (question, proposal): one Customer's other rebooking option, carried out at the next minute
+        self.views = None
         self.wrong_pax = {}            # passenger -> wrong fields now (the channels' own count), set by the session
         self.now = None
 
@@ -171,6 +177,17 @@ class LiveHumans:
                                                                           "extension_min": facts.get("extension_min")}, now))
             self.dirty.add(lq.id)
         self.applies = []
+        from backend.execution.executor import apply_approved
+        for lq, prop in self.care_moves:                # one Customer's other option: the normal rebooking path, rule-checked
+            port = getattr(self.copilot, "apply_port", None)
+            res = apply_approved(prop, now, port) if port is not None else {"applied": False, "reason": "nothing can carry it out"}
+            self.events.append(("system:live", "customer_option_applied", {"question_id": lq.id, **prop["facts"],
+                                                                           "applied": bool(res.get("applied")),
+                                                                           "reason": res.get("reason")}, now))
+            if not res.get("applied"):
+                lq.done = (lq.done or "") + f" (not carried out for {prop['facts']['passenger_ids'][0]}: {res.get('reason')})"
+            self.dirty.add(lq.id)
+        self.care_moves = []
         for q, decision, extra in self.ready:
             if q.status == "withdrawn":
                 continue
@@ -301,6 +318,14 @@ class LiveHumans:
             elif k == "text" and p.get("messages") and len({m.get("text") for m in p["messages"]}) == 1:
                 # one wording for everyone (a single message, a staff note): personalised sends can't share new words
                 out[k] = "free text: every flight, time, city and status must stay backed by the message's facts"
+            elif k == "customer_option" and q_views(self) and lq.passenger_ids:
+                proposed = self.proposed_flight(lq)
+                opts = {pid: [o["option_id"] for o in self.views.rebooking(pid) if o["flights"][0]["flight_id"] != proposed]
+                        for pid in lq.passenger_ids}                      # another flight than the one proposed
+                opts = {pid: v for pid, v in opts.items() if v}
+                if opts:
+                    out["customer_id"] = sorted(opts)
+                    out["option_id"] = opts             # per Customer: their options (GET /customers/{id} rebooking)
             elif k == "extension_min" and p.get("human_only"):
                 out[k] = [m for m in self.s["allowed_changes"]["extension_min_values"] if m <= self.max_extension_min()]
         return out or None
@@ -513,6 +538,8 @@ class LiveHumans:
         change = dict(change or {})
         if not change:
             raise DecideError(422, "say what to change")
+        if "customer_id" in change or "option_id" in change:   # one Customer gets another flight; the rest as proposed
+            return self._approve_customer_option(lq, now, reason, change, allowed)
         for k, v in change.items():
             if k not in allowed:
                 raise DecideError(422, f"'{k}' can't be changed for this question" + (f"; you can change {', '.join(allowed)}"
@@ -573,6 +600,36 @@ class LiveHumans:
         self._approve(lq, now, reason, None)
         self._events_last_change(lq, now, change)
         return None
+
+    def _approve_customer_option(self, lq, now, reason, change, allowed):
+        """A rebooking where one Customer takes another of their options: that Customer is moved through the same rebooking
+        path (decision K01, the rule check, the reservation system) at the next minute; the others as proposed. Nothing is
+        rebooked before this approval."""
+        pid, opt = change.get("customer_id"), change.get("option_id")
+        if "customer_id" not in allowed:
+            raise DecideError(422, "this question has no per-Customer options")
+        if pid not in allowed["customer_id"]:
+            raise DecideError(409, f"{pid} is not one of this question's Customers with other flights")
+        choices = {o["option_id"]: o for o in self.views.rebooking(pid) if o["option_id"] in allowed["option_id"].get(pid, [])}
+        if opt not in choices:
+            raise DecideError(409, f"{opt} is not one of {pid}'s options ({', '.join(choices)})")
+        to = choices[opt]["flights"][0]["flight_id"]
+        care = self.copilot.care
+        rest = [x for x in lq.passenger_ids if x != pid]
+        if care is not None and lq.rec_id in care.options:
+            care.options[lq.rec_id] = {**care.options[lq.rec_id], "passenger_ids": rest}
+        self.care_moves.append((lq, {"id": f"rebook-{lq.rec_id}-{pid}", "agent": "passenger_care", "action": "rebook_passenger",
+                                     "decision_ids": ["K01"], "facts": {"passenger_ids": [pid], "flight_id": to}}))
+        lq.change = {"customer_id": pid, "option_id": opt}
+        lq.done = (f"Approved with your change: {pid} goes on {to}"
+                   + (f"; {len(rest)} other Customer{'s' if len(rest) != 1 else ''} as proposed" if rest else ""))
+        self._approve(lq, now, reason, None)
+        self._event(lq, "human_changed", now, change=lq.change)
+        return None
+
+    def proposed_flight(self, lq):
+        rec = self.copilot.care.context.saved.get(("recommendations", lq.rec_id)) if self.copilot and self.copilot.care else None
+        return (((rec or {}).get("options") or [{}])[0]).get("flight_id")
 
     def _events_last_change(self, lq, now, change):
         self._event(lq, "human_changed", now, change=change)

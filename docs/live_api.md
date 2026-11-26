@@ -153,6 +153,28 @@ This call is also the heartbeat.
   (`results.decisions.auto`) and in its trace ("Done automatically: <rule>"). A setting that would automate a safety or legal
   item is refused when the file is loaded.
 - **The frontline role `counter_gate_agent`** has no approval queue: `?roles=counter_gate_agent` returns `[]`.
+- **A Passenger Care item** also has `care`:
+
+  ```
+  "care":{"customers":[{"id","name","action":"rebook"|"hotel"|"refund"|"ride",
+                        "detail":{"flights":[{"flight_id","dep","arr"}],"hotel":{"name","price","shuttle"},"amount":0,"currency":"USD"},
+                        "why":"plain reason"}],
+          "message_text":"exact words Customers will get" | null,
+          "auto_done":[{"action":"refund","count":0,"total":0}]}
+  ```
+
+  It is built from Passenger Care's own proposal: its option (the flight, or the hotel and its cost), the hotel list it was
+  given, and its reason.
+  - `message_text` is the text of Communication's message backed by this decision. Until Communication has written one (it
+    does so after the approval), it is `null`.
+  - A refund's `amount` is `null`: the ticket price is not on record.
+  - A ride's `amount` is the whole ride, shared when several Customers go together.
+  - `auto_done` counts what Passenger Care already did on its own today, by kind, with the total cost.
+  - Nothing is rebooked until a person approves.
+  - `approve_with_change` can carry `{"customer_id","option_id"}`: that Customer takes another of their options (from
+    `GET /customers/{id}` `rebooking`, never the proposed flight) through the same rebooking path (K01, the rule check, the
+    reservation system) at the next minute; the other Customers keep the proposed flight. `allowed_changes` lists
+    `customer_id` and, per Customer, `option_id` only when such another flight exists.
 
 ## GET /api/live/{run_id}/questions/{id}/trace
 
@@ -321,6 +343,42 @@ GET /api/live/{run_id}/customers/{id}
      "rebooking":[{"option_id","flights":[...],"arrives","seats_left","why","recommended"}],"hotel":null|{...},"refund_due":false}
 POST /api/live/{run_id}/customers/{id}/rebook {"option_id"}  and  POST .../refund {}   -> {"ok":true,"trip":[...]}
 ```
+
+The Customer view also has:
+- **`messages`**: `[{"t","channel","text"}]`, the exact words of every message delivered to them.
+- **`refunds`**: `[{"amount","status":"issued"|"due","t"}]`. A refund is `issued` once Passenger Care's refund decision was
+  carried out (with its time), and `due` when one is owed but not issued yet. `amount` is `null` because the ticket price is
+  not on record.
+- **`hotel`**: `{"name","price","currency","shuttle","status"}`, or `null`. It is the room Passenger Care planned or assigned:
+  the price is its option's cost, and the status is "assigned" once the hotel confirmed it, otherwise Passenger Care's own
+  status.
+
+The flight view also has:
+- **`truth`**: the flight's real status now, in one plain sentence, for example "WN1033 to Baltimore is waiting for the ground
+  stop to lift, now expected to leave at 15:14 (129 min late)."
+- **`one_story`**: `[{"place","says","matches","since"}]` for `app`, `sms`, `gate_screen`, `call_center`, `counter`,
+  `gate_agents` and `crew`.
+  - A screen: the exact text most of the flight's tracked Customers see on it. `matches` is whether those screens agree with
+    the truth; `since` is when that text arrived.
+  - `gate_agents`: the latest staff note sent about the flight.
+  - `crew`: the latest crew message delivered about the flight. For both, `matches` is false if the flight changed after it
+    was sent.
+  - `counter`: nothing is ever sent to the counter, so it is always `null`.
+  - Every field is `null` for a place nothing was sent to.
+
+## GET /api/live/{run_id}/sent?since=<minute>
+
+```
+[{"t":"11:31","minute":691,"to":"Nora Okafor" | "143 Customers on WN1033" | "Gate agents and call center" | "Crew R07",
+  "channel":"sms"|"app"|"staff_note"|"crew"|null,"kind":"message"|"refund"|"hotel"|"rebook","text":"exact words","count":1}]
+```
+
+Newest last. It covers delivered messages, staff notes and crew messages, plus refund, hotel and rebooking confirmations.
+- **A mass send** (one recommendation, one channel, one minute) is one row with its `count`. Its `text` is the first message's
+  exact words, since personalised messages differ by name.
+- **Confirmations of one kind in the same minute** are one row with their count. They have no message words or channel on
+  record, so their `text` is a plain confirmation and `channel` is `null`.
+- **There is no email row:** nothing in the simulation sends email.
 
 - **`script`**: the newest message the co-pilot actually sent about the flight (a staff note first).
 - **`on_screens`**: what most of the flight's tracked Customers see on each screen.

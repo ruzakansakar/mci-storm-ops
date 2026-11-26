@@ -82,11 +82,17 @@ def ui(data):
                 "est": {d["id"]: d["est_dep"] for d in w.departures},
                 "at_gate": [(d["id"], s.views.gate_of(d["id"]), d["status"]) for d in s.views.at_gate()],
                 "station": s.views.station()}
+        for i in items:
+            if i["agent"] == "passenger_care" and (i.get("care") or {}).get("customers") and "care_item" not in seen:
+                seen["care_item"] = i
+        if t == 13 * 60:
+            seen["customer_1300"] = {pid: s.views.customer(pid) for pid in sorted(s.world.truth)}
+            seen["sent"] = s.views.sent(11 * 60 + 25)
         if t == 13 * 60:
             seen["station"], seen["clocks"] = s.views.station(), s.views.clocks()
             seen["handover"], seen["flight"] = s.views.handover(11 * 60), s.views.flight("WN1033")
 
-    s = L.LiveSession("a31_storm-s7-live-ui", data=data, pace=False, driver=user, until=15 * 60, roles=["station_manager"])
+    s = L.LiveSession("a31_storm-s7-live-ui", data=data, pace=False, driver=user, until=17 * 60, roles=["station_manager"])
     s.run()
     assert s.status == "finished" and s.error is None, getattr(s, "trace_text", s.error)
     s.status = "paused"
@@ -290,10 +296,11 @@ def test_frontline_role_and_no_contact_details_anywhere(ui):
     found = client.get(f"/api/live/{rid}/customers?q=maya&role=counter_gate_agent").json()
     assert found and set(found[0]) == {"id", "name", "booking_ref", "flight_id", "status"}
     one = client.get(f"/api/live/{rid}/customers/{found[0]['id']}?role=counter_gate_agent").json()
-    assert set(one) == {"id", "name", "trip", "true_status", "screens", "needs", "rebooking", "hotel", "refund_due"}
+    assert set(one) == {"id", "name", "trip", "true_status", "screens", "needs", "rebooking", "hotel", "refund_due", "messages",
+                        "refunds"}
     fl = client.get(f"/api/live/{rid}/flights/WN1033").json()
     assert set(fl) == {"id", "from", "to", "sched_dep", "est_dep", "sched_arr", "est_arr", "status", "gate", "crew", "customers",
-                       "connections", "script", "notes", "on_screens"}
+                       "connections", "script", "notes", "on_screens", "truth", "one_story"}
     assert set(fl["on_screens"]) == {"app", "sms", "gate_screen", "call_center"}
     st = client.get(f"/api/live/{rid}/station").json()
     assert set(st) == {"ramp", "gates", "staffing_gaps"}
@@ -350,3 +357,117 @@ def test_a_gate_is_in_use_while_a_flight_waiting_at_it_is_there(ui):
     for fid, gate, status in snap["at_gate"]:                     # every departure still at its gate, whatever its schedule says
         if gate:
             assert gates[gate]["status"] == "in_use" and gates[gate]["flight_id"] == fid, (fid, gate, status)
+
+
+# ------------------------------------------------------------ Passenger Care detail, the Customer, one story, everything sent
+def test_a_passenger_care_question_lists_each_customer_and_nothing_is_rebooked_before_approval(ui):
+    s, seen = ui
+    item = seen["care_item"]
+    c = item["care"]
+    assert set(c) == {"customers", "message_text", "auto_done"}
+    assert [x["id"] for x in c["customers"]] == item["target"]["passenger_ids"]
+    rec = s.copilot.care.context.saved[("recommendations", s.question(item["id"]).rec_id)]
+    for x in c["customers"]:
+        assert x["name"] == s.world.passengers[x["id"]]["full_name"] and x["action"] in ("rebook", "hotel", "refund", "ride")
+        assert set(x["detail"]) == {"flights", "hotel", "amount", "currency"} and x["why"]
+        if x["action"] == "rebook":
+            assert x["detail"]["flights"][0]["flight_id"] == rec["options"][0]["flight_id"]
+    assert any(a["action"] == "refund" and a["count"] > 0 for a in c["auto_done"])
+    approved = [(q.rec_id, q.answered_at) for q in s.humans.questions if q.agent == "passenger_care"
+                and q.action == "rebook_passenger" and q.status == "approved"]
+    for e in s.world.events:                                  # every rebooking carried out came after a person said yes
+        p = e.get("payload") or {}
+        if e["type"] == "decision_applied" and p.get("action") == "rebook_passenger" and p.get("agent") == "passenger_care":
+            assert any(rid == p["recommendation"] and L.at(e["t"]) >= at for rid, at in approved), e
+
+
+def test_approve_with_change_moves_one_customer_to_another_of_their_options(data):
+    """Seed 7 never has a second flight with seats for a stranded Customer (approved rebookings fill them), so the per-Customer
+    choice is offered only when one exists. Here that Customer's options are given another real flight to their city to show
+    the path: that Customer goes through the same rebooking path (K01, the rule check, the reservation system), the rest stay."""
+    seen = {}
+
+    def user(s, t):
+        if "done" in seen:
+            return
+        for q in s.queue_items():
+            if q["action"] != "rebook_passenger":
+                continue
+            lq = s.question(q["id"])
+            pid = lq.passenger_ids[0]
+            proposed = s.humans.proposed_flight(lq)
+            ids = (q["allowed_changes"] or {}).get("option_id", {}).get(pid, [])
+            assert all(o["flights"][0]["flight_id"] != proposed for o in s.views.rebooking(pid) if o["option_id"] in ids)
+            dest = s.world.truth[pid]["destination"]
+            other = next(f for f in s.world.departures if f["destination"] == dest and f["status"] in WAITING_DEP
+                         and not f.get("_next_day") and f["est_dep"] > t and f["id"] != proposed)
+            real = s.views.rebooking
+            s.views.rebooking = lambda p, real=real: ([{"option_id": "r9", "flights": [{"flight_id": other["id"]}], "recommended": False}]
+                                                      if p == pid else real(p))
+            seen.update(pid=pid, to=other["id"], rest=[x for x in lq.passenger_ids if x != pid], rid=lq.rec_id,
+                        r=s.decide([q["id"]], "approve_with_change", change={"customer_id": pid, "option_id": "r9"}))
+            seen["again"] = s.decide([q["id"]], "approve_with_change", change={"customer_id": pid, "option_id": "r9"})
+            seen["done"] = t
+            return
+
+    s = L.LiveSession("a31_storm-s7-live-care", data=data, pace=False, driver=user, until=11 * 60 + 40)
+    s.run()
+    assert s.status == "finished", getattr(s, "trace_text", s.error)
+    assert seen["r"][0]["status"] == "approved" and seen["to"] in seen["r"][0]["done"]
+    assert s.copilot.care.options[seen["rid"]]["passenger_ids"] == seen["rest"]
+    moved = [e for e in s.world.events if e["type"] == "customer_option_applied" and e["payload"]["passenger_ids"] == [seen["pid"]]]
+    assert moved and moved[0]["payload"]["flight_id"] == seen["to"]          # tried through the rebooking path at the next minute
+    assert moved[0]["payload"]["applied"] or moved[0]["payload"]["reason"]    # carried out, or refused with the reason
+    assert seen["again"][0]["code"] == 409                                    # already answered
+
+
+def test_the_customer_view_has_their_messages_refunds_and_hotel(ui):
+    s, seen = ui
+    views = seen["customer_1300"]
+    delivered = {(e["payload"]["passenger_id"], e["payload"]["text"]) for e in s.world.events if e["type"] == "message_delivered"}
+    with_msgs = [v for v in views.values() if v["messages"]]
+    assert with_msgs
+    for v in with_msgs:
+        for m in v["messages"]:
+            assert set(m) == {"t", "channel", "text"} and (v["id"], m["text"]) in delivered
+    refunds = [r for v in views.values() for r in v["refunds"]]
+    assert refunds and all(set(r) == {"amount", "status", "t"} and r["status"] in ("issued", "due") for r in refunds)
+    assert any(r["status"] == "issued" and r["t"] for r in refunds)
+    hotels = [h for h in (s.views.hotel(pid) for pid in s.world.truth) if h]   # rooms come later (at the end of the run)
+    assert hotels and all({"name", "price", "shuttle", "status"} <= set(h) for h in hotels)
+    assert all(isinstance(h["price"], (int, float)) and h["name"] for h in hotels)
+
+
+def test_the_flight_has_its_truth_and_one_story_across_every_place(ui):
+    s, seen = ui
+    f = seen["flight"]
+    assert f["truth"].startswith("WN1033 to Baltimore is ") and not SNAKE.search(f["truth"])
+    places = [x["place"] for x in f["one_story"]]
+    assert places == ["app", "sms", "gate_screen", "call_center", "counter", "gate_agents", "crew"]
+    for x in f["one_story"]:
+        assert set(x) == {"place", "says", "matches", "since"}
+        assert (x["says"] is None) == (x["matches"] is None) == (x["since"] is None)
+        if x["says"] is not None:
+            assert isinstance(x["matches"], bool) and re.match(r"\d\d:\d\d$", x["since"])
+    staff = next(x for x in f["one_story"] if x["place"] == "gate_agents")
+    notes = {h["text"] for h in s.copilot.recovery.history if h.get("flight_id") == "WN1033" and h.get("audience") == "staff"}
+    assert staff["says"] in notes                                              # the latest staff note about this flight
+    assert next(x for x in f["one_story"] if x["place"] == "counter")["says"] is None      # nothing is sent to the counter
+
+
+def test_everything_sent_newest_last_with_mass_sends_grouped(ui):
+    s, seen = ui
+    rows = seen["sent"]
+    assert rows and [r["minute"] for r in rows] == sorted(r["minute"] for r in rows)
+    for r in rows:
+        assert set(r) == {"t", "minute", "to", "channel", "kind", "text", "count"} and r["minute"] >= 11 * 60 + 25
+        assert r["kind"] in ("message", "refund", "hotel", "rebook") and r["count"] >= 1
+    mass = [r for r in rows if r["kind"] == "message" and r["count"] > 1]
+    assert mass and all(r["to"].endswith("Customers") or " Customers on " in r["to"] for r in mass)
+    texts = {e["payload"].get("text") for e in s.world.events if e["type"] in ("message_delivered", "staff_note_published",
+                                                                               "crew_message_delivered")}
+    assert all(r["text"] in texts for r in rows if r["kind"] == "message")    # the exact words
+    assert any(r["channel"] == "staff_note" for r in rows) and any(r["channel"] == "crew" for r in rows)
+    keys = [(r["minute"], r["kind"], r["text"]) for r in rows if r["kind"] != "message"]
+    assert len(keys) == len(set(keys))                                         # confirmations in one minute: one row
+    assert client.get(f"/api/live/{s.run_id}/sent?since=700").status_code == 200

@@ -120,6 +120,7 @@ allowed_changes:
   send_mass_message: [text]
   send_staff_briefing: [text]
   extend_crew_duty: [extension_min]            # how many minutes of extension you approve
+  rebook_passenger: [customer_option]          # one Customer takes another of their rebooking options (customer_id, option_id)
   delay_min_values: [0, 15, 30, 60]            # assumption: the choices offered (0 = as proposed)
   extension_min_values: [30, 60, 90, 120]      # assumption: up to the legal maximum (2 h before takeoff, 14 CFR 117.19)
 

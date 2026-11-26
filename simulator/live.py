@@ -278,6 +278,7 @@ class LiveSession:
         self.humans.closed_gates = {}                            # gate -> note: reported unavailable from the floor
         from backend.execution.live_views import Views
         self.views = Views(self)
+        self.humans.views = self.views
         self.first_trip = {pid: list(t["itinerary"]) for pid, t in world.truth.items()}
         copilot.human_only_port = self.humans.human_only        # human-only decisions come to you (live mode only)
         self.humans.wrong_pax = channels.dis_pax
@@ -454,7 +455,8 @@ class LiveSession:
                         "can_wait": not blocked, "blocked_by": [{"id": b.id, "title": b.title} for b in blocked],
                         "last_option": q.last_option, "consequence_if_rejected": q.consequence or "", "why": q.why,
                         **self.plain_of(q), "bundle": q.bundle, "section": q.section,
-                        "allowed_changes": self.humans.allowed_changes(q)})
+                        "allowed_changes": self.humans.allowed_changes(q),
+                        **({"care": self.views.care_block(q)} if q.agent == "passenger_care" and self.views else {})})
         out.sort(key=lambda i: (-i["priority_score"], i["id"]))
         return out
 

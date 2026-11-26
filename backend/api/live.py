@@ -457,6 +457,13 @@ def handover(run_id: str, since: str | None = Query(None, pattern=r"^\d{1,2}:\d{
         return s.views.handover(m)
 
 
+@router.get("/{run_id}/sent")
+def sent(run_id: str, since: int = Query(0, ge=0, le=1440)):
+    s = _live_session(run_id)
+    with s.lock:
+        return s.views.sent(since)
+
+
 @router.get("/{run_id}/results")
 def results(run_id: str):
     s, row = _session(run_id)
