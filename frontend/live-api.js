@@ -26,9 +26,20 @@ class RealApi {
   history(id) { return http('GET', `/api/live/${enc(id)}/history`); }
   sessions() { return http('GET', '/api/live/sessions'); }
   results(id) { return http('GET', `/api/live/${enc(id)}/results`); }
+  flight(id, f) { return http('GET', `/api/live/${enc(id)}/flights/${enc(f)}`); }
+  addNote(id, f, body) { return http('POST', `/api/live/${enc(id)}/flights/${enc(f)}/notes`, body); }
+  report(id, body) { return http('POST', `/api/live/${enc(id)}/reports`, body); }
+  customers(id, q) { return http('GET', `/api/live/${enc(id)}/customers?q=${enc(q)}`); }
+  customer(id, c) { return http('GET', `/api/live/${enc(id)}/customers/${enc(c)}`); }
+  rebook(id, c, body) { return http('POST', `/api/live/${enc(id)}/customers/${enc(c)}/rebook`, body); }
+  refund(id, c) { return http('POST', `/api/live/${enc(id)}/customers/${enc(c)}/refund`, {}); }
+  station(id) { return http('GET', `/api/live/${enc(id)}/station`); }
+  clocks(id) { return http('GET', `/api/live/${enc(id)}/clocks`); }
+  handover(id, since) { return http('GET', `/api/live/${enc(id)}/handover?since=${enc(since)}`); }
 }
 const enc = encodeURIComponent;
 
+export const FRONTLINE = { counter_gate_agent: 'Counter and gate agent' };
 export const ROLE_TITLES = {
   station_manager: 'Station manager', network_operations_control: 'Network operations control', crew_scheduling: 'Crew scheduling',
   customer_service_supervisor: 'Customer service supervisor', ramp_supervisor: 'Ramp supervisor',
@@ -51,7 +62,7 @@ const SCRIPT = [
     plan: 'Keep crew C31 on WN1031 (MCI to Phoenix) and let them work up to 2 hours past their limit so the flight can leave after the ground stop.',
     trigger: [['11:30', 'faa_feed', 'FAA ground stop at MCI for thunderstorms, expected end 13:00'], ['11:30', 'crew_feed', 'C31 becomes illegal at 14:05 if WN1031 leaves after 13:00']],
     inputs: [['situation', 1, '11:30'], ['recovery_plan', 96, '11:30']],
-    options: [['Reserve crew', 'No reserve pilot is legal before 14:05'], ['Swap with another crew', 'No crew at MCI with enough duty time left'], ['Deadhead a crew in', 'No seats on inbound flights before 15:00']],
+    options: [['Reserve crew', 'No reserve pilot is legal before 14:05'], ['Swap with another crew', 'No crew at MCI with enough duty time left'], ['Deadhead a crew in', 'No seats on inbound flights before 15:00']], headline: 'Keep WN1031 to Phoenix flying today', optLabel: 'Extend crew C31 by up to 2 h (captain agrees)', connections: 12,
     rule: [true, ['CREW-07'], 'An extension is legal only with the captain\'s agreement and crew scheduling\'s approval'],
     whyHuman: 'Human only: a duty extension needs the captain and crew scheduling. The co-pilot may not decide it.',
     reject: { last: true, consequence: 'WN1031 will be cancelled and 143 passengers rebooked' } },
@@ -88,7 +99,7 @@ const SCRIPT = [
     plan: 'WN2030 from Boston has been holding since 11:30. Its spare fuel is too low to keep holding: send it to Des Moines (25 min away) now.',
     trigger: [['11:30', 'flight_ops', 'WN2030 holding over MCI'], ['12:00', 'fuel_feed', '67 min of spare fuel left, must leave by 12:12']],
     inputs: [['situation', 2, '12:02'], ['recovery_plan', 101, '12:02']],
-    options: [['St. Louis', 'Leave by 12:12, but St. Louis is filling up with diversions'], ['Omaha', 'Leave by 12:02: already too late'], ['Keep holding', 'Fuel runs out before the worst-case end of the stop']],
+    options: [['Divert to St. Louis', 'Also reachable (leave by 12:12), but St. Louis is filling up with diversions'], ['Keep holding', 'Fuel runs out before the worst-case end of the stop']], optionsArePicks: true, optLabel: 'Divert to Des Moines now',
     rule: [true, ['FUEL-01', 'DIV-02'], 'Reaches Des Moines with legal reserve fuel'], whyHuman: 'A diversion needs network operations control and the dispatcher.',
     reject: { alt: { title: 'Divert WN2030 to St. Louis', plan: 'Send WN2030 to St. Louis instead (15 min away), leaving by 12:12.' } } },
   { at: 730, agent: 'station_staff', action: 'pause_ramp_tasks', role: 'ramp_supervisor', urgent: true, safety: true,
@@ -115,9 +126,9 @@ const SCRIPT = [
     plan: 'WN1033\'s flight attendants run out of duty time. Crew C35 (arrived 14:10 on WN2031) is legal and free: put them on WN1033 so it leaves at 15:14.',
     trigger: [['14:10', 'flight_ops', 'WN2031 landed at MCI with crew C35'], ['14:12', 'crew_feed', 'WN1033 flight attendants illegal after 15:30']],
     inputs: [['situation', 17, '14:05'], ['recovery_plan', 131, '14:13']],
-    options: [['Cancel WN1033', '143 passengers stranded overnight, including 12 connections'], ['Reserve crew', 'Earliest reserve reaches MCI at 16:40']],
+    options: [['Wait for reserve crew', 'Earliest reserve reaches MCI at 16:40: WN1033 leaves about 17:20'], ['Cancel WN1033', '143 Customers stranded overnight, including 12 connections']], optionsArePicks: true, optLabel: 'Swap in crew C35, leave 15:14', connections: 12,
     rule: [true, ['CREW-01', 'CREW-04'], 'C35 stays within duty limits with the 15:14 departure'], whyHuman: 'Crew scheduling approves crew swaps.',
-    reject: { last: true, consequence: 'WN1033 will be cancelled: 143 passengers, including Maya Torres, stranded overnight' } },
+    reject: { last: true, consequence: 'WN1033 will be cancelled: 143 Customers, including Maya Torres, stranded overnight' } },
   { at: 860, dependsOn: 'swap', agent: 'communication', action: 'send_status_update', role: 'customer_service_supervisor', urgent: true, safety: false, maya: 'swapmsg',
     title: 'Tell WN1033 passengers it leaves at 15:14', target: { flight_id: 'WN1033', passenger_ids: ['PAX0001'] }, pax: 143, wrongInfo: 143, msg: true,
     plan: 'Once the crew swap is approved, tell WN1033 passengers their flight now leaves at 15:14 from gate B58.',
@@ -171,7 +182,8 @@ class PracticeApi {
     const run_id = `${body.scenario || 'a31_storm'}-s${body.seed || 7}-live-practice-${this.sessionsList.length + 1}`;
     this.s = { run_id, roles: body.roles || [], status: 'running', minute: 660, speed_idle: 5, speed_pending: 1 / 6, started_at: new Date().toISOString(),
       questions: [], nextId: 1, scriptIdx: 0, decisions: [], approvedKeys: new Set(), wrongTotal: 0, todayTotal: 0, beat: performance.now(), lastReal: performance.now(),
-      versions: { situation: 1, network_recovery: 96, passenger_care: 200, station_staff: 40, communication: 300 }, lastRun: {}, edges: [] };
+      versions: { situation: 1, network_recovery: 96, passenger_care: 200, station_staff: 40, communication: 300 }, lastRun: {}, edges: [],
+      notes: {}, reports: [], closedGates: new Set(), rebooked: {}, refunded: new Set() };
     this.sessionsList.push(this.s);
     this.timer = setInterval(() => this._tick(), 250);
     return { run_id };
@@ -252,6 +264,15 @@ class PracticeApi {
       passengers_seeing_wrong_info_now: q.msg ? Math.round(q.wrongInfo * Math.min(1, (m - q.askedMin) / 20 + 0.3)) : 0,
       status: q.status, snoozed_until: q.status === 'snoozed' ? hm(q.snoozeEnd) : null, can_wait: blockers.length === 0, blocked_by: blockers,
       last_option: !!q.lastOption, consequence_if_rejected: q.lastOption ? q.reject.consequence : (q.reject.last ? q.reject.consequence : ''),
+      headline: q.headline || q.title, story: q.trigger.map(([t, , text]) => ({ t, text })),
+      recommendation: q.plan,
+      options: [{ id: 'opt1', label: q.optLabel || q.title, why: q.plan, recommended: true, effect: q.pax ? `${q.pax} Customers affected` : '' },
+        ...q.options.filter(() => q.optionsArePicks).map(([option, why_not], i) => ({ id: `opt${i + 2}`, label: option, why: why_not, recommended: false, effect: '' }))],
+      effect: { customers: q.pax, connections: q.connections || 0, flights: q.target.flight_id ? 1 : 0, text: q.pax ? `${q.pax.toLocaleString()} Customers` : '' },
+      if_declined: q.lastOption || q.reject.last ? q.reject.consequence : 'The co-pilot comes back with a different plan.',
+      bundle: q.askedMin >= 690 ? { id: 'b1', title: 'Ground stop at MCI, 11:30', started: '11:30' } : { id: 'b0', title: 'Normal operations', started: '05:00' },
+      section: q.urgent || q.safety ? 'urgent' : 'routine',
+      allowed_changes: q.action === 'delay_flight' ? { delay_min: [83, 100, 130] } : q.action === 'move_gate_agents' ? { gate: ['B53', 'B55', 'B57', 'B60'] } : null,
       why: { plan: q.plan, trigger: q.trigger.map(([t, source, text]) => ({ t, source, text })), inputs: q.inputs.map(([kind, version, t]) => ({ kind, version, t })),
         options_considered: q.options.map(([option, why_not]) => ({ option, why_not })), rule_check: { ok: q.rule[0], rules: q.rule[1], text: q.rule[2] }, why_human: q.whyHuman },
     };
@@ -318,7 +339,8 @@ class PracticeApi {
     for (const qid of body.question_ids) {
       const q = s.questions.find((x) => x.id === qid);
       if (!q || !['waiting', 'snoozed', 'escalated'].includes(q.status)) { results.push({ id: qid, status: q ? q.status : 'unknown', error: 'Already answered' }); continue; }
-      if (body.action === 'approve') this._answer(q, 'approved', m, q.role);
+      if (body.action === 'approve' || body.action === 'approve_option') this._answer(q, 'approved', m, q.role, body.option_id && body.option_id !== 'opt1' ? `Chose: ${body.option_id}` : '');
+      if (body.action === 'approve_with_change') this._answer(q, 'approved', m, q.role, `With a change: ${Object.entries(body.change || {}).map(([k, v]) => `${k.replace('_', ' ')} ${v}`).join(', ')}`);
       if (body.action === 'reject') {
         if (!body.reason) { results.push({ id: qid, status: q.status, error: 'A reason is needed to reject' }); continue; }
         this._answer(q, 'rejected', m, q.role, body.reason);
@@ -401,6 +423,98 @@ class PracticeApi {
       waiting_on_human: waiting(key) })),
       orchestrator: { open_incidents: s.minute >= 690 ? 1 : 0, queue: s.questions.filter((q) => ['waiting', 'snoozed', 'escalated'].includes(q.status)).length },
       edges: s.edges.filter((e) => toMin(e.t) >= since).slice(-30) };
+  }
+
+
+  // ---- frontline views (practice)
+  _flightInfo(fid) {
+    const s = this.s, m = Math.floor(s.minute);
+    const swapOk = s.approvedKeys.has('swap');
+    const F = {
+      WN1031: { from: 'MCI', to: 'PHX', sched_dep: '12:05', sched_arr: '13:20', gate: 'B57', crew: { id: 'C31', legal_until: '14:05' }, customers: 143, connections: 12 },
+      WN1033: { from: 'MCI', to: 'BWI', sched_dep: '12:40', sched_arr: '16:05', gate: 'B58', crew: { id: swapOk ? 'C35' : 'C33', legal_until: swapOk ? '19:30' : '15:30' }, customers: 143, connections: 12 },
+      WN1034: { from: 'MCI', to: 'SAN', sched_dep: '12:20', sched_arr: '13:25', gate: 'B60', crew: { id: 'C34', legal_until: '13:44' }, customers: 137, connections: 9 },
+      WN2031: { from: 'DEN', to: 'MCI', sched_dep: '09:55', sched_arr: '11:45', gate: 'B55', crew: { id: 'C35', legal_until: '19:30' }, customers: 158, connections: 41 },
+    }[fid] || { from: null, to: null, sched_dep: null, sched_arr: null, gate: null, crew: null, customers: null, connections: null };
+    const stop = m >= 690 && m < 840;
+    const status = fid === 'WN2031' ? (m < 735 ? 'Holding' : m < 850 ? 'Diverted to St. Louis' : 'Landed') : fid === 'WN1033' && m >= 855 ? (swapOk ? 'Leaves 15:14' : 'Delayed') : stop ? 'Held: ground stop' : 'On time';
+    const script = fid === 'WN2031' && m >= 735 && m < 850 ? 'WN2031 from Denver landed in St. Louis because of thunderstorms at Kansas City. It will fly on to Kansas City when the airport reopens, expected around 14:00.'
+      : fid === 'WN1033' && swapOk ? 'WN1033 to Baltimore now leaves at 15:14 from gate B58, with a fresh crew. Boarding starts 14:44.'
+      : stop ? `Thunderstorms have stopped all departures at Kansas City. We expect to restart around ${m < 780 ? '13:00' : '14:00'}. Next update by ${hm(Math.ceil((m + 1) / 30) * 30)}.` : 'On time.';
+    return { id: fid, ...F, est_dep: F.sched_dep, est_arr: F.sched_arr, status, script: { text: script, updated: hm(Math.max(660, m - 3)) },
+      notes: (s.notes[fid] || []), on_screens: { app: script, sms: script, gate_screen: status, call_center: script } };
+  }
+  async flight(id, fid) { return this._flightInfo(fid); }
+  async addNote(id, fid, body) { const s = this.s; (s.notes[fid] ||= []).push({ t: hm(s.minute), role: body.role, text: body.text }); return s.notes[fid]; }
+  async report(id, body) { const s = this.s; s.reports.push({ t: hm(s.minute), ...body }); if (body.kind === 'gate_unavailable' && body.gate) s.closedGates.add(body.gate); return { ok: true }; }
+  _customers() {
+    const swapOk = this.s.approvedKeys.has('swap');
+    const rejectedSwap = this.s.questions.some((q) => q.key === 'swap' && q.lastOption && q.status === 'rejected');
+    return [
+      { id: 'PAX0001', name: 'Maya Torres', booking_ref: 'QX7K2M', flight_id: 'WN1033', status: rejectedSwap ? 'Needs rebooking' : swapOk ? 'Confirmed, leaves 15:14' : 'Delayed', needs: [] },
+      { id: 'PAX0102', name: 'Daniel Okafor', booking_ref: 'LM4P9R', flight_id: 'WN1031', status: 'Held: ground stop', needs: ['wheelchair'] },
+      { id: 'PAX0144', name: 'Priya Nair', booking_ref: 'ZT8D3W', flight_id: 'WN1034', status: 'Delayed to 13:43', needs: [] },
+      { id: 'PAX0207', name: 'Sam Whitfield (age 11)', booking_ref: 'UM2B6K', flight_id: 'WN1033', status: 'Delayed', needs: ['unaccompanied_minor'] },
+    ];
+  }
+  async customers(id, q) { const k = String(q || '').toLowerCase(); return this._customers().filter((c) => !k || c.name.toLowerCase().includes(k) || c.booking_ref.toLowerCase().includes(k) || c.flight_id.toLowerCase().includes(k)); }
+  async customer(id, cid) {
+    const c = this._customers().find((x) => x.id === cid);
+    if (!c) { const e = new Error('No such Customer'); e.status = 404; throw e; }
+    const s = this.s, m = Math.floor(s.minute);
+    const rebooked = s.rebooked[cid];
+    const maya = cid === 'PAX0001';
+    const trip = rebooked ? rebooked.flights.map((f) => ({ ...f, status: 'Confirmed' }))
+      : maya ? [{ flight_id: 'WN2031', from: 'DEN', to: 'MCI', dep: '09:55', arr: '11:45', status: m < 735 ? 'Holding' : m < 850 ? 'Diverted to STL' : 'Landed' }, { flight_id: 'WN1033', from: 'MCI', to: 'BWI', dep: '12:40', arr: '16:05', status: c.status }]
+      : [{ flight_id: c.flight_id, from: 'MCI', to: this._flightInfo(c.flight_id).to, dep: this._flightInfo(c.flight_id).sched_dep, arr: this._flightInfo(c.flight_id).sched_arr, status: c.status }];
+    const to = trip[trip.length - 1].to;
+    const rebooking = rebooked ? [] : [
+      { option_id: 'r1', flights: [{ flight_id: 'WN1041', from: 'MCI', to, dep: '17:20', arr: '21:05' }], arrives: '21:05', seats_left: 3, why: 'Earliest arrival tonight, same airport, no extra connection', recommended: true },
+      { option_id: 'r2', flights: [{ flight_id: 'WN1055', from: 'MCI', to: 'MDW', dep: '18:35', arr: '20:10' }, { flight_id: 'WN2290', from: 'MDW', to, dep: '21:00', arr: '23:40' }], arrives: '23:40', seats_left: 7, why: 'Later, and adds a connection in Chicago', recommended: false },
+      { option_id: 'r3', flights: [{ flight_id: 'WN3005', from: 'MCI', to, dep: '06:30', arr: '10:15' }], arrives: 'tomorrow 10:15', seats_left: 22, why: 'Nonstop, but overnight: a hotel is booked automatically', recommended: false },
+    ];
+    const focus = maya ? (await this.state()).focus : null;
+    return { id: c.id, name: c.name, trip, true_status: rebooked ? `Rebooked on ${rebooked.flights.map((f) => f.flight_id).join(' + ')}` : focus ? focus.true_status : c.status,
+      screens: focus ? focus.screens : [], needs: c.needs, rebooking, hotel: rebooked && rebooked.option_id === 'r3' ? { name: 'Hilton KCI Airport', confirmed: true, auto: true } : null, refund_due: s.refunded.has(cid) ? false : c.status.includes('ancel') };
+  }
+  async rebook(id, cid, body) {
+    const c = await this.customer(id, cid);
+    const opt = c.rebooking.find((o) => o.option_id === body.option_id);
+    this.s.rebooked[cid] = opt;
+    this.s.decisions.push({ id: 900 + this.s.decisions.length, title: `Rebooked ${c.name} on ${opt.flights.map((f) => f.flight_id).join(' + ')}`, role: 'counter_gate_agent', action: 'rebook', answer: 'approved', reason: '', asked: hm(this.s.minute), answered: hm(this.s.minute), waited_min: 0 });
+    return this.customer(id, cid);
+  }
+  async refund(id, cid) { this.s.refunded.add(cid); return { ok: true }; }
+  async station() {
+    const s = this.s, m = Math.floor(s.minute);
+    const gates = ['B50', 'B52', 'B53', 'B54', 'B55', 'B56', 'B57', 'B58', 'B59', 'B60'].map((g, i) => {
+      if (s.closedGates.has(g)) return { gate: g, status: 'closed', flight_id: null, staffed: false, note: 'Reported unavailable from the floor' };
+      const fl = ['WN1027', null, 'WN1028', 'WN1029', 'WN2031', null, 'WN1031', 'WN1033', null, 'WN1034'][i];
+      return { gate: g, status: fl ? 'in_use' : 'open', flight_id: fl, staffed: !fl || !(m >= 690 && i % 3 === 0 && !s.decisions.some((d) => d.action === 'move_gate_agents')), note: '' };
+    });
+    return { ramp: m >= 730 && m < 765 ? { open: false, reason: 'lightning within 5 miles', since: '12:10' } : { open: true, reason: '', since: '' }, gates,
+      staffing_gaps: m >= 690 && m < 900 && !s.decisions.some((d) => d.action === 'move_gate_agents') ? [{ role: 'gate_agent', from: '12:00', to: '14:30', short_by: 3 }] : [] };
+  }
+  async clocks() {
+    const s = this.s, m = Math.floor(s.minute);
+    return {
+      tarmac: m >= 812 && m < 850 ? [{ flight_id: 'WN2031 (at STL)', minutes: m - 812, limit: 180 }] : [],
+      crew: [{ crew_id: 'C31', flight_id: 'WN1031', legal_until: '14:05', minutes_left: 845 - m }, { crew_id: 'C34', flight_id: 'WN1034', legal_until: '13:44', minutes_left: 824 - m },
+        { crew_id: 'C33', flight_id: 'WN1033', legal_until: '15:30', minutes_left: 930 - m }].filter((c) => c.minutes_left > -30),
+      refunds: [...s.refunded].map((cid) => ({ customer_id: cid, flight_id: '-', due_by: '-', status: 'auto_issued' })),
+      special_assistance: m >= 690 ? [{ customer_id: 'Daniel Okafor', need: 'wheelchair', flight_id: 'WN1031', waiting_min: m - 690 }, { customer_id: 'Sam Whitfield (11)', need: 'unaccompanied_minor', flight_id: 'WN1033', waiting_min: m - 700 }] : [],
+    };
+  }
+  async handover(id, since) {
+    const s = this.s, m = Math.floor(s.minute);
+    const open = s.questions.filter((q) => ['waiting', 'snoozed', 'escalated'].includes(q.status));
+    const watch = [];
+    if (m >= 690 && m < 840) watch.push(`Ground stop still on; likely end ${m < 780 ? '13:00' : '14:00'}.`);
+    if (m < 855) watch.push('WN1033 to Baltimore: flight attendants run out of duty time at 15:30.');
+    if (s.closedGates.size) watch.push(`Gates closed from the floor: ${[...s.closedGates].join(', ')}.`);
+    const n = s.decisions.length;
+    return { since, decisions: n, open: open.map((q) => ({ id: q.id, title: q.headline || q.title })), watch, auto_done: s.refunded.size,
+      text: `Since ${since}: ${n} decisions made, ${open.length} still open. ${watch.join(' ')}` };
   }
 
   async history() { return { decisions: [...this.s.decisions].reverse() }; }

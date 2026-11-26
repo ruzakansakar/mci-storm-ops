@@ -1,20 +1,23 @@
-// Live control room: the user is the human in the loop for every decision the agents cannot make alone.
-import { pickApi, ROLE_TITLES } from './live-api.js';
+// MCI Ops Co-Pilot: one app for the station. The user is the human in the loop for every decision
+// the agents cannot make alone; legally required small actions (refunds) are done automatically and logged.
+import { pickApi, ROLE_TITLES, FRONTLINE } from './live-api.js';
 import { icon } from './icons.js';
 import { drawDecisionFlow } from './graph.js';
+import { OpsView } from './ops.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const num = (n) => Number(n || 0).toLocaleString();
-const CHANNELS = { app: 'App', sms: 'SMS', gate_screen: 'Gate screen', call_center: 'Call center' };
-const ACTION_WORD = { approved: 'Approved', rejected: 'Rejected', waited: 'Waiting', 'handed off': 'Handed off' };
+const CHANNELS = { app: 'App', sms: 'Text message', gate_screen: 'Gate screen', call_center: 'Call center' };
+const ALL_ROLES = { ...ROLE_TITLES, ...FRONTLINE, director_of_operations: 'Duty manager (sees everything)' };
+const NEEDS = { wheelchair: 'Wheelchair', unaccompanied_minor: 'Unaccompanied minor' };
 
-const ui = { api: null, run: null, state: null, items: [], selected: null, roles: Object.keys(ROLE_TITLES), view: new Set(Object.keys(ROLE_TITLES)),
-  tab: 'decisions', series: [], traceFor: null, rejecting: false, busy: false, decided: new Map() };
+const ui = { api: null, run: null, state: null, items: [], selected: null, role: 'director_of_operations', tab: 'ops',
+  series: [], traceFor: null, mode: null, busy: false, decided: new Map(), ops: null, custSel: null, choice: {}, noteFlight: null };
 
-// ---------------------------------------------------------------- theme
+// ---------------------------------------------------------------- basics
 function theme() { return document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); }
-function themeLabel() { $('theme').textContent = theme() === 'dark' ? 'Light mode' : 'Dark mode'; }
+function themeLabel() { $('theme').textContent = theme() === 'dark' ? 'Light mode' : 'Dark mode'; ui.ops && ui.ops.colors(); }
 $('theme').addEventListener('click', () => {
   const next = theme() === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
@@ -22,53 +25,65 @@ $('theme').addEventListener('click', () => {
   themeLabel();
 });
 themeLabel();
-
 function toast(text, bad = false) {
   const t = $('toast');
   t.textContent = text; t.hidden = false; t.classList.toggle('bad', bad);
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 4200);
 }
+const agentName = (k) => ({ situation: 'Situation', network_recovery: 'Network Recovery', passenger_care: 'Passenger Care', station_staff: 'Station & Staff', communication: 'Communication', orchestrator: 'Orchestrator' }[k] || k);
+const kindName = (k) => ({ situation: 'weather and operations picture', recovery_plan: 'flight and crew plan', care_plan: 'Customer care plan', station_plan: 'station plan', communication: 'message',
+  network_recovery: 'flight and crew plan', passenger_care: 'Customer care plan', station_staff: 'station plan' }[k] || 'update');
+const listWords = (a) => a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`;
+const plain = (s) => String(s ?? '').replace(/\b[a-z]+(_[a-z]+)+\b/g, (w) => w.replace(/_/g, ' '));
 
-// ---------------------------------------------------------------- start screen
-$('role-picks').innerHTML = Object.entries(ROLE_TITLES).map(([k, v]) =>
-  `<label class="role-pick"><input type="checkbox" name="role" value="${k}" checked><span>${esc(v)}</span></label>`).join('');
-
+// ---------------------------------------------------------------- start
 async function showPast() {
   const list = await ui.api.sessions().catch(() => []);
   $('past').innerHTML = list.length ? list.map((s) => `<li><button class="link" data-run="${esc(s.run_id)}" type="button">${esc(s.run_id)}</button>
     <span class="muted">${esc(s.status)}${s.started_at ? ', started ' + new Date(s.started_at).toLocaleString() : ''}</span></li>`).join('') : '<li class="muted">None yet.</li>';
-  $('past').querySelectorAll('[data-run]').forEach((b) => b.addEventListener('click', () => open(b.dataset.run, [])));
+  $('past').querySelectorAll('[data-run]').forEach((b) => b.addEventListener('click', () => open(b.dataset.run)));
 }
-
 $('start-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const roles = fd.getAll('role');
-  const random = fd.get('day') === 'random';
-  const body = { seed: random ? Math.floor(Math.random() * 9000) + 100 : 7, scenario: random ? 'random' : 'a31_storm', roles: roles.length ? roles : Object.keys(ROLE_TITLES) };
   if (!ui.api) { toast('Still connecting to the database. Try again in a few seconds.', true); return; }
+  const random = new FormData(e.target).get('day') === 'random';
+  const body = { seed: random ? Math.floor(Math.random() * 9000) + 100 : 7, scenario: random ? 'random' : 'a31_storm', roles: Object.keys(ROLE_TITLES) };
   const btn = e.target.querySelector('button[type="submit"]');
   btn.disabled = true; btn.textContent = 'Starting the day…';
-  try {
-    const r = await ui.api.start(body);
-    open(r.run_id, body.roles);
-  } catch (err) { toast(`Could not start: ${err.message}`, true); }
+  try { const r = await ui.api.start(body); open(r.run_id); }
+  catch (err) { toast(`Could not start: ${err.message}`, true); }
   finally { btn.disabled = false; btn.textContent = 'Start the day'; }
 });
 
-function open(runId, roles) {
+function open(runId) {
   ui.run = runId;
-  if (roles.length) ui.view = new Set(roles);
-  $('start').hidden = true; $('live').hidden = false;
+  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false;
   history.replaceState(null, '', `?run=${encodeURIComponent(runId)}${ui.api.practice ? '&mock=1' : ''}`);
-  renderRoleFilter();
+  $('role').innerHTML = Object.entries(ALL_ROLES).map(([k, v]) => `<option value="${k}" ${k === ui.role ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote });
   loop();
 }
+$('role').addEventListener('change', () => {
+  ui.role = $('role').value;
+  const front = ui.role === 'counter_gate_agent';
+  document.querySelector('[data-tab="decisions"]').hidden = front;
+  if (front && ui.tab === 'decisions') setTab('customers');
+  ui.selected = null; ui.detailSig = null; refreshQueue();
+});
+function setTab(name) {
+  ui.tab = name;
+  document.querySelectorAll('[data-tab]').forEach((x) => { x.classList.toggle('active', x.dataset.tab === name); x.setAttribute('aria-selected', x.dataset.tab === name); });
+  for (const p of ['ops', 'decisions', 'customers', 'clocks', 'summary', 'flow']) $(`tab-${p}`).hidden = p !== name;
+  if (name === 'summary') refreshSummary();
+  if (name === 'clocks') refreshClocks();
+  if (name === 'flow') refreshFlow();
+  if (name === 'ops' && ui.state) ui.ops.update(ui.state.minute);
+}
+document.querySelectorAll('[data-tab]').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
+$('truth-strip').addEventListener('click', () => setTab('customers'));
 
-// ---------------------------------------------------------------- session controls
 $('pause').addEventListener('click', async () => {
-  const action = ui.state && ui.state.status === 'running' ? 'pause' : 'resume';
-  ui.state = await ui.api.control(ui.run, { action });
+  ui.state = await ui.api.control(ui.run, { action: ui.state && ui.state.status === 'running' ? 'pause' : 'resume' });
   renderState();
 });
 for (const id of ['speed-idle', 'speed-pending']) {
@@ -76,34 +91,32 @@ for (const id of ['speed-idle', 'speed-pending']) {
     ui.state = await ui.api.control(ui.run, { action: 'speed', speed_idle: Number($('speed-idle').value), speed_pending: Number($('speed-pending').value) });
   });
 }
-function renderRoleFilter() {
-  $('role-filter').innerHTML = Object.entries(ROLE_TITLES).map(([k, v]) =>
-    `<button type="button" class="btn chip ${ui.view.has(k) ? 'active' : ''}" data-role="${k}" aria-pressed="${ui.view.has(k)}">${esc(v)}</button>`).join('');
-  $('role-filter').querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => {
-    const k = b.dataset.role;
-    ui.view.has(k) ? ui.view.delete(k) : ui.view.add(k);
-    if (!ui.view.size) ui.view.add(k);
-    renderRoleFilter(); refreshQueue();
-  }));
-}
-for (const t of document.querySelectorAll('[data-tab]')) {
-  t.addEventListener('click', () => {
-    ui.tab = t.dataset.tab;
-    document.querySelectorAll('[data-tab]').forEach((x) => { x.classList.toggle('active', x === t); x.setAttribute('aria-selected', x === t); });
-    for (const p of ['decisions', 'flow', 'history', 'results']) $(`tab-${p}`).hidden = p !== ui.tab;
-    if (ui.tab === 'history') refreshHistory();
-    if (ui.tab === 'results') refreshResults();
-    if (ui.tab === 'flow') refreshFlow();
-  });
-}
 
-// ---------------------------------------------------------------- state and the "same story" panel
+// ---------------------------------------------------------------- report from the floor, notes
+$('report-btn').addEventListener('click', () => $('report-dlg').showModal());
+$('report-cancel').addEventListener('click', () => $('report-dlg').close());
+$('report-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = { kind: fd.get('kind'), gate: fd.get('gate') || null, flight_id: fd.get('flight_id') || null, text: fd.get('text'), role: ui.role };
+  try { await ui.api.report(ui.run, body); toast('Report sent. The co-pilot is taking it into account.'); $('report-dlg').close(); e.target.reset(); }
+  catch (err) { toast(`Could not send the report: ${err.message}`, true); }
+});
+function openNote(flightId) { ui.noteFlight = flightId; $('note-title').textContent = `Note on ${flightId}`; $('note-dlg').showModal(); }
+$('note-cancel').addEventListener('click', () => $('note-dlg').close());
+$('note-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = new FormData(e.target).get('text');
+  try { await ui.api.addNote(ui.run, ui.noteFlight, { text, role: ALL_ROLES[ui.role] }); toast(`Note added to ${ui.noteFlight}.`); $('note-dlg').close(); e.target.reset(); ui.ops.fetchFlight(ui.noteFlight); }
+  catch (err) { toast(`Could not add the note: ${err.message}`, true); }
+});
+
+// ---------------------------------------------------------------- live state
 function renderState() {
   const s = ui.state;
   if (!s) return;
   $('clock').textContent = s.clock;
-  $('status').textContent = s.status === 'running' ? (s.pending ? `Running slowly: ${s.pending} waiting for you` : 'Running') :
-    s.status === 'paused' ? 'Paused' : s.status === 'finished' ? 'Day finished' : s.status;
+  $('status').textContent = s.status === 'running' ? (s.pending ? `Slowed: ${s.pending} waiting` : 'Running') : s.status === 'paused' ? 'Paused' : s.status === 'finished' ? 'Day finished' : s.status;
   $('status').className = `status-line ${s.status}`;
   $('pause').textContent = s.status === 'running' ? 'Pause' : 'Resume';
   $('pause').disabled = !['running', 'paused'].includes(s.status);
@@ -112,206 +125,192 @@ function renderState() {
   $('speed-pending').value = String(sp);
   const w = s.world || {};
   $('world').innerHTML = [
-    `<span class="pill"><span class="dot ${w.ground_stop ? 'bad' : 'ok'}"></span>${w.ground_stop ? `Ground stop, likely end ${esc(w.stop_expected_end || '?')}` : 'Operations normal'}</span>`,
+    `<span class="pill"><span class="dot ${w.ground_stop ? 'bad' : 'ok'}"></span>${w.ground_stop ? `Ground stop, likely until ${esc(w.stop_expected_end || '?')}` : 'Normal operations'}</span>`,
     `<span class="pill"><span class="dot ${w.ramp_open ? 'ok' : 'bad'}"></span>Ramp ${w.ramp_open ? 'open' : 'closed'}</span>`,
-    ...(s.incidents || []).filter((i) => i.status === 'open').map((i) => `<span class="pill"><span class="dot warn"></span>Incident ${esc(i.id)}: ${esc(i.title)}</span>`),
   ].join('');
   $('count').textContent = s.pending;
   $('count').classList.toggle('hot', s.urgent_pending > 0);
 
-  const t = s.truth || {};
+  const t = s.truth || {}, f = s.focus;
+  const wrongScreens = f ? f.screens.filter((x) => x.wrong) : [];
+  $('truth-strip').className = `truth-strip ${t.wrong_now ? 'bad' : 'ok'}`;
+  $('truth-strip').innerHTML = t.wrong_now
+    ? `<span class="dot bad"></span><span class="ts-text"><b>${num(t.wrong_now)} Customers</b> are seeing out-of-date information${wrongScreens.length ? `, including ${esc(f.name)}'s ${listWords(wrongScreens.map((x) => (CHANNELS[x.channel] || x.channel).toLowerCase()))}` : ''}.</span> <u>See who</u>`
+    : `<span class="dot ok"></span><span class="ts-text">Every Customer's screens match the truth right now.</span>`;
   $('wrong-now').textContent = num(t.wrong_now);
-  $('wrong-now-sub').textContent = t.wrong_now ? 'until the co-pilot\'s fixes reach their screens' : 'every screen matches the truth';
+  $('wrong-now-sub').textContent = t.wrong_now ? 'until the latest updates reach their screens' : 'every screen matches the truth';
   $('wrong-total').textContent = num(t.wrong_minutes_total);
-  $('wrong-total-sub').textContent = 'one passenger on one wrong screen for one minute = 1';
+  $('wrong-total-sub').textContent = 'one Customer on one wrong screen for one minute = 1';
   const last = ui.series[ui.series.length - 1];
-  if (!last || last.m !== s.minute) ui.series.push({ m: s.minute, you: t.wrong_now || 0, today: t.today_wrong_now || 0 });
+  if (!last || last.m !== s.minute) ui.series.push({ m: s.minute, you: t.wrong_now || 0 });
   if (ui.series.length > 600) ui.series.shift();
-  drawSpark();
-
-  const f = s.focus;
+  const pts = ui.series;
+  if (pts.length > 1) {
+    const m0 = pts[0].m, m1 = Math.max(pts[pts.length - 1].m, m0 + 60), max = Math.max(10, ...pts.map((p) => p.you)) * 1.1;
+    $('spark').innerHTML = `<polyline class="sp-you" points="${pts.map((p) => `${((p.m - m0) / (m1 - m0) * 300).toFixed(1)},${(70 - p.you / max * 66).toFixed(1)}`).join(' ')}"/>`;
+  }
   if (f) {
     $('focus-name').textContent = f.name || f.passenger_id;
-    $('focus-truth').textContent = `True status: ${f.true_status}`;
+    $('focus-truth').textContent = `Right now: ${plain(f.true_status)}`;
     $('screens').innerHTML = f.screens.map((sc) => `<div class="screen ${sc.wrong ? 'wrong' : ''}">
-      <span class="screen-ch">${esc(CHANNELS[sc.channel] || sc.channel)}</span>
-      <span class="screen-shows">${esc(sc.shows)}</span>
-      <span class="screen-state">${sc.wrong ? `Wrong since ${esc(sc.since)}` : `Right since ${esc(sc.since)}`}</span></div>`).join('');
+      <span class="screen-ch">${esc(CHANNELS[sc.channel] || sc.channel)}</span><span class="screen-shows">${esc(plain(sc.shows))}</span>
+      <span class="screen-state">${sc.wrong ? `Out of date since ${esc(sc.since)}` : `Correct since ${esc(sc.since)}`}</span></div>`).join('');
   }
 }
 
-function drawSpark() {
-  const pts = ui.series;
-  if (pts.length < 2) { $('spark').innerHTML = ''; return; }
-  const m0 = pts[0].m, m1 = Math.max(pts[pts.length - 1].m, m0 + 60);
-  const max = Math.max(10, ...pts.map((p) => p.you)) * 1.1;
-  const xy = (p, k) => `${((p.m - m0) / (m1 - m0) * 300).toFixed(1)},${(70 - p[k] / max * 66).toFixed(1)}`;
-  $('spark').innerHTML = `<polyline class="sp-you" points="${pts.map((p) => xy(p, 'you')).join(' ')}"/>`;
-}
-
-// ---------------------------------------------------------------- the queue
-function itemGroup(it) { return ui.items.filter((x) => x.group_key === it.group_key); }
+// ---------------------------------------------------------------- decisions: queue by event, urgent first
+const visible = () => ui.items.filter((x) => ui.role === 'director_of_operations' || x.role === ui.role);
+const itemGroup = (it) => ui.items.filter((x) => x.group_key === it.group_key);
+const headline = (it) => it.headline || plain(it.title);
 
 function renderQueue() {
-  const seen = new Set();
-  const rows = [];
-  for (const it of ui.items) {
-    if (it.group_size > 1) { if (seen.has(it.group_key)) continue; seen.add(it.group_key); }
-    rows.push(it);
-  }
-  if (!rows.length) {
-    $('qlist').innerHTML = `<li class="empty">${ui.state && ui.state.status === 'finished' ? 'The day is over. See Results.' : 'Nothing waiting for you. The clock runs at full speed until something comes in.'}</li>`;
+  const items = visible();
+  $('queue-roles').textContent = ui.role === 'director_of_operations' ? 'Showing every role. Pick your role at the top to see only yours.' : `Showing decisions for ${ALL_ROLES[ui.role]}.`;
+  if (!items.length) {
+    $('qlist').innerHTML = `<p class="empty">${ui.state && ui.state.status === 'finished' ? 'The day is over. See the day summary.' : 'Nothing waiting for you. The clock runs at full speed until something comes in.'}</p>`;
   } else {
-    $('qlist').innerHTML = rows.map((it) => {
+    const bundles = new Map();
+    for (const it of items) {
+      const b = it.bundle || { id: 'b0', title: 'Decisions', started: '' };
+      if (!bundles.has(b.id)) bundles.set(b.id, { b, urgent: [], routine: [] });
+      (((it.section || (it.urgent || it.safety_legal ? 'urgent' : 'routine')) === 'urgent') ? bundles.get(b.id).urgent : bundles.get(b.id).routine).push(it);
+    }
+    const row = (it) => {
       const n = it.group_size > 1 ? itemGroup(it).length : 1;
-      const sel = ui.selected && (ui.selected === it.id || (n > 1 && itemGroup(it).some((x) => x.id === ui.selected)));
-      const late = it.minutes_left <= 3;
+      const sel = ui.selected === it.id || (n > 1 && itemGroup(it).some((x) => x.id === ui.selected));
       return `<li><button type="button" class="qitem ${sel ? 'selected' : ''} ${it.safety_legal ? 'safety' : ''}" data-id="${it.id}" aria-pressed="${sel}">
-        <span class="q-top">
-          <span class="q-icon">${icon(it.agent)}</span>
-          <span class="q-title">${esc(n > 1 ? `${it.title.replace(/ to gate .*/, '')}: ${n} items` : it.title)}</span>
-          <span class="q-time ${late ? 'late' : ''}">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span>
-        </span>
-        <span class="q-tags">
-          ${it.safety_legal ? '<span class="tagx bad">Safety or legal</span>' : ''}
-          ${it.urgent ? '<span class="tagx warn">Urgent</span>' : ''}
-          ${it.passengers_seeing_wrong_info_now ? `<span class="tagx focus">${num(it.passengers_seeing_wrong_info_now)} seeing wrong info</span>` : ''}
-          ${it.status === 'snoozed' ? `<span class="tagx quiet">Waiting until ${esc(it.snoozed_until)}</span>` : ''}
-          ${it.last_option ? '<span class="tagx bad">Last option</span>' : ''}
-          <span class="tagx quiet">${esc(it.role_title)}</span>
-        </span></button></li>`;
-    }).join('');
+        <span class="q-top"><span class="q-icon">${icon(it.agent)}</span>
+          <span class="q-title">${esc(n > 1 ? `${headline(it).replace(/ (to|for) (gate )?[A-Z]?\d+.*$/, '')} (${n})` : headline(it))}</span>
+          <span class="q-time ${it.minutes_left <= 3 ? 'late' : ''}">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span></span>
+        <span class="q-tags">${it.safety_legal ? '<span class="tagx bad">Safety or legal</span>' : ''}${it.passengers_seeing_wrong_info_now ? `<span class="tagx focus">${num(it.passengers_seeing_wrong_info_now)} Customers seeing old info</span>` : ''}
+          ${it.status === 'snoozed' ? `<span class="tagx quiet">Back at ${esc(it.snoozed_until)}</span>` : ''}<span class="tagx quiet">${esc(ROLE_TITLES[it.role] || it.role_title)}</span></span></button></li>`;
+    };
+    const dedupe = (list) => { const seen = new Set(); return list.filter((it) => { if (it.group_size > 1) { if (seen.has(it.group_key)) return false; seen.add(it.group_key); } return true; }); };
+    $('qlist').innerHTML = [...bundles.values()].map(({ b, urgent, routine }) => `<section class="bundle">
+      <h3 class="bundle-title">${esc(b.title)} <span class="muted">${urgent.length + routine.length} for you</span></h3>
+      ${urgent.length ? `<p class="sec-label bad">Urgent and safety</p><ol class="qgroup">${dedupe(urgent).map(row).join('')}</ol>` : ''}
+      ${routine.length ? `<p class="sec-label">Routine</p><ol class="qgroup">${dedupe(routine).map(row).join('')}</ol>` : ''}</section>`).join('');
     $('qlist').querySelectorAll('[data-id]').forEach((b) => b.addEventListener('click', () => select(Number(b.dataset.id))));
   }
-  if (!ui.items.some((x) => x.id === ui.selected) && !ui.decided.has(ui.selected)) select(rows[0] ? rows[0].id : null, true);
+  if (!items.some((x) => x.id === ui.selected) && !ui.decided.has(ui.selected)) select(items[0] ? items[0].id : null, true);
   else updateDetail();
 }
-
-// the decision on screen: still waiting (from the queue) or already answered (kept so you can watch it go out)
 function current() {
   const live = ui.items.find((x) => x.id === ui.selected);
   if (live) return { it: live, rec: null };
   const rec = ui.decided.get(ui.selected);
   return rec ? { it: rec.item, rec } : { it: null, rec: null };
 }
-
-// Re-draw the decision only when something about it changed, so reading and typing are never interrupted.
+function select(id, quiet = false) {
+  if (ui.selected !== id) { ui.mode = null; ui.traceFor = null; }
+  ui.selected = id;
+  if (!quiet) renderQueue(); else renderDetail();
+}
 function detailSig() {
   const { it, rec } = current();
-  return it ? [it.id, it.status, it.group_size, rec ? `${rec.answer}:${ui.items.length > 0}` : itemGroup(it).length, it.can_wait, it.last_option, it.consequence_if_rejected, ui.rejecting].join('|') : 'none';
+  return it ? [it.id, it.status, rec ? `${rec.answer}:${visible().length > 0}` : itemGroup(it).length, it.can_wait, it.last_option, ui.mode].join('|') : 'none';
 }
 function updateDetail() {
   const { it, rec } = current();
   if (detailSig() !== ui.detailSig) { renderDetail(); return; }
-  if (rec) return;
-  if (!it) return;
+  if (!it || rec) return;
   const left = $('detail').querySelector('.d-left');
   if (left) left.textContent = it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`;
   $('detail').querySelector('.d-clock')?.classList.toggle('late', it.minutes_left <= 3);
-  const wi = $('detail').querySelector('.d-tags .focus');
-  if (wi) wi.textContent = `${num(it.passengers_seeing_wrong_info_now)} passengers see wrong info until you approve this`;
 }
 
-function select(id, quiet = false) {
-  if (ui.selected !== id) { ui.rejecting = false; ui.traceFor = null; }
-  ui.selected = id;
-  if (!quiet) renderQueue(); else renderDetail();
-}
-
-// ---------------------------------------------------------------- one decision
 function renderDetail() {
   const box = $('detail');
   const { it, rec } = current();
   ui.detailSig = detailSig();
-  if (!it) {
-    box.innerHTML = `<div class="detail-empty">${icon('orchestrator', 'ico big')}<p>When an agent needs a person, its plan, the way it got there and your options appear here.</p></div>`;
-    return;
-  }
+  if (!it) { box.innerHTML = `<div class="detail-empty">${icon('orchestrator', 'ico big')}<p>When the co-pilot needs you, the situation, its suggestion and your options appear here.</p></div>`; return; }
   const group = rec ? rec.group : it.group_size > 1 ? itemGroup(it) : [it];
   const w = it.why || {};
-  const ANSWER = { approved: 'Approved', rejected: 'Rejected', hand_off: 'Handed off to the duty manager' };
-  const keepReason = box.querySelector('#reason')?.value || '';
+  const story = it.story?.length ? it.story : (w.trigger || []).map((x) => ({ t: x.t, text: x.text }));
+  const options = it.options?.length ? it.options : [{ id: 'opt1', label: headline(it), why: it.recommendation || w.plan, recommended: true }];
+  const chosen = ui.choice[it.id] || options.find((o) => o.recommended)?.id || options[0].id;
+  const ifNo = it.if_declined || it.consequence_if_rejected || 'The co-pilot comes back with a different plan.';
+  const changes = it.allowed_changes || null;
+  const ANSWER = { approved: 'Approved', rejected: 'Declined', hand_off: 'Sent to the duty manager' };
   box.innerHTML = `
     <header class="d-head">
-      <div>
-        <p class="d-role">${icon(it.agent)} ${esc(agentName(it.agent))} asks <b>${esc(it.role_title)}</b></p>
-        <h2>${esc(it.title)}</h2>
-      </div>
-      ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">at ${esc(rec.at)}</span></div>` : `
-      <div class="d-clock ${it.minutes_left <= 3 ? 'late' : ''}">
-        <span class="d-left">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span>
-        <span class="muted">${it.status === 'escalated' ? 'with the duty manager' : `to decide, by ${esc(it.deadline)}`}</span>
-      </div>`}
+      <div><p class="d-role">${icon(it.agent)} ${esc(agentName(it.agent))} needs <b>${esc(ROLE_TITLES[it.role] || it.role_title)}</b></p><h2>${esc(headline(it))}</h2></div>
+      ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">at ${esc(rec.at)}</span></div>`
+        : `<div class="d-clock ${it.minutes_left <= 3 ? 'late' : ''}"><span class="d-left">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span><span class="muted">${it.status === 'escalated' ? 'with the duty manager' : `to decide, by ${esc(it.deadline)}`}</span></div>`}
     </header>
-    <div class="d-tags">
-      ${it.safety_legal ? '<span class="tagx bad">Safety or legal</span>' : ''}${it.urgent ? '<span class="tagx warn">Urgent</span>' : ''}
-      ${it.passengers_affected ? `<span class="tagx quiet">${num(it.passengers_affected)} passengers affected</span>` : ''}
-      ${it.passengers_seeing_wrong_info_now ? `<span class="tagx focus">${num(it.passengers_seeing_wrong_info_now)} passengers see wrong info until you approve this</span>` : ''}
-    </div>
-    <section class="d-sec"><h3>The plan</h3><p class="d-plan">${esc(w.plan)}</p>
-      ${group.length > 1 ? `<ul class="group-list">${group.map((g) => `<li>${esc(g.title)}</li>`).join('')}</ul>` : ''}</section>
-    <section class="d-sec"><h3>${rec ? 'From what happened to every screen' : 'How it reached you, and where it goes next'}</h3>
-      <div class="trace" id="trace"><p class="muted">Loading the path…</p></div>
-      <p class="trace-note muted" id="trace-note">Select any box to see what that step did.</p></section>
-    <section class="d-sec"><h3>Why a person must decide</h3><p>${esc(w.why_human)}</p></section>
-    <div class="d-cols">
-      <section class="d-sec"><h3>What it used</h3><ul class="plain">
-        ${(w.trigger || []).map((x) => `<li><span class="t">${esc(x.t)}</span> ${esc(x.text)} <span class="muted">(${esc(String(x.source).replace(/_/g, ' '))})</span></li>`).join('')}
-        ${(w.inputs || []).map((x) => `<li><span class="t">${esc(x.t)}</span> ${esc(kindName(x.kind))} version ${esc(x.version)}</li>`).join('')}</ul></section>
-      <section class="d-sec"><h3>Options it ruled out</h3>${(w.options_considered || []).length
-        ? `<ul class="plain">${w.options_considered.map((o) => `<li><b>${esc(o.option)}</b>: ${esc(o.why_not)}</li>`).join('')}</ul>`
-        : '<p class="muted">The agent did not record other options for this one.</p>'}</section>
-    </div>
-    <section class="d-sec"><h3>Rule check</h3><p><span class="status ${w.rule_check?.ok ? 'ok' : 'bad'}">${w.rule_check?.ok ? 'Passed' : 'Blocked'}</span>
-      ${esc((w.rule_check?.rules || []).join(', '))}${w.rule_check?.text ? `${(w.rule_check?.rules || []).length ? ':' : ''} ${esc(w.rule_check.text)}` : ''}</p></section>
-    ${it.consequence_if_rejected ? `<section class="d-sec warnbox"><h3>${it.last_option ? 'No other option is left' : 'If you reject'}</h3><p>${esc(it.consequence_if_rejected)}</p></section>` : ''}
-    <footer class="actions">
-      ${rec ? `
-        <div class="act-row">
-          ${ui.items.length ? `<button class="btn primary" id="next" type="button">Go to the next decision (${ui.items.length} waiting)</button>` : '<span class="muted">Nothing else is waiting for you.</span>'}
-        </div>` : ui.rejecting ? `
-        <label class="reason"><span>Why are you rejecting it? The agent uses this to find a different plan.</span>
-          <textarea id="reason" rows="2" required>${esc(keepReason)}</textarea></label>
-        <div class="act-row">
-          <button class="btn danger" id="do-reject" type="button">Reject${group.length > 1 ? ` all ${group.length}` : ''}</button>
-          <button class="btn" id="cancel-reject" type="button">Back</button>
-        </div>` : `
-        <div class="act-row">
+    ${it.effect?.text || it.passengers_affected ? `<p class="d-effect">${esc(it.effect?.text || `${num(it.passengers_affected)} Customers affected`)}${it.effect?.connections ? `, ${num(it.effect.connections)} connections` : ''}${it.safety_legal ? ' <span class="tagx bad">Safety or legal</span>' : ''}</p>` : ''}
+    <section class="d-sec"><h3>What's going on</h3>
+      <ol class="story">${story.map((x) => `<li><span class="t">${esc(x.t)}</span><span>${esc(plain(x.text))}</span></li>`).join('') || '<li class="muted">No details recorded.</li>'}</ol></section>
+    <section class="d-sec"><h3>${options.length > 1 ? 'Your options' : 'The co-pilot suggests'}</h3>
+      <div class="options" role="radiogroup" aria-label="Options">${options.map((o) => `<label class="option ${o.id === chosen ? 'on' : ''}">
+        <input type="radio" name="opt-${it.id}" value="${esc(o.id)}" ${o.id === chosen ? 'checked' : ''} ${rec || options.length === 1 ? 'disabled' : ''}>
+        <span class="opt-body"><span class="opt-label">${esc(plain(o.label))}${o.recommended ? ' <span class="tagx ok">Suggested</span>' : ''}</span>
+        <span class="opt-why">${esc(plain(o.why || ''))}</span>${o.effect ? `<span class="opt-eff">${esc(o.effect)}</span>` : ''}</span></label>`).join('')}</div>
+      ${!rec && changes ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).map(([k, vals]) => `<label class="field"><span class="field-label">${k === 'delay_min' ? 'Delay (minutes)' : k === 'gate' ? 'Gate' : k.replace(/_/g, ' ')}</span>
+        <select data-change="${esc(k)}"><option value="">Keep as suggested</option>${vals.map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('')}</div></details>` : ''}</section>
+    <section class="d-sec warnbox"><h3>${it.last_option ? 'This is the last option' : 'If you say no'}</h3><p>${esc(plain(ifNo))}</p></section>
+    <section class="d-sec"><h3>${rec ? 'What happened next' : 'How this reached you, and where it goes'}</h3>
+      <div class="trace" id="trace"><p class="muted">Loading…</p></div><p class="trace-note muted" id="trace-note">Click any box for details.</p></section>
+    <footer class="actions">${rec
+      ? `<div class="act-row">${visible().length ? `<button class="btn primary" id="next" type="button">Next decision (${visible().length} waiting)</button>` : '<span class="muted">Nothing else is waiting for you.</span>'}</div>`
+      : ui.mode === 'decline' ? `<label class="reason"><span>Why not? The co-pilot uses this to look for something else.</span><textarea id="reason" rows="2"></textarea></label>
+        <div class="act-row"><button class="btn danger" id="do-decline" type="button">Decline${group.length > 1 ? ` all ${group.length}` : ''}</button><button class="btn" id="back" type="button">Back</button></div>`
+      : `<div class="act-row">
           <button class="btn primary" id="do-approve" type="button">${group.length > 1 ? `Approve all ${group.length}` : 'Approve'}</button>
-          <button class="btn" id="start-reject" type="button">Reject</button>
-          <span class="wait-group">
-            <button class="btn" data-wait="10" type="button" ${it.can_wait ? '' : 'disabled'}>Wait 10 min</button>
-            <button class="btn" data-wait="15" type="button" ${it.can_wait ? '' : 'disabled'}>Wait 15 min</button>
-          </span>
-          <button class="btn" id="do-handoff" type="button">Hand off to duty manager</button>
-        </div>
-        ${it.can_wait ? '' : `<p class="blocked">Can't wait: ${esc(it.blocked_by.map((b) => b.title).join(', '))} depends on this.</p>`}`}
+          <button class="btn" id="start-decline" type="button">Decline</button>
+          <button class="btn" data-wait="10" type="button" ${it.can_wait ? '' : 'disabled'}>Remind me in 10 min</button>
+          <button class="btn" id="do-handoff" type="button">Send to duty manager</button></div>
+        ${it.can_wait ? '' : `<p class="blocked">Can't wait: ${esc((it.blocked_by || []).map((b) => b.title).join(', '))} depends on this.</p>`}`}
     </footer>`;
   const ids = group.map((g) => g.id);
+  box.querySelectorAll(`input[name="opt-${it.id}"]`).forEach((r) => r.addEventListener('change', () => { ui.choice[it.id] = r.value; box.querySelectorAll('.option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked)); }));
   box.querySelector('#next')?.addEventListener('click', () => { ui.selected = null; renderQueue(); });
-  box.querySelector('#do-approve')?.addEventListener('click', () => decide(ids, { action: 'approve' }, 'Approved'));
-  box.querySelector('#start-reject')?.addEventListener('click', () => { ui.rejecting = true; renderDetail(); box.querySelector('#reason').focus(); });
-  box.querySelector('#cancel-reject')?.addEventListener('click', () => { ui.rejecting = false; renderDetail(); });
-  box.querySelector('#do-reject')?.addEventListener('click', () => {
-    const reason = box.querySelector('#reason').value.trim();
-    if (!reason) { toast('Write a short reason first: the agent uses it to look for a different plan.', true); return; }
-    decide(ids, { action: 'reject', reason }, 'Rejected. The agent will come back with a different plan if one exists.');
+  box.querySelector('#do-approve')?.addEventListener('click', () => {
+    const change = {};
+    box.querySelectorAll('[data-change]').forEach((s) => { if (s.value) change[s.dataset.change] = isNaN(Number(s.value)) ? s.value : Number(s.value); });
+    const opt = ui.choice[it.id];
+    const recommended = options.find((o) => o.recommended)?.id || options[0].id;
+    if (Object.keys(change).length) decide(ids, { action: 'approve_with_change', change, option_id: opt || recommended }, 'Approved with your change.');
+    else if (opt && opt !== recommended) decide(ids, { action: 'approve_option', option_id: opt }, 'Approved your chosen option.');
+    else decide(ids, { action: 'approve' }, 'Approved.');
   });
-  box.querySelectorAll('[data-wait]').forEach((b) => b.addEventListener('click', () => decide([it.id], { action: 'wait', minutes: Number(b.dataset.wait) }, `Waiting ${b.dataset.wait} min. It still escalates at its deadline.`)));
-  box.querySelector('#do-handoff')?.addEventListener('click', () => decide(ids, { action: 'hand_off', to_role: 'director_of_operations' }, 'Handed off to the duty manager.'));
+  box.querySelector('#start-decline')?.addEventListener('click', () => { ui.mode = 'decline'; renderDetail(); box.querySelector('#reason').focus(); });
+  box.querySelector('#back')?.addEventListener('click', () => { ui.mode = null; renderDetail(); });
+  box.querySelector('#do-decline')?.addEventListener('click', () => {
+    const reason = box.querySelector('#reason').value.trim();
+    if (!reason) { toast('Add a short reason so the co-pilot knows what to change.', true); return; }
+    decide(ids, { action: 'reject', reason }, 'Declined. The co-pilot will look for something else.');
+  });
+  box.querySelectorAll('[data-wait]').forEach((b) => b.addEventListener('click', () => decide([it.id], { action: 'wait', minutes: Number(b.dataset.wait) }, `It'll come back in ${b.dataset.wait} minutes, or sooner if its deadline gets close.`)));
+  box.querySelector('#do-handoff')?.addEventListener('click', () => decide(ids, { action: 'hand_off', to_role: 'director_of_operations' }, 'Sent to the duty manager.'));
   loadTrace(it);
 }
 
+async function decide(ids, body, done) {
+  if (ui.busy) return;
+  ui.busy = true;
+  try {
+    const group = ids.map((id) => ui.items.find((x) => x.id === id)).filter(Boolean);
+    const r = await ui.api.decide(ui.run, { question_ids: ids, ...body });
+    const errs = r.results.filter((x) => x.error);
+    if (errs.length) toast(errs.map((x) => x.error).join('; '), true); else toast(done);
+    if (body.action !== 'wait' && group.length && !errs.length) {
+      const rec = { item: group[0], group, answer: body.action.startsWith('approve') ? 'approved' : body.action === 'reject' ? 'rejected' : body.action, reason: body.reason || '', at: ui.state?.clock || '' };
+      for (const g of group) ui.decided.set(g.id, rec);
+      ui.selected = group[0].id;
+    }
+    ui.mode = null; ui.traceFor = null;
+    await refreshQueue();
+  } catch (e) { toast(e.status === 409 ? e.message : `Could not send your answer: ${e.message}`, true); }
+  finally { ui.busy = false; }
+}
+
+// ---------------------------------------------------------------- the decision's flowchart
 async function loadTrace(it) {
-  const el = $('trace');
   if (ui.traceFor && ui.traceFor.id === it.id && ui.traceFor.graph) { paintTrace(); return; }
   ui.traceFor = { id: it.id };
-  try {
-    const g = await ui.api.trace(ui.run, it.id);
-    if (ui.selected !== it.id) return;
-    ui.traceFor.graph = g;
-    paintTrace();
-  } catch (e) { el.innerHTML = `<p class="muted">Could not load the path: ${esc(e.message)}</p>`; }
+  try { const g = await ui.api.trace(ui.run, it.id); if (ui.selected !== it.id) return; ui.traceFor.graph = g; paintTrace(); }
+  catch (e) { const el = $('trace'); if (el) el.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`; }
 }
 async function refreshTrace() {
   const { it, rec } = current();
@@ -320,10 +319,8 @@ async function refreshTrace() {
   if (!g || ui.selected !== it.id) return;
   const key = JSON.stringify(g.nodes.map((n) => [n.id, n.detail && n.detail.status]));
   if (key === ui.traceFor.key) return;
-  ui.traceFor.graph = g; ui.traceFor.key = key;
-  paintTrace();
+  ui.traceFor.graph = g; ui.traceFor.key = key; paintTrace();
 }
-
 const AGENT_KEYS = ['situation', 'network_recovery', 'passenger_care', 'station_staff', 'communication'];
 const INPUT_AGENT = { situation: 'situation', recovery_plan: 'network_recovery', care_plan: 'passenger_care', station_plan: 'station_staff', communication: 'communication',
   network_recovery: 'network_recovery', passenger_care: 'passenger_care', station_staff: 'station_staff' };
@@ -346,10 +343,10 @@ function flowModel(it, rec, g) {
     const used = (w.inputs || []).filter((x) => INPUT_AGENT[x.kind] === key);
     const involved = mine.length > 0 || used.length > 0 || it.agent === key;
     const lastN = mine[mine.length - 1], lastU = used[used.length - 1];
-    const short = lastN ? (lastN.label.match(/v\d+/) || [''])[0] : lastU ? `v${lastU.version}` : it.agent === key ? 'asked' : '';
+    const short = lastN?.t || lastU?.t || (it.agent === key ? 'asked' : '');
     return { key, name: agentName(key), involved, short: short.trim(),
       label: agentName(key), t: lastN?.t || lastU?.t || '',
-      text: involved ? (lastN?.detail?.text || (it.agent === key ? w.plan : `${kindName(lastU?.kind)} version ${lastU?.version}`)) : 'Had nothing to add to this decision.' };
+      text: involved ? (lastN?.detail?.says || lastN?.detail?.text || (it.agent === key ? (it.recommendation || w.plan) : `Shared its latest ${kindName(lastU?.kind)} at ${lastU?.t}`)) : 'Had nothing to add to this decision.' };
   });
   const rcN = nodes.find((n) => n.kind === 'rule_check');
   const rule = { ok: w.rule_check ? w.rule_check.ok : !/block/i.test(rcN?.label || ''), rules: (w.rule_check?.rules || []).join(', '),
@@ -385,31 +382,89 @@ function paintTrace() {
   const el = $('trace');
   const { it, rec } = current();
   if (!el || !it || !ui.traceFor?.graph) return;
-  drawDecisionFlow(el, flowModel(it, rec, ui.traceFor.graph), { onNode: (n) => {
-    $('trace-note').innerHTML = `<b>${esc(n.label || n.name || '')}</b>${n.t ? ` at ${esc(n.t)}` : ''}${n.text ? `: ${esc(n.text)}` : ''}`;
+  const m = flowModel(it, rec, ui.traceFor.graph);
+  for (const a of m.agents) a.short = a.involved ? a.short : '';
+  m.feeds = m.feeds.map((f) => ({ ...f, label: plain(f.label) }));
+  drawDecisionFlow(el, m, { onNode: (n) => {
+    $('trace-note').innerHTML = `<b>${esc(plain(n.label || n.name || ''))}</b>${n.t ? ` at ${esc(n.t)}` : ''}${n.text ? `: ${esc(plain(n.text))}` : ''}`;
   } });
 }
 
-async function decide(ids, body, done) {
-  if (ui.busy) return;
-  ui.busy = true;
-  try {
-    const group = ids.map((id) => ui.items.find((x) => x.id === id)).filter(Boolean);
-    const r = await ui.api.decide(ui.run, { question_ids: ids, ...body });
-    const errs = r.results.filter((x) => x.error);
-    if (errs.length) toast(errs.map((x) => x.error).join('; '), true); else toast(done);
-    if (body.action !== 'wait' && group.length && !errs.length) {     // keep it on screen to watch it go out
-      const rec = { item: group[0], group, answer: body.action === 'approve' ? 'approved' : body.action === 'reject' ? 'rejected' : body.action, reason: body.reason || '', at: ui.state?.clock || '' };
-      for (const g of group) ui.decided.set(g.id, rec);
-      ui.selected = group[0].id;
-    }
-    ui.rejecting = false; ui.traceFor = null;
-    await refreshQueue();
-  } catch (e) {
-    toast(e.status === 409 ? e.message : `Could not send your answer: ${e.message}`, true);
-  } finally { ui.busy = false; }
+// ---------------------------------------------------------------- Customers: lookup and rebooking (counter and gate)
+$('cust-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const list = await ui.api.customers(ui.run, $('cust-q').value.trim()).catch((err) => { toast(err.message, true); return []; });
+  $('cust-list').innerHTML = list.length ? list.map((c) => `<li><button type="button" class="cust-row" data-c="${esc(c.id)}"><b>${esc(c.name)}</b>
+    <span class="muted">${esc(c.booking_ref)}, ${esc(c.flight_id)}</span><span class="status ${/cancel|rebook/i.test(c.status) ? 'bad' : /delay|held/i.test(c.status) ? 'warn' : 'ok'}">${esc(plain(c.status))}</span></button></li>`).join('')
+    : '<li class="muted">No Customer found.</li>';
+  $('cust-list').querySelectorAll('[data-c]').forEach((b) => b.addEventListener('click', () => showCustomer(b.dataset.c)));
+});
+async function showCustomer(id) {
+  ui.custSel = id;
+  const c = await ui.api.customer(ui.run, id).catch((err) => { toast(err.message, true); return null; });
+  if (!c) return;
+  const card = $('cust-card');
+  card.innerHTML = `
+    <div class="cust-head"><h2>${esc(c.name)}</h2>${(c.needs || []).map((n) => `<span class="tagx warn">${esc(NEEDS[n] || plain(n))}</span>`).join(' ')}</div>
+    <p class="cust-truth"><b>Right now:</b> ${esc(plain(c.true_status))}</p>
+    <ol class="trip">${c.trip.map((f) => `<li><b>${esc(f.flight_id)}</b> ${esc(f.from)} ${esc(f.dep)} → ${esc(f.to)} ${esc(f.arr)} <span class="muted">${esc(plain(f.status))}</span></li>`).join('')}</ol>
+    ${c.screens?.length ? `<h3>What their screens say</h3><div class="screens small">${c.screens.map((sc) => `<div class="screen ${sc.wrong ? 'wrong' : ''}"><span class="screen-ch">${esc(CHANNELS[sc.channel] || sc.channel)}</span><span class="screen-shows">${esc(plain(sc.shows))}</span></div>`).join('')}</div>` : ''}
+    ${c.rebooking?.length ? `<h3>Rebooking options</h3><ul class="rebook">${c.rebooking.map((o) => `<li class="${o.recommended ? 'rec' : ''}">
+        <div><b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)} ${o.recommended ? '<span class="tagx ok">Suggested</span>' : ''}
+        <br><span class="muted">${esc(plain(o.why))}, ${o.seats_left} seats left</span></div>
+        <button class="btn ${o.recommended ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Rebook</button></li>`).join('')}</ul>` : ''}
+    ${c.hotel ? `<p class="muted">Hotel: ${esc(c.hotel.name)}${c.hotel.auto ? ' (booked automatically)' : ''}</p>` : ''}
+    <div class="act-row">${c.refund_due ? '<button class="btn" id="refund" type="button">Refund instead</button>' : ''}</div>`;
+  card.querySelectorAll('[data-rebook]').forEach((b) => b.addEventListener('click', async () => {
+    try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); toast('Rebooked. Every screen and every agent now shows the new trip.'); showCustomer(id); }
+    catch (err) { toast(`Could not rebook: ${err.message}`, true); }
+  }));
+  card.querySelector('#refund')?.addEventListener('click', async () => { await ui.api.refund(ui.run, id); toast('Refund issued.'); showCustomer(id); });
 }
 
+// ---------------------------------------------------------------- clocks
+async function refreshClocks() {
+  const c = await ui.api.clocks(ui.run).catch(() => null);
+  if (!c) { $('clocks').innerHTML = '<div class="card"><p class="muted">Clocks are not available yet.</p></div>'; return; }
+  const card = (title, rows, empty) => `<section class="card clock-card"><h2>${title}</h2>${rows.length ? `<ul class="clock-list">${rows.join('')}</ul>` : `<p class="muted">${empty}</p>`}</section>`;
+  const bar = (used, limit) => `<span class="cbar"><i style="width:${Math.min(100, Math.round(100 * used / limit))}%" class="${used / limit > 0.8 ? 'bad' : used / limit > 0.6 ? 'warn' : ''}"></i></span>`;
+  $('clocks').innerHTML = [
+    card('Customers waiting on the tarmac', (c.tarmac || []).map((x) => `<li><b>${esc(x.flight_id)}</b> ${x.minutes} of ${x.limit} min ${bar(x.minutes, x.limit)}</li>`), 'No aircraft holding Customers on the tarmac.'),
+    card('Crew legal time left', (c.crew || []).map((x) => `<li class="${x.minutes_left <= 30 ? 'bad' : x.minutes_left <= 90 ? 'warn' : ''}"><b>${esc(x.crew_id)}</b> on ${esc(x.flight_id)}: legal until ${esc(x.legal_until)} <span class="muted">(${x.minutes_left} min)</span></li>`), 'No crew close to their limit.'),
+    card('Customers needing assistance', (c.special_assistance || []).map((x) => `<li class="${x.waiting_min > 45 ? 'warn' : ''}"><b>${esc(x.customer_id)}</b> ${esc(NEEDS[x.need] || plain(x.need))} on ${esc(x.flight_id)}, waiting ${x.waiting_min} min</li>`), 'Nobody waiting.'),
+    card('Refunds', (c.refunds || []).map((x) => `<li><b>${esc(x.customer_id)}</b> ${x.status === 'auto_issued' ? 'issued automatically' : `due by ${esc(x.due_by)}`}</li>`), 'No refunds due yet.'),
+  ].join('');
+}
+
+// ---------------------------------------------------------------- day summary
+async function refreshSummary() {
+  const since = ui.handoverSince || '11:00';
+  const h = await ui.api.handover(ui.run, since).catch(() => null);
+  $('handover').innerHTML = h ? `<div class="card-head"><h2>Handover since ${esc(h.since)}</h2><button class="btn" id="handover-now" type="button">Start a new shift now</button></div>
+    <p class="handover-text">${esc(plain(h.text))}</p>
+    ${h.watch?.length ? `<h3>Keep an eye on</h3><ul class="plain">${h.watch.map((x) => `<li>${esc(plain(x))}</li>`).join('')}</ul>` : ''}
+    ${h.open?.length ? `<h3>Still open</h3><ul class="plain">${h.open.map((x) => `<li>${esc(plain(x.title))}</li>`).join('')}</ul>` : ''}` : '<p class="muted">No handover yet.</p>';
+  $('handover-now')?.addEventListener('click', () => { ui.handoverSince = ui.state?.clock; refreshSummary(); });
+  const r = await ui.api.results(ui.run).catch(() => null);
+  if (r) {
+    const cols = [['Your day', r.you, 'you'], ["Today's process", r.today, 'today'], ['Co-pilot, approving everything', r.orchestrated, 'auto']].filter((c) => c[1]);
+    const row = (label, key, fmt = num) => `<tr><th>${label}</th>${cols.map(([, v, cls]) => `<td class="${cls}">${v[key] != null ? fmt(v[key]) : '-'}</td>`).join('')}</tr>`;
+    const d = r.decisions || {};
+    $('results').innerHTML = `<div class="card results-hero"><h2>${ui.state?.status === 'finished' ? 'How the day went' : 'How the day is going'}</h2>
+      <div class="board-wrap"><table class="board results-table"><thead><tr><th></th>${cols.map(([n]) => `<th>${esc(n)}</th>`).join('')}</tr></thead>
+      <tbody>${row('Customer-minutes on a wrong screen', 'wrong_minutes')}${row('Flights cancelled', 'cancelled')}${row('Customers stranded overnight', 'stranded_overnight')}${row('Where Maya is', 'focus_final', (x) => esc(plain(x)))}</tbody></table></div>
+      <div class="stats five">${[['Approved', d.approved], ['Declined', d.rejected], ['Reminders', d.waited], ['Sent to duty manager', d.handed_off], ['Escalated', d.escalated], ['Median time to decide', `${d.median_answer_min ?? 0} min`]]
+        .map(([l, v]) => `<div class="stat"><span class="stat-label">${l}</span><span class="stat-value">${v ?? 0}</span></div>`).join('')}</div></div>`;
+  }
+  const hist = await ui.api.history(ui.run).catch(() => ({ decisions: [] }));
+  const WORD = { approved: 'Approved', rejected: 'Declined', waited: 'Reminder', 'handed off': 'Sent to duty manager', auto: 'Done automatically' };
+  $('history').innerHTML = `<thead><tr><th>Time</th><th>Decision</th><th>Who</th><th>Answer</th><th>Took</th></tr></thead><tbody>` +
+    (hist.decisions.length ? hist.decisions.map((d) => `<tr ${ui.decided.has(d.id) ? `data-open="${d.id}" tabindex="0" class="clickable"` : ''}><td>${esc(d.answered)}</td><td>${esc(plain(d.title))}</td>
+      <td>${esc(ALL_ROLES[d.role] || plain(d.role))}${d.by === 'director_of_operations' ? ' (duty manager)' : ''}</td>
+      <td><span class="status ${d.answer === 'approved' || d.answer === 'auto' ? 'ok' : d.answer === 'rejected' ? 'bad' : 'warn'}">${esc(WORD[d.answer] || d.answer)}</span>${d.reason ? `<br><span class="muted">${esc(plain(d.reason))}</span>` : ''}</td>
+      <td>${esc(d.waited_min)} min</td></tr>`).join('') : '<tr><td colspan="5" class="muted">No decisions yet.</td></tr>') + '</tbody>';
+  $('history').querySelectorAll('[data-open]').forEach((r) => r.addEventListener('click', () => { ui.selected = Number(r.dataset.open); ui.traceFor = null; setTab('decisions'); renderDetail(); }));
+}
 // ---------------------------------------------------------------- agent flow (whole system)
 const NODES = {
   feeds: { x: 10, y: 175, w: 170, label: 'Outside feeds', sub: 'FAA, weather, flights' },
@@ -444,7 +499,7 @@ function drawFlow(flow) {
     let hot = false, badge = 0;
     if (a) {
       const v = a.versions && a.versions[a.versions.length - 1];
-      sub = `${a.last_run ? 'checked ' + a.last_run : 'not run yet'}${v ? `, v${v.v}` : ''}`;
+      sub = a.last_run ? `checked ${a.last_run}` : 'not run yet';
       hot = now - toMin(a.last_run) <= 2; badge = a.waiting_on_human;
     }
     if (k === 'orchestrator') { sub = `${flow.orchestrator?.open_incidents || 0} incident open, ${flow.orchestrator?.queue || 0} queued`; hot = (flow.orchestrator?.queue || 0) > 0; }
@@ -459,61 +514,21 @@ function drawFlow(flow) {
     </g>`;
   }
   $('sysflow').innerHTML = svg;
-  const names = { situation: 'Situation', network_recovery: 'Network Recovery', passenger_care: 'Passenger Care', station_staff: 'Station & Staff', communication: 'Communication', feed: 'Feed' };
-  const nice = (ref) => { const [k, v] = String(ref).split(':'); return `${names[k] || k} ${/^\d+$/.test(v) ? 'v' + v : v || ''}`.trim(); };
+  const who = (ref) => { const k = String(ref).split(':')[0]; return k === 'feed' ? 'the outside feeds' : agentName(k); };
   const edges = [...(flow.edges || [])].reverse().slice(0, 12);
-  $('ticker').innerHTML = edges.length ? edges.map((e) => `<li><span class="t">${esc(e.t)}</span> ${esc(nice(e.to))} was built on ${esc(nice(e.from))}</li>`).join('')
+  $('ticker').innerHTML = edges.length ? edges.map((e) => `<li><span class="t">${esc(e.t)}</span> ${esc(who(e.to))} updated its picture, using what ${esc(who(e.from))} shared</li>`).join('')
     : '<li class="muted">Nothing handed over yet.</li>';
 }
 
-// ---------------------------------------------------------------- history and results
-async function refreshHistory() {
-  const h = await ui.api.history(ui.run).catch(() => ({ decisions: [] }));
-  $('history').innerHTML = `<thead><tr><th>Asked</th><th>Answered</th><th>Decision</th><th>Role</th><th>Your answer</th><th>Took</th></tr></thead><tbody>` +
-    (h.decisions.length ? h.decisions.map((d) => `<tr ${ui.decided.has(d.id) ? `data-open="${d.id}" tabindex="0" class="clickable"` : ''}><td>${esc(d.asked)}</td><td>${esc(d.answered)}</td><td>${esc(d.title)}</td><td>${esc(ROLE_TITLES[d.role] || d.role)}</td>
-      <td><span class="status ${d.answer === 'approved' ? 'ok' : d.answer === 'rejected' ? 'bad' : 'warn'}">${esc(ACTION_WORD[d.answer] || d.answer)}</span>${d.by === 'director_of_operations' ? ' <span class="muted">by duty manager</span>' : ''}${d.reason ? `<br><span class="muted">${esc(d.reason)}</span>` : ''}</td>
-      <td>${esc(d.waited_min)} min</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No decisions yet.</td></tr>') + '</tbody>';
-  $('history').querySelectorAll('[data-open]').forEach((r) => r.addEventListener('click', () => {
-    ui.selected = Number(r.dataset.open); ui.traceFor = null;
-    document.querySelector('[data-tab="decisions"]').click(); renderDetail();
-  }));
-}
-
-async function refreshResults() {
-  const r = await ui.api.results(ui.run).catch((e) => ({ error: e.message }));
-  if (r.error) { $('results').innerHTML = `<div class="card"><p class="muted">Results are not ready: ${esc(r.error)}</p></div>`; return; }
-  const cols = [['You and the co-pilot', r.you, 'you'], ["Today's process", r.today, 'today'], ['Co-pilot, approved automatically', r.orchestrated, 'auto']].filter((c) => c[1]);
-  const row = (label, key, fmt = num) => `<tr><th>${label}</th>${cols.map(([, v, cls]) => `<td class="${cls}">${v[key] != null ? fmt(v[key]) : '-'}</td>`).join('')}</tr>`;
-  const d = r.decisions || {};
-  $('results').innerHTML = `
-    <div class="card results-hero">
-      <h2>${ui.state && ui.state.status === 'finished' ? 'How your day went' : 'How your day is going so far'}</h2>
-      <p class="muted">The headline is the project's question: did every passenger see the true story on every screen?</p>
-      <div class="board-wrap"><table class="board results-table">
-        <thead><tr><th></th>${cols.map(([n]) => `<th>${esc(n)}</th>`).join('')}</tr></thead>
-        <tbody>${row('Passenger-minutes on a wrong screen', 'wrong_minutes')}${row('Flights cancelled', 'cancelled')}${row('Passengers stranded overnight', 'stranded_overnight')}
-        ${row(ui.state && ui.state.status === 'finished' ? `Where ${esc(ui.state.focus?.name || 'the passenger')} ended up` : `Where ${esc(ui.state?.focus?.name || 'the passenger')} is now`, 'focus_final', esc)}</tbody></table></div>
-    </div>
-    <div class="card"><h2>Your answers</h2><div class="stats five">
-      ${[['Approved', d.approved], ['Rejected', d.rejected], ['Waited', d.waited], ['Handed off', d.handed_off], ['Escalated (no answer in time)', d.escalated], ['Median time to answer', `${d.median_answer_min ?? 0} min`]]
-        .map(([l, v]) => `<div class="stat"><span class="stat-label">${l}</span><span class="stat-value">${v ?? 0}</span></div>`).join('')}</div></div>`;
-}
 
 // ---------------------------------------------------------------- polling
-const agentName = (k) => ({ situation: 'Situation', network_recovery: 'Network Recovery', passenger_care: 'Passenger Care', station_staff: 'Station & Staff', communication: 'Communication', orchestrator: 'Orchestrator' }[k] || k);
-const kindName = (k) => ({ situation: "Situation's picture", recovery_plan: 'Network Recovery plan', care_plan: 'Passenger Care plan', station_plan: 'Station & Staff plan', communication: 'Communication draft',
-  network_recovery: 'Network Recovery plan', passenger_care: 'Passenger Care plan', station_staff: 'Station & Staff plan' }[k] || k);
-
 async function refreshQueue() {
-  const q = await ui.api.queue(ui.run, [...ui.view]).catch(() => null);
+  const q = await ui.api.queue(ui.run, []).catch(() => null);
   if (!q) return;
   const before = new Set(ui.items.map((x) => x.id));
   ui.items = q.items;
-  const fresh = q.items.filter((x) => !before.has(x.id));
-  if (fresh.length && before.size + fresh.length > 0 && ui.started) {
-    const urgent = fresh.find((x) => x.urgent);
-    toast(urgent ? `Urgent: ${urgent.title}` : `New: ${fresh[0].title}`, !!urgent);
-  }
+  const fresh = visible().filter((x) => !before.has(x.id));
+  if (fresh.length && ui.started) { const urgent = fresh.find((x) => x.urgent); toast(urgent ? `Urgent: ${headline(urgent)}` : `New: ${headline(fresh[0])}`, !!urgent); }
   ui.started = true;
   renderQueue();
 }
@@ -521,17 +536,18 @@ async function refreshFlow() {
   const f = await ui.api.flow(ui.run, Math.max(0, (ui.state?.minute || 0) - 90)).catch(() => null);
   if (f) drawFlow(f);
 }
-
 let ticks = 0;
 async function loop() {
   try {
     ui.state = await ui.api.state(ui.run);
     renderState();
     await refreshQueue();
+    if (ui.tab === 'ops') await ui.ops.update(ui.state.minute);
     if (ui.tab === 'decisions' && ticks % 2 === 0) await refreshTrace();
     if (ui.tab === 'flow' && ticks % 2 === 0) await refreshFlow();
-    if (ui.tab === 'history' && ticks % 3 === 0) await refreshHistory();
-    if (ui.tab === 'results' && ticks % 5 === 0) await refreshResults();
+    if (ui.tab === 'clocks' && ticks % 3 === 0) await refreshClocks();
+    if (ui.tab === 'summary' && ticks % 5 === 0) await refreshSummary();
+    if (ui.tab === 'customers' && ui.custSel && ticks % 5 === 0) await showCustomer(ui.custSel);
   } catch (e) { $('status').textContent = `Lost the connection: ${e.message}`; }
   ticks++;
   setTimeout(loop, 1000);
@@ -541,7 +557,7 @@ async function loop() {
 (async () => {
   const startBtn = document.querySelector('#start-form button[type="submit"]');
   startBtn.disabled = true; startBtn.textContent = 'Connecting to the database…';
-  for (let attempt = 1; ; attempt++) {                // Neon can take a few seconds to wake up
+  for (let attempt = 1; ; attempt++) {
     try { ui.api = await pickApi(); break; }
     catch (e) {
       startBtn.textContent = `Waiting for the database (try ${attempt})…`;
@@ -551,13 +567,15 @@ async function loop() {
   }
   startBtn.disabled = false; startBtn.textContent = 'Start the day';
   $('practice').hidden = !ui.api.practice;
-  const run = new URLSearchParams(location.search).get('run');
-  if (run && !ui.api.practice) open(run, []);
+  const params = new URLSearchParams(location.search);
+  if (params.get('run') && !ui.api.practice) open(params.get('run'));
   else showPast();
-  const auto = new URLSearchParams(location.search).get('autostart');      // for demos and screenshots
+  const auto = params.get('autostart');                 // demos and screenshots: practice only
   if (auto && ui.api.practice) {
     const r = await ui.api.start({ seed: 7, scenario: 'a31_storm', roles: Object.keys(ROLE_TITLES) });
     if (auto !== '1') { ui.api.s.minute = Number(auto); for (let m = 661; m <= Number(auto); m++) ui.api._minute(m); }
-    open(r.run_id, Object.keys(ROLE_TITLES));
+    open(r.run_id);
+    if (params.get('tab')) setTab(params.get('tab'));
+    if (params.get('role')) { $('role').value = params.get('role'); $('role').dispatchEvent(new Event('change')); }
   }
 })();

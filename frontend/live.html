@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live Control Room</title>
+<title>MCI Ops Co-Pilot</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
@@ -17,37 +17,37 @@
   <div class="brand">
     <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 18.5l16-6-4 9-3.5-2.5-2.5 3-1-4.5z" fill="currentColor"/></svg>
     <div>
-      <div class="brand-name">Ground-Stop Co-Pilot</div>
-      <div class="brand-sub">Kansas City (MCI) station view</div>
+      <div class="brand-name">MCI Ops Co-Pilot</div>
+      <div class="brand-sub">Kansas City station</div>
     </div>
   </div>
-  <nav class="pages" aria-label="Pages">
-    <a href="/">Network map</a>
-    <a href="/live.html" aria-current="page">Live control room</a>
-  </nav>
-  <button id="theme" class="btn ghost" type="button">Dark mode</button>
+  <div class="top-live" id="top-live" hidden>
+    <div class="clock-block"><span id="clock" class="clock-big">11:00</span><span id="status" class="status-line">Running</span></div>
+    <div class="world-pills" id="world"></div>
+  </div>
+  <div class="top-right">
+    <label class="field" id="role-field" hidden><span class="field-label">You are</span><select id="role"></select></label>
+    <button id="report-btn" class="btn" type="button" hidden>Report from the floor</button>
+    <button id="theme" class="btn ghost" type="button">Dark mode</button>
+  </div>
 </header>
 
 <div id="practice" class="practice" hidden>
-  Practice data: the live backend is not running yet, so this session is a scripted copy of the seed 7 storm played in your browser. Your answers still change what happens.
+  Practice data: the live backend isn't reachable, so this is a scripted copy of the seed 7 storm in your browser. Your answers still change what happens.
 </div>
 
 <!-- start a session -->
 <main id="start" class="start">
   <section class="card start-card">
     <h1>Run a live storm day</h1>
-    <p class="lead">The weather, flights and passengers are simulated. The agents run live on them, and you answer every decision they cannot make alone. The duty manager is the only other person in the loop: hand things off to them when you can't decide.</p>
+    <p class="lead">Weather, flights and Customers are simulated. The co-pilot's agents run live, and the decisions they can't make alone come to you. Small actions the law already requires, like refunds, are done automatically and logged.</p>
     <form id="start-form">
       <fieldset>
         <legend>Which day</legend>
         <label class="choice"><input type="radio" name="day" value="seed7" checked><span><b>Seed 7 storm</b><br><span class="muted">Thunderstorm ground stop 11:30 to 14:00. Follow Maya Torres, flying Denver to Kansas City to Baltimore.</span></span></label>
-        <label class="choice"><input type="radio" name="day" value="random"><span><b>A random storm day</b><br><span class="muted">New weather and timings. We follow the passenger whose trip changes most.</span></span></label>
+        <label class="choice"><input type="radio" name="day" value="random"><span><b>A random storm day</b><br><span class="muted">New weather and timings.</span></span></label>
       </fieldset>
-      <fieldset>
-        <legend>Roles you want in view <span class="muted">(you still answer for every role; this only filters your list)</span></legend>
-        <div class="role-picks" id="role-picks"></div>
-      </fieldset>
-      <p class="muted small">Starts at 11:00, half an hour before the storm. The morning is already decided. The clock keeps running: deadlines are real.</p>
+      <p class="muted small">Starts at 11:00, half an hour before the storm. The clock keeps running, so deadlines are real. Pick your role once the day starts.</p>
       <button class="btn primary big" type="submit">Start the day</button>
     </form>
   </section>
@@ -59,86 +59,162 @@
 
 <!-- the live session -->
 <main id="live" class="live" hidden>
-  <section class="session-bar" aria-label="Session">
-    <div class="clock-block">
-      <span id="clock" class="clock-big">11:00</span>
-      <span id="status" class="status-line">Running</span>
+  <button id="truth-strip" class="truth-strip" type="button"></button>
+
+  <div class="live-head">
+    <nav class="tabs big-tabs" role="tablist" aria-label="Views">
+      <button class="tab active" role="tab" data-tab="ops" aria-selected="true" type="button">Operations</button>
+      <button class="tab" role="tab" data-tab="decisions" aria-selected="false" type="button">Decisions <span class="count" id="count">0</span></button>
+      <button class="tab" role="tab" data-tab="customers" aria-selected="false" type="button">Customers</button>
+      <button class="tab" role="tab" data-tab="clocks" aria-selected="false" type="button">Clocks</button>
+      <button class="tab" role="tab" data-tab="summary" aria-selected="false" type="button">Day summary</button>
+      <button class="tab" role="tab" data-tab="flow" aria-selected="false" type="button">How it works</button>
+    </nav>
+    <div class="speed-ctl">
+      <button id="pause" class="btn" type="button">Pause</button>
+      <label class="field"><span class="field-label">Speed</span>
+        <select id="speed-idle"><option value="1">1 min/s</option><option value="5" selected>5 min/s</option><option value="15">15 min/s</option></select></label>
+      <label class="field"><span class="field-label">While decisions wait</span>
+        <select id="speed-pending"><option value="0.1">1 min / 10 s</option><option value="0.1667" selected>1 min / 6 s</option><option value="0.3333">1 min / 3 s</option><option value="1">1 min/s</option></select></label>
     </div>
-    <button id="pause" class="btn" type="button">Pause</button>
-    <label class="field"><span class="field-label">Speed, nothing waiting</span>
-      <select id="speed-idle"><option value="1">1 min/s</option><option value="5" selected>5 min/s</option><option value="15">15 min/s</option></select></label>
-    <label class="field"><span class="field-label">Speed, decisions waiting</span>
-      <select id="speed-pending"><option value="0.1">1 min / 10 s</option><option value="0.1667" selected>1 min / 6 s</option><option value="0.3333">1 min / 3 s</option><option value="1">1 min/s</option></select></label>
-    <div class="world-pills" id="world"></div>
+  </div>
+
+  <!-- Operations -->
+  <section class="tab-panel" id="tab-ops">
+    <div class="ops">
+      <section class="card map-card" aria-label="Network map">
+        <div class="map-top"><div class="map-status" id="status-chips"></div></div>
+        <canvas id="map" aria-label="Map of flights to and from Kansas City, with the weather" role="img"></canvas>
+        <div id="tooltip" class="tooltip" hidden></div>
+        <div id="tracker" class="tracker" aria-live="polite" hidden></div>
+        <div class="map-legend">
+          <span><i class="lg lg-out"></i>Leaving MCI</span><span><i class="lg lg-in"></i>Coming to MCI</span><span><i class="lg lg-warn"></i>Holding or diverted</span>
+          <span class="hint">Click a plane or a flight to follow it</span>
+        </div>
+      </section>
+      <div class="ops-side">
+        <section class="card wx-card" id="wx-card" aria-label="Weather at MCI">
+          <div class="card-head"><h2>Weather at MCI</h2><span class="tag" title="Simulated from the day's events">Simulated</span></div>
+          <div class="wx-body">
+            <svg class="wx-dial" viewBox="0 0 100 100" role="img" aria-label="Wind direction">
+              <circle cx="50" cy="50" r="44" class="dial-ring"/><g class="dial-ticks"><path d="M50 8v8M50 84v8M8 50h8M84 50h8"/></g>
+              <text x="50" y="27" class="dial-n">N</text><text x="76" y="54" class="dial-l">E</text><text x="50" y="81" class="dial-l">S</text><text x="24" y="54" class="dial-l">W</text>
+              <g id="wx-arrow"><path class="dial-arrow" d="M50 18l9 22h-6v32h-6V40h-6z"/></g><circle cx="50" cy="50" r="4" class="dial-hub"/>
+            </svg>
+            <div class="wx-text"><p class="wx-cond" id="wx-cond"></p><p class="wx-trend" id="wx-trend"></p><dl class="wx-facts" id="wx-facts"></dl></div>
+          </div>
+        </section>
+        <section class="card" aria-label="Station">
+          <h2>Station</h2>
+          <div id="station" class="station"><p class="muted">Loading…</p></div>
+        </section>
+      </div>
+      <section class="card board-card wide" aria-label="Flight board">
+        <div class="board-head">
+          <h2>Flights</h2>
+          <div class="tabs" role="tablist">
+            <button class="tab active" role="tab" aria-selected="true" data-board="dep" type="button">Departures</button>
+            <button class="tab" role="tab" aria-selected="false" data-board="arr" type="button">Arrivals</button>
+          </div>
+        </div>
+        <p class="muted small">Click a flight to open it; click again to close.</p>
+        <div class="board-wrap"><table class="board" id="board"></table></div>
+      </section>
+    </div>
   </section>
 
-  <section class="truth card" aria-label="Same story everywhere">
-    <div class="truth-head">
-      <h2>Same story everywhere</h2>
-    </div>
-    <div class="truth-body">
-      <div class="truth-numbers">
-        <div class="tn">
-          <span class="tn-label">Passengers seeing wrong info now</span>
-          <span class="tn-value" id="wrong-now">0</span>
-          <span class="tn-sub" id="wrong-now-sub"></span>
-        </div>
-        <div class="tn">
-          <span class="tn-label">Passenger-minutes on a wrong screen, so far</span>
-          <span class="tn-value" id="wrong-total">0</span>
-          <span class="tn-sub" id="wrong-total-sub"></span>
-        </div>
-        <svg class="spark" id="spark" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Passengers seeing wrong info, minute by minute"></svg>
-        <div class="spark-key"><span><i class="k-you"></i>Passengers seeing wrong info, minute by minute</span></div>
-      </div>
-      <div class="focus">
-        <div class="focus-head"><b id="focus-name">Maya Torres</b> <span class="muted" id="focus-truth"></span></div>
-        <div class="screens" id="screens"></div>
-      </div>
-    </div>
-  </section>
-
-  <nav class="tabs big-tabs" role="tablist" aria-label="Views">
-    <button class="tab active" role="tab" data-tab="decisions" aria-selected="true" type="button">Decisions <span class="count" id="count">0</span></button>
-    <button class="tab" role="tab" data-tab="flow" aria-selected="false" type="button">Agent flow</button>
-    <button class="tab" role="tab" data-tab="history" aria-selected="false" type="button">Your decisions</button>
-    <button class="tab" role="tab" data-tab="results" aria-selected="false" type="button">Results</button>
-  </nav>
-
-  <section class="tab-panel" id="tab-decisions">
+  <!-- Decisions -->
+  <section class="tab-panel" id="tab-decisions" hidden>
     <div class="decisions">
       <aside class="queue card" aria-label="Waiting for you">
-        <div class="queue-head">
-          <h2>Waiting for you</h2>
-          <div class="role-filter" id="role-filter"></div>
-        </div>
-        <ol class="qlist" id="qlist"></ol>
+        <div class="queue-head"><h2>Waiting for you</h2><p class="muted small" id="queue-roles"></p></div>
+        <div class="qlist" id="qlist"></div>
       </aside>
       <article class="detail card" id="detail" aria-live="polite"></article>
     </div>
   </section>
 
+  <!-- Customers -->
+  <section class="tab-panel" id="tab-customers" hidden>
+    <section class="truth card" aria-label="Same story everywhere">
+      <div class="truth-head"><h2>Same story everywhere</h2></div>
+      <div class="truth-body">
+        <div class="truth-numbers">
+          <div class="tn"><span class="tn-label">Customers seeing wrong info now</span><span class="tn-value" id="wrong-now">0</span><span class="tn-sub" id="wrong-now-sub"></span></div>
+          <div class="tn"><span class="tn-label">Customer-minutes on a wrong screen, so far</span><span class="tn-value" id="wrong-total">0</span><span class="tn-sub" id="wrong-total-sub"></span></div>
+          <svg class="spark" id="spark" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Customers seeing wrong info, minute by minute"></svg>
+        </div>
+        <div class="focus">
+          <div class="focus-head"><b id="focus-name">Maya Torres</b> <span class="muted" id="focus-truth"></span></div>
+          <div class="screens" id="screens"></div>
+        </div>
+      </div>
+    </section>
+    <div class="cust-grid">
+      <section class="card" aria-label="Find a Customer">
+        <h2>Find a Customer</h2>
+        <form id="cust-form" class="search"><label class="sr-only" for="cust-q">Name, booking reference or flight</label>
+          <input id="cust-q" type="search" placeholder="Name, booking reference or flight" autocomplete="off"><button class="btn primary" type="submit">Search</button></form>
+        <ul class="cust-list" id="cust-list"></ul>
+      </section>
+      <section class="card cust-card" id="cust-card" aria-live="polite"><p class="muted">Pick a Customer to see their trip, what their screens say and their rebooking options.</p></section>
+    </div>
+  </section>
+
+  <!-- Clocks -->
+  <section class="tab-panel" id="tab-clocks" hidden>
+    <div class="clocks" id="clocks"></div>
+  </section>
+
+  <!-- Day summary -->
+  <section class="tab-panel" id="tab-summary" hidden>
+    <section class="card handover" id="handover"></section>
+    <div id="results"></div>
+    <section class="card"><h2>Every decision today</h2><div class="board-wrap"><table class="board" id="history"></table></div></section>
+  </section>
+
+  <!-- How it works -->
   <section class="tab-panel" id="tab-flow" hidden>
     <div class="card">
       <h2>How the co-pilot works, live</h2>
-      <p class="muted">The agents never call each other directly: each one writes a new version to the shared state, and the others read it. A box lights up when its agent has just written something.</p>
+      <p class="muted">Each agent writes what it finds to the shared state, and the others read it from there. A box lights up when its agent has just written something.</p>
       <div class="sysflow-wrap"><svg class="sysflow" id="sysflow" viewBox="0 0 1120 400" role="img" aria-label="The co-pilot's agents and how information moves between them"></svg></div>
-      <h3>Latest hand-overs through the shared state</h3>
+      <h3>Latest hand-overs</h3>
       <ol class="ticker" id="ticker"></ol>
     </div>
   </section>
-
-  <section class="tab-panel" id="tab-history" hidden>
-    <div class="card">
-      <h2>Your decisions</h2>
-      <div class="board-wrap"><table class="board" id="history"></table></div>
-    </div>
-  </section>
-
-  <section class="tab-panel" id="tab-results" hidden>
-    <div id="results"></div>
-  </section>
 </main>
+
+<dialog id="report-dlg" class="dlg">
+  <form method="dialog" id="report-form">
+    <h2>Report from the floor</h2>
+    <p class="muted small">Tell the co-pilot what you see. It goes into the shared picture straight away.</p>
+    <label class="field"><span class="field-label">What's happening</span>
+      <select name="kind">
+        <option value="gate_unavailable">A gate can't be used</option>
+        <option value="jet_bridge_slow">Jet bridge slow or broken</option>
+        <option value="long_queue">Long line building</option>
+        <option value="special_assistance_waiting">Customer needing assistance is waiting</option>
+        <option value="equipment_issue">Equipment problem</option>
+        <option value="other">Something else</option>
+      </select></label>
+    <div class="dlg-row">
+      <label class="field"><span class="field-label">Gate (optional)</span><input name="gate" placeholder="B53"></label>
+      <label class="field"><span class="field-label">Flight (optional)</span><input name="flight_id" placeholder="WN1031"></label>
+    </div>
+    <label class="field"><span class="field-label">Details</span><textarea name="text" rows="3" required placeholder="What you see, in a few words"></textarea></label>
+    <div class="act-row"><button class="btn primary" value="send" type="submit">Send report</button><button class="btn" value="cancel" type="button" id="report-cancel">Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="note-dlg" class="dlg">
+  <form method="dialog" id="note-form">
+    <h2 id="note-title">Note on a flight</h2>
+    <p class="muted small">Everyone who opens this flight sees your note, and the co-pilot reads it too.</p>
+    <label class="field"><span class="field-label">Note</span><textarea name="text" rows="3" required></textarea></label>
+    <div class="act-row"><button class="btn primary" type="submit">Add note</button><button class="btn" type="button" id="note-cancel">Cancel</button></div>
+  </form>
+</dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>
 <script type="module" src="/live.js"></script>
