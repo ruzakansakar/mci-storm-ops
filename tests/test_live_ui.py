@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import app
 from backend.seed.build import build
 from simulator import live as L
+from simulator.world import WAITING_DEP
 
 client = TestClient(app)
 SNAKE = re.compile(r"\b[a-z]+(?:_[a-z0-9]+)+\b")
@@ -69,6 +70,18 @@ def ui(data):
                     seen["errors"] += [x for x in r if x["error"]]
             except Exception as err:                              # noqa: BLE001
                 seen["errors"].append(repr(err))
+        if t == 12 * 60 + 30:                                 # the two fixes: crew legal time and gates held by waiting flights
+            from simulator.world import CREW_ROLES
+            w = s.world
+            seen["at_1230"] = {
+                "flights": {d["id"]: s.views.flight(d["id"]) for d in w.departures if d["status"] in WAITING_DEP and d.get("crew_id")
+                            and not d.get("_next_day")},
+                "duty": {d["id"]: max(w.t, d["sched_dep"]) + min(w._crew_for(d, r)[f] for r, f, _ in CREW_ROLES
+                                                                  if w._crew_for(d, r) and w._crew_for(d, r).get(f) is not None)
+                         for d in w.departures if d["status"] in WAITING_DEP and d.get("crew_id") and not d.get("_next_day")},
+                "est": {d["id"]: d["est_dep"] for d in w.departures},
+                "at_gate": [(d["id"], s.views.gate_of(d["id"]), d["status"]) for d in s.views.at_gate()],
+                "station": s.views.station()}
         if t == 13 * 60:
             seen["station"], seen["clocks"] = s.views.station(), s.views.clocks()
             seen["handover"], seen["flight"] = s.views.handover(11 * 60), s.views.flight("WN1033")
@@ -314,3 +327,26 @@ def test_day_page_works_for_a_live_run_in_progress(db, data):
     assert s.status == "finished", getattr(s, "trace_text", s.error)
     assert seen["runs"] and seen["runs"][0]["mode"] == "live"
     assert seen["day"]["world"]                                               # events so far
+
+
+def test_flight_crew_legal_until_is_when_the_crew_runs_out_of_duty_after_the_departure(ui):
+    s, seen = ui
+    snap = seen["at_1230"]
+    f = snap["flights"]["WN1027"]
+    assert f["status"] == "held" and f["crew"]["id"] == "C27"
+    h, m = map(int, f["crew"]["legal_until"].split(":"))
+    assert h * 60 + m > snap["est"]["WN1027"]                    # after the departure (13:00), not "08:07"
+    for fid, view in snap["flights"].items():                     # every waiting flight: the duty left, from the later of now
+        assert re.match(r"^\d\d:\d\d$", view["crew"]["legal_until"]), fid      # and the scheduled departure, local HH:MM
+        assert view["crew"]["legal_until"] == f"{(snap['duty'][fid] // 60) % 24:02d}:{snap['duty'][fid] % 60:02d}", fid
+
+
+def test_a_gate_is_in_use_while_a_flight_waiting_at_it_is_there(ui):
+    s, seen = ui
+    snap = seen["at_1230"]
+    gates = {g["gate"]: g for g in snap["station"]["gates"]}
+    assert ("WN1027", "G01", "held") in snap["at_gate"]
+    assert gates["G01"]["status"] == "in_use" and gates["G01"]["flight_id"] == "WN1027"
+    for fid, gate, status in snap["at_gate"]:                     # every departure still at its gate, whatever its schedule says
+        if gate:
+            assert gates[gate]["status"] == "in_use" and gates[gate]["flight_id"] == fid, (fid, gate, status)

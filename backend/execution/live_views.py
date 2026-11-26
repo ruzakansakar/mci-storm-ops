@@ -38,15 +38,16 @@ class Views:
 
     # ------------------------------------------------------------ helpers
     def crew_legal_until(self, f):
-        """The latest departure at which every crew on this flight is still legal (duty left minus what the flight needs)."""
+        """When this flight's crew stops being legal for this duty (minutes after midnight): their duty left runs out. The
+        world burns a waiting crew's duty from the flight's scheduled departure on, so the duty ends at the later of now and the
+        scheduled departure plus the duty left (the first of pilots and flight attendants to run out)."""
         from simulator.world import CREW_ROLES
         best = None
         for role, field, _ in CREW_ROLES:
             crew = self.w._crew_for(f, role)
-            if crew is None or crew.get(field) is None or f.get("_crew_need") is None:
+            if crew is None or crew.get(field) is None:
                 continue
-            # a waiting crew's duty runs from its scheduled departure (the world burns it while the flight waits)
-            m = max(self.w.t, f["sched_dep"]) + crew[field] - f["_crew_need"]
+            m = max(self.w.t, f["sched_dep"]) + crew[field]
             best = m if best is None else min(best, m)
         return best
 
@@ -56,9 +57,8 @@ class Views:
         g = next((x for x in gates if x.get("flight_id") == fid), None)
         if g is None:                                   # a departure leaves from the gate its inbound plane holds
             f = self.w.flights.get(fid) or {}
-            inbound = [a for a in self.w.arrivals if a.get("aircraft_id") == f.get("aircraft_id") and a["sched_arr"] <= f.get("sched_dep", 0)]
-            ids = {a["id"] for a in inbound}
-            g = next((x for x in reversed(gates) if x.get("flight_id") in ids), None)
+            ids = {f["_inbound"]} if f.get("_inbound") else                 {a["id"] for a in self.w.arrivals if a.get("aircraft_id") == f.get("aircraft_id") and a["sched_arr"] <= f.get("sched_dep", 0)}
+            g = next((x for x in reversed(gates) if x.get("flight_id") in ids and x.get("gate")), None)
         return (g or {}).get("gate")
 
     def tracked_on(self, fid):
@@ -219,6 +219,10 @@ class Views:
         for g in plan.get("gates") or []:
             if g.get("gate") and g["from"] <= now.isoformat() < g["to"]:
                 busy[g["gate"]] = g["flight_id"]
+        for d in self.at_gate():                          # a departure still at its gate (held, delayed...) holds it until it goes
+            gate = self.gate_of(d["id"])
+            if gate:
+                busy[gate] = d["id"]
         staffed = {r["flight_id"] for r in (self.s.copilot.station.staff_ledger if self.s.copilot.station else [])
                    if r.get("kind") == "assign" and r.get("flight_id") and r["from_at"] <= now.isoformat() < r["to_at"]}
         gates = []
@@ -229,6 +233,19 @@ class Views:
         gaps = [{"role": x["role"], "from": fmt_iso(x["from"]), "to": fmt_iso(x["to"]), "short_by": x["short_by"]}
                 for x in plan.get("staff_shortages") or [] if x["to"] > now.isoformat()]
         return {"ramp": ramp, "gates": gates, "staffing_gaps": gaps}
+
+    def at_gate(self):
+        """Departures at their gate now: not gone yet (scheduled, ground stop, delayed or held) and their plane is here (the
+        inbound landed, or an overnight plane), whatever the scheduled time says."""
+        tow = self.w.ground["tow_to_gate_before_min"]
+        out = []
+        for d in self.w.departures:
+            if d["status"] not in WAITING_DEP or d.get("_next_day"):
+                continue
+            inb = self.w.flights.get(d["_inbound"]) if d.get("_inbound") else None
+            if (inb is not None and inb["status"] == "arrived") or (inb is None and self.w.t >= d["sched_dep"] - tow):
+                out.append(d)
+        return out
 
     def clocks(self):
         limits = read_limits()
