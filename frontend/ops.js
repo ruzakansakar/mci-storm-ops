@@ -235,7 +235,15 @@ export class OpsView {
     const gates = (s.gates || []).map((g) => `<li class="gate ${g.status}" title="${esc(g.note || '')}">
         <b>${esc(g.gate)}</b><span>${g.status === 'closed' ? 'Closed' : g.flight_id ? esc(g.flight_id) : 'Free'}</span>
         ${g.status !== 'closed' && g.flight_id ? `<i class="${g.staffed ? 'ok' : 'bad'}">${g.staffed ? 'Staffed' : 'Needs staff'}</i>` : ''}</li>`).join('');
-    const gaps = (s.staffing_gaps || []).map((x) => `<li><b>${x.short_by}</b> ${esc(String(x.role).replace(/_/g, ' '))} short, ${esc(x.from)} to ${esc(x.to)}</li>`).join('');
+    // join back-to-back gaps for the same role into one line: "up to 14 wheelchair agents short, 12:30 to 13:30"
+    const merged = [];
+    for (const x of [...(s.staffing_gaps || [])].sort((a, b) => String(a.role).localeCompare(b.role) || String(a.from).localeCompare(b.from))) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === x.role && last.to === x.from) { last.to = x.to; last.max = Math.max(last.max, x.short_by); last.many = true; }
+      else merged.push({ role: x.role, from: x.from, to: x.to, max: x.short_by, many: false });
+    }
+    const ROLE = { wheelchair: 'wheelchair agents', customer_service: 'customer service agents', gate_agent: 'gate agents', ramp: 'ramp agents' };
+    const gaps = merged.map((x) => `<li>${x.many ? 'Up to ' : ''}<b>${x.max}</b> ${esc(ROLE[x.role] || String(x.role).replace(/_/g, ' '))} short, ${esc(x.from)} to ${esc(x.to)}</li>`).join('');
     $('station').innerHTML = `
       <div class="ramp ${s.ramp?.open ? 'ok' : 'bad'}"><span class="dot ${s.ramp?.open ? 'ok' : 'bad'}"></span>
         Ramp ${s.ramp?.open ? 'open' : 'closed'}${s.ramp?.reason ? `: ${esc(s.ramp.reason)}` : ''}${s.ramp?.since ? ` <span class="muted">since ${esc(s.ramp.since)}</span>` : ''}</div>

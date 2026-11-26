@@ -238,7 +238,7 @@ function renderDetail() {
       ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">at ${esc(rec.at)}</span></div>`
         : `<div class="d-clock ${it.minutes_left <= 3 ? 'late' : ''}"><span class="d-left">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span><span class="muted">${it.status === 'escalated' ? 'with the duty manager' : `to decide, by ${esc(it.deadline)}`}</span></div>`}
     </header>
-    ${it.effect?.text || it.passengers_affected ? `<p class="d-effect">${esc(it.effect?.text || `${num(it.passengers_affected)} Customers affected`)}${it.effect?.connections ? `, ${num(it.effect.connections)} connections` : ''}${it.safety_legal ? ' <span class="tagx bad">Safety or legal</span>' : ''}</p>` : ''}
+    ${it.effect?.text || it.passengers_affected ? `<p class="d-effect">${esc(String(it.effect?.text || `${num(it.passengers_affected)} Customers affected`).replace(/\.+$/, ''))}${it.safety_legal ? ' <span class="tagx bad">Safety or legal</span>' : ''}</p>` : ''}
     <section class="d-sec"><h3>What's going on</h3>
       <ol class="story">${story.map((x) => `<li><span class="t">${esc(x.t)}</span><span>${esc(plain(x.text))}</span></li>`).join('') || '<li class="muted">No details recorded.</li>'}</ol></section>
     <section class="d-sec"><h3>${options.length > 1 ? 'Your options' : 'The co-pilot suggests'}</h3>
@@ -246,7 +246,7 @@ function renderDetail() {
         <input type="radio" name="opt-${it.id}" value="${esc(o.id)}" ${o.id === chosen ? 'checked' : ''} ${rec || options.length === 1 ? 'disabled' : ''}>
         <span class="opt-body"><span class="opt-label">${esc(plain(o.label))}${o.recommended ? ' <span class="tagx ok">Suggested</span>' : ''}</span>
         <span class="opt-why">${esc(plain(o.why || ''))}</span>${o.effect ? `<span class="opt-eff">${esc(o.effect)}</span>` : ''}</span></label>`).join('')}</div>
-      ${!rec && changes ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).map(([k, vals]) => `<label class="field"><span class="field-label">${k === 'delay_min' ? 'Delay (minutes)' : k === 'gate' ? 'Gate' : k.replace(/_/g, ' ')}</span>
+      ${!rec && changes ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).map(([k, vals]) => `<label class="field"><span class="field-label">${({ delay_min: 'Extra delay (minutes)', gate: 'Gate', crew_id: 'Crew', extension_min: 'Duty extension (minutes)', message_text: 'Message wording' })[k] || plain(k)}</span>
         <select data-change="${esc(k)}"><option value="">Keep as suggested</option>${vals.map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('')}</div></details>` : ''}</section>
     <section class="d-sec warnbox"><h3>${it.last_option ? 'This is the last option' : 'If you say no'}</h3><p>${esc(plain(ifNo))}</p></section>
     <section class="d-sec"><h3>${rec ? 'What happened next' : 'How this reached you, and where it goes'}</h3>
@@ -393,7 +393,9 @@ function paintTrace() {
 // ---------------------------------------------------------------- Customers: lookup and rebooking (counter and gate)
 $('cust-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const list = await ui.api.customers(ui.run, $('cust-q').value.trim()).catch((err) => { toast(err.message, true); return []; });
+  const q = $('cust-q').value.trim();
+  if (!q) { $('cust-list').innerHTML = '<li class="muted">Type a name, booking reference or flight number first.</li>'; return; }
+  const list = await ui.api.customers(ui.run, q).catch((err) => { toast(err.message, true); return []; });
   $('cust-list').innerHTML = list.length ? list.map((c) => `<li><button type="button" class="cust-row" data-c="${esc(c.id)}"><b>${esc(c.name)}</b>
     <span class="muted">${esc(c.booking_ref)}, ${esc(c.flight_id)}</span><span class="status ${/cancel|rebook/i.test(c.status) ? 'bad' : /delay|held/i.test(c.status) ? 'warn' : 'ok'}">${esc(plain(c.status))}</span></button></li>`).join('')
     : '<li class="muted">No Customer found.</li>';
