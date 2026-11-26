@@ -4,6 +4,7 @@ import { pickApi, ROLE_TITLES, FRONTLINE } from './live-api.js';
 import { icon } from './icons.js';
 import { drawDecisionFlow } from './graph.js';
 import { OpsView } from './ops.js';
+import { oneStoryHtml } from './story.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -57,7 +58,7 @@ $('start-form').addEventListener('submit', async (e) => {
 
 function open(runId) {
   ui.run = runId;
-  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false;
+  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false; $('popups-btn').hidden = false;
   history.replaceState(null, '', `?run=${encodeURIComponent(runId)}${ui.api.practice ? '&mock=1' : ''}`);
   $('role').innerHTML = Object.entries(ALL_ROLES).map(([k, v]) => `<option value="${k}" ${k === ui.role ? 'selected' : ''}>${esc(v)}</option>`).join('');
   ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote });
@@ -228,14 +229,14 @@ function renderDetail() {
   const w = it.why || {};
   const story = it.story?.length ? it.story : (w.trigger || []).map((x) => ({ t: x.t, text: x.text }));
   const options = it.options?.length ? it.options : [{ id: 'opt1', label: headline(it), why: it.recommendation || w.plan, recommended: true }];
-  const chosen = ui.choice[it.id] || options.find((o) => o.recommended)?.id || options[0].id;
+  const chosen = rec?.optionId || ui.choice[it.id] || options.find((o) => o.recommended)?.id || options[0].id;
   const ifNo = it.if_declined || it.consequence_if_rejected || 'The co-pilot comes back with a different plan.';
   const changes = it.allowed_changes || null;
   const ANSWER = { approved: 'Approved', rejected: 'Declined', hand_off: 'Sent to the duty manager' };
   box.innerHTML = `
     <header class="d-head">
       <div><p class="d-role">${icon(it.agent)} ${esc(agentName(it.agent))} needs <b>${esc(ROLE_TITLES[it.role] || it.role_title)}</b></p><h2>${esc(headline(it))}</h2></div>
-      ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">at ${esc(rec.at)}</span></div>`
+      ${rec ? `<div class="d-clock done ${rec.answer}"><span class="d-left">${rec.answer === 'approved' && rec.notSuggested ? 'You chose' : esc(ANSWER[rec.answer] || rec.answer)}</span><span class="muted">${rec.answer === 'approved' && rec.notSuggested ? `${esc(plain(rec.optionLabel))}, ` : ''}at ${esc(rec.at)}</span></div>`
         : `<div class="d-clock ${it.minutes_left <= 3 ? 'late' : ''}"><span class="d-left">${it.status === 'escalated' ? 'Escalated' : `${it.minutes_left} min`}</span><span class="muted">${it.status === 'escalated' ? 'with the duty manager' : `to decide, by ${esc(it.deadline)}`}</span></div>`}
     </header>
     ${it.effect?.text || it.passengers_affected ? `<p class="d-effect">${esc(String(it.effect?.text || `${num(it.passengers_affected)} Customers affected`).replace(/\.+$/, ''))}${it.safety_legal ? ' <span class="tagx bad">Safety or legal</span>' : ''}</p>` : ''}
@@ -248,9 +249,11 @@ function renderDetail() {
         <span class="opt-why">${esc(plain(o.why || ''))}</span>${o.effect ? `<span class="opt-eff">${esc(o.effect)}</span>` : ''}</span></label>`).join('')}</div>
       ${!rec && changes ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).map(([k, vals]) => `<label class="field"><span class="field-label">${({ delay_min: 'Extra delay (minutes)', gate: 'Gate', crew_id: 'Crew', extension_min: 'Duty extension (minutes)', message_text: 'Message wording' })[k] || plain(k)}</span>
         <select data-change="${esc(k)}"><option value="">Keep as suggested</option>${vals.map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('')}</div></details>` : ''}</section>
+    ${careHtml(it)}
     <section class="d-sec warnbox"><h3>${it.last_option ? 'This is the last option' : 'If you say no'}</h3><p>${esc(plain(ifNo))}</p></section>
     <section class="d-sec"><h3>${rec ? 'What happened next' : 'How this reached you, and where it goes'}</h3>
-      <div class="trace" id="trace"><p class="muted">Loading…</p></div><p class="trace-note muted" id="trace-note">Click any box for details.</p></section>
+      <div class="trace" id="trace"><p class="muted">Loading…</p></div><p class="trace-note muted" id="trace-note">Click any box for details.</p>
+      <p class="in-short" id="in-short"></p></section>
     <footer class="actions">${rec
       ? `<div class="act-row">${visible().length ? `<button class="btn primary" id="next" type="button">Next decision (${visible().length} waiting)</button>` : '<span class="muted">Nothing else is waiting for you.</span>'}</div>`
       : ui.mode === 'decline' ? `<label class="reason"><span>Why not? The co-pilot uses this to look for something else.</span><textarea id="reason" rows="2"></textarea></label>
@@ -264,6 +267,7 @@ function renderDetail() {
     </footer>`;
   const ids = group.map((g) => g.id);
   box.querySelectorAll(`input[name="opt-${it.id}"]`).forEach((r) => r.addEventListener('change', () => { ui.choice[it.id] = r.value; box.querySelectorAll('.option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked)); }));
+  box.querySelectorAll('[data-cust]').forEach((b) => b.addEventListener('click', () => { setTab('customers'); showCustomer(b.dataset.cust); }));
   box.querySelector('#next')?.addEventListener('click', () => { ui.selected = null; renderQueue(); });
   box.querySelector('#do-approve')?.addEventListener('click', () => {
     const change = {};
@@ -286,6 +290,47 @@ function renderDetail() {
   loadTrace(it);
 }
 
+
+// One plain paragraph from what the flowchart shows; nothing added that is not on screen.
+function inShort(it, rec, m) {
+  const parts = [];
+  const first = (it.story || [])[0];
+  if (first) parts.push(`${first.t}: ${plain(first.text).replace(/\.$/, '')}.`);
+  parts.push(`${agentName(it.agent)} asked ${ROLE_TITLES[it.role] || it.role_title || 'a person'} to decide: ${plain(headline(it)).replace(/\.$/, '')}.`);
+  if (!rec) parts.push(it.status === 'escalated' ? 'It went to the duty manager because the deadline passed.' : `It is waiting for you until ${it.deadline}.`);
+  else if (rec.answer === 'approved') parts.push(rec.notSuggested ? `You chose "${plain(rec.optionLabel)}" at ${rec.at}.` : `You approved at ${rec.at}${rec.change ? ' with a change' : ''}.`);
+  else if (rec.answer === 'rejected') parts.push(`You declined at ${rec.at}${rec.reason ? ` ("${rec.reason}")` : ''}; the co-pilot looks for something else.`);
+  else parts.push(`You sent it to the duty manager at ${rec.at}.`);
+  if (!m.preview && m.changes.length) parts.push(`What changed: ${m.changes.map((c) => plain(c.label)).join('; ')}.`);
+  const delivered = m.dests.filter((d) => d.status === 'delivered');
+  if (m.preview && m.dests.length) parts.push(`If approved, ${m.dests.length} places will get the same update at the same time.`);
+  else if (!m.preview && m.dests.length) {
+    const last = delivered.map((d) => String(d.t || '').match(/\d\d:\d\d/)?.[0]).filter(Boolean).sort().pop();
+    parts.push(`One update went to ${listWords(m.dests.map((d) => d.label))}: ${delivered.length} of ${m.dests.length} confirmed${last ? ` by ${last}` : ''}.`);
+  } else if (!m.preview && rec?.answer === 'approved') parts.push('No messages were needed.');
+  return parts.join(' ');
+}
+
+// The Customers inside a Passenger Care decision: who gets what, and the exact words they will receive.
+function careHtml(it) {
+  const c = it.care;
+  if (!c || !c.customers?.length) return '';
+  const money = (n) => `$${Number(n || 0).toLocaleString()}`;
+  const what = (x) => {
+    const f = (x.detail?.flights || []).map((fl) => `${fl.flight_id} ${fl.dep}${fl.arr ? `, arrives ${fl.arr}` : ''}`).join(' then ');
+    if (x.action === 'hotel') return `${f ? `${f}, ` : ''}hotel: ${x.detail?.hotel?.name || ''}${x.detail?.hotel?.price ? ` (${money(x.detail.hotel.price)})` : ''}`;
+    if (x.action === 'refund') return `Refund ${money(x.detail?.amount)}`;
+    if (x.action === 'ride') return `Ride home${x.detail?.amount ? ` (${money(x.detail.amount)})` : ''}`;
+    return f;
+  };
+  return `<section class="d-sec"><h3>Customers in this decision</h3>
+    <ul class="care-list">${c.customers.map((x) => `<li><div><b>${esc(x.name)}</b> <span class="tagx quiet">${esc({ rebook: 'Rebook', hotel: 'Rebook + hotel', refund: 'Refund', ride: 'Ride' }[x.action] || x.action)}</span>
+      <br>${esc(what(x))}<br><span class="muted">${esc(plain(x.why))}</span></div>
+      <button class="btn" type="button" data-cust="${esc(x.id)}">Open Customer</button></li>`).join('')}</ul>
+    ${c.message_text ? `<div class="script"><span class="k">What they'll be told</span><p>${esc(c.message_text)}</p></div>` : ''}
+    ${(c.auto_done || []).length ? `<p class="muted small">Done automatically: ${c.auto_done.map((a) => `${a.count} ${a.action}${a.count > 1 ? 's' : ''}${a.total ? `, ${money(a.total)} in total` : ''}`).join('; ')}.</p>` : ''}</section>`;
+}
+
 async function decide(ids, body, done) {
   if (ui.busy) return;
   ui.busy = true;
@@ -295,7 +340,10 @@ async function decide(ids, body, done) {
     const errs = r.results.filter((x) => x.error);
     if (errs.length) toast(errs.map((x) => x.error).join('; '), true); else toast(done);
     if (body.action !== 'wait' && group.length && !errs.length) {
-      const rec = { item: group[0], group, answer: body.action.startsWith('approve') ? 'approved' : body.action === 'reject' ? 'rejected' : body.action, reason: body.reason || '', at: ui.state?.clock || '' };
+      const opts = group[0].options || [];
+      const picked = opts.find((o) => o.id === (body.option_id || (opts.find((x) => x.recommended) || opts[0] || {}).id));
+      const rec = { item: group[0], group, answer: body.action.startsWith('approve') ? 'approved' : body.action === 'reject' ? 'rejected' : body.action, reason: body.reason || '',
+        at: ui.state?.clock || '', optionId: picked?.id, optionLabel: picked?.label, notSuggested: picked && !picked.recommended, change: body.change || null };
       for (const g of group) ui.decided.set(g.id, rec);
       ui.selected = group[0].id;
     }
@@ -370,9 +418,9 @@ function flowModel(it, rec, g) {
   const dests = preview
     ? (g.preview?.destinations || [])
       .map((d) => ({ label: d.label, icon: d.icon || iconOf(d.key), status: 'preview', text: 'Will get the same update at the same time' }))
-    : destNodes.map((n) => ({ label: String(n.label).split(':')[0], icon: n.detail?.icon || iconOf(n.detail?.key || n.label), status: n.detail?.status || 'waiting',
+    : destNodes.map((n) => ({ label: String(n.label).replace(/:\s*(delivered|failed|waiting|sent)\b.*$/i, ''), icon: n.detail?.icon || iconOf(n.detail?.key || n.label), status: n.detail?.status || 'waiting',
         t: n.detail?.delivered > 1 ? `${n.detail.delivered} delivered${n.t ? ', ' + n.t : ''}` : n.t, text: [n.detail?.text, n.detail?.confirmed_by && `Confirmed by: ${n.detail.confirmed_by}`].filter(Boolean).join('. ') }));
-  const hub = { label: 'One truth', sub: comm ? (comm.label.match(/v\d+/) || ['sent'])[0] : 'Communication', t: comm?.t,
+  const hub = { label: 'One truth', sub: 'Communication', t: comm?.t,
     text: comm?.detail?.text ? `Sent to everyone: "${comm.detail.text}"` : 'The change is written once to the shared state and Communication sends that one version to every screen and every person at the same time.' };
   const rejected = answer === 'rejected' ? { agent: it.agent, label: `${agentName(it.agent)} is looking for a different plan`, sub: rec.reason ? `Your reason: ${rec.reason}` : '', text: it.consequence_if_rejected || '' } : null;
   return { feeds, agents, rule, orch, you, changes, hub, dests, preview, rejected };
@@ -384,7 +432,9 @@ function paintTrace() {
   if (!el || !it || !ui.traceFor?.graph) return;
   const m = flowModel(it, rec, ui.traceFor.graph);
   for (const a of m.agents) a.short = a.involved ? a.short : '';
-  m.feeds = m.feeds.map((f) => ({ ...f, label: plain(f.label) }));
+  m.feeds = m.feeds.map((f) => { const l = plain(f.label); return { ...f, label: l.charAt(0).toUpperCase() + l.slice(1) }; });
+  const sum = $('in-short');
+  if (sum) sum.innerHTML = `<b>In short:</b> ${esc(inShort(it, rec, m))}`;
   drawDecisionFlow(el, m, { onNode: (n) => {
     $('trace-note').innerHTML = `<b>${esc(plain(n.label || n.name || ''))}</b>${n.t ? ` at ${esc(n.t)}` : ''}${n.text ? `: ${esc(plain(n.text))}` : ''}`;
   } });
@@ -406,19 +456,25 @@ async function showCustomer(id) {
   const c = await ui.api.customer(ui.run, id).catch((err) => { toast(err.message, true); return null; });
   if (!c) return;
   const card = $('cust-card');
+  const leg = c.trip.find((f) => /cancel|delay|divert|held/i.test(f.status)) || c.trip[0];
+  const flight = leg && ui.api.flight ? await ui.api.flight(ui.run, leg.flight_id).catch(() => null) : null;
   card.innerHTML = `
     <div class="cust-head"><h2>${esc(c.name)}</h2>${(c.needs || []).map((n) => `<span class="tagx warn">${esc(NEEDS[n] || plain(n))}</span>`).join(' ')}</div>
     <p class="cust-truth"><b>Right now:</b> ${esc(plain(c.true_status))}</p>
-    <ol class="trip">${c.trip.map((f) => `<li><b>${esc(f.flight_id)}</b> ${esc(f.from)} ${esc(f.dep)} → ${esc(f.to)} ${esc(f.arr)} <span class="muted">${esc(plain(f.status))}</span></li>`).join('')}</ol>
-    ${c.screens?.length ? `<h3>What their screens say</h3><div class="screens small">${c.screens.map((sc) => `<div class="screen ${sc.wrong ? 'wrong' : ''}"><span class="screen-ch">${esc(CHANNELS[sc.channel] || sc.channel)}</span><span class="screen-shows">${esc(plain(sc.shows))}</span></div>`).join('')}</div>` : ''}
-    ${c.rebooking?.length ? `<h3>Rebooking options</h3><ul class="rebook">${c.rebooking.map((o) => `<li class="${o.recommended ? 'rec' : ''}">
+    <h3>Their trip</h3>
+    <ol class="trip">${c.trip.map((f) => `<li class="${f === leg ? 'hit' : ''}"><b>${esc(f.flight_id)}</b> ${esc(f.from)} ${esc(f.dep)} → ${esc(f.to)} ${esc(f.arr)} <span class="status ${/cancel/i.test(f.status) ? 'bad' : /delay|divert|held/i.test(f.status) ? 'warn' : 'ok'}">${esc(plain(f.status))}</span></li>`).join('')}</ol>
+    ${oneStoryHtml(flight)}
+    ${c.rebooking?.length ? `<h3>Other ways to get there</h3><ul class="rebook">${c.rebooking.map((o) => `<li class="${o.recommended ? 'rec' : ''}">
         <div><b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)} ${o.recommended ? '<span class="tagx ok">Suggested</span>' : ''}
-        <br><span class="muted">${esc(plain(o.why))}, ${o.seats_left} seats left</span></div>
-        <button class="btn ${o.recommended ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Rebook</button></li>`).join('')}</ul>` : ''}
-    ${c.hotel ? `<p class="muted">Hotel: ${esc(c.hotel.name)}${c.hotel.auto ? ' (booked automatically)' : ''}</p>` : ''}
-    <div class="act-row">${c.refund_due ? '<button class="btn" id="refund" type="button">Refund instead</button>' : ''}</div>`;
+        <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null ? `, ${o.seats_left} seats left` : ''}</span></div>
+        <button class="btn ${o.recommended ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Approve this rebooking</button></li>`).join('')}</ul>` : '<p class="muted">No rebooking needed or available right now.</p>'}
+    ${c.hotel ? `<p><b>Hotel:</b> ${esc(c.hotel.name)}${c.hotel.price ? `, $${c.hotel.price}` : ''}${c.hotel.shuttle ? `, shuttle ${esc(c.hotel.shuttle)}` : ''}${c.hotel.status ? ` <span class="muted">(${esc(plain(c.hotel.status))})</span>` : ''}</p>` : ''}
+    ${(c.refunds || []).length ? `<p><b>Refunds:</b> ${c.refunds.map((r) => `$${r.amount} ${esc(r.status)}${r.t ? ` at ${esc(r.t)}` : ''}`).join('; ')}</p>` : ''}
+    <div class="act-row">${c.refund_due ? '<button class="btn" id="refund" type="button">Refund instead</button>' : ''}</div>
+    <h3>Messages they received</h3>
+    ${(c.messages || []).length ? `<ol class="msgs">${c.messages.map((x) => `<li><span class="t">${esc(x.t)}</span> <span class="tagx quiet">${esc(x.channel)}</span> "${esc(x.text)}"</li>`).join('')}</ol>` : '<p class="muted">No messages yet.</p>'}`;
   card.querySelectorAll('[data-rebook]').forEach((b) => b.addEventListener('click', async () => {
-    try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); toast('Rebooked. Every screen and every agent now shows the new trip.'); showCustomer(id); }
+    try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); toast('Rebooked. The new trip goes out to every screen and every agent.'); showCustomer(id); }
     catch (err) { toast(`Could not rebook: ${err.message}`, true); }
   }));
   card.querySelector('#refund')?.addEventListener('click', async () => { await ui.api.refund(ui.run, id); toast('Refund issued.'); showCustomer(id); });
@@ -524,6 +580,35 @@ function drawFlow(flow) {
 }
 
 
+
+// ---------------------------------------------------------------- messages going out (bottom-right)
+ui.sentSince = 0; ui.popups = true;
+try { ui.popups = localStorage.getItem('gsc-popups') !== 'off'; } catch (e) {}
+const CHANNEL_WORDS = { sms: 'text message', text: 'text message', app: 'app', email: 'email', staff_note: 'staff note', crew: 'crew message', 'app + text': 'app and text' };
+const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+async function refreshSent() {
+  if (!ui.api.sent || ui.sentOff) return;
+  let rows;
+  try { rows = await ui.api.sent(ui.run, ui.sentSince); } catch (e) { if (e.status === 404) ui.sentOff = true; return; }
+  const first = !ui.sentPrimed; ui.sentPrimed = true;
+  if (!rows || !rows.length) return;
+  ui.sentSince = Math.max(ui.sentSince, ...rows.map((r) => r.minute || 0));
+  if (!ui.popups || first) return;   // do not replay the morning on first load
+  const ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
+  for (const r of rows.slice(-4)) {
+    const el = document.createElement('div');
+    el.className = `sent-pop ${r.kind || 'message'}`;
+    el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}, ${esc(r.t)}</span><span class="sp-text">"${esc(r.text)}"</span>`;
+    $('sent-stack').appendChild(el);
+    setTimeout(() => el.classList.add('out'), 7000);
+    setTimeout(() => el.remove(), 7600);
+  }
+  while ($('sent-stack').children.length > 4) $('sent-stack').firstChild.remove();
+}
+function popupLabel() { $('popups-btn').textContent = ui.popups ? 'Message pop-ups: on' : 'Message pop-ups: off'; $('popups-btn').setAttribute('aria-pressed', ui.popups); }
+$('popups-btn').addEventListener('click', () => { ui.popups = !ui.popups; try { localStorage.setItem('gsc-popups', ui.popups ? 'on' : 'off'); } catch (e) {} popupLabel(); });
+popupLabel();
+
 // ---------------------------------------------------------------- polling
 async function refreshQueue() {
   const q = await ui.api.queue(ui.run, []).catch(() => null);
@@ -546,6 +631,7 @@ async function loop() {
     renderState();
     await refreshQueue();
     if (ui.tab === 'ops') await ui.ops.update(ui.state.minute);
+    if (ticks % 2 === 0) await refreshSent();
     if (ui.tab === 'decisions' && ticks % 2 === 0) await refreshTrace();
     if (ui.tab === 'flow' && ticks % 2 === 0) await refreshFlow();
     if (ui.tab === 'clocks' && ticks % 3 === 0) await refreshClocks();

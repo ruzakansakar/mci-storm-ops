@@ -36,6 +36,7 @@ class RealApi {
   station(id) { return http('GET', `/api/live/${enc(id)}/station`); }
   clocks(id) { return http('GET', `/api/live/${enc(id)}/clocks`); }
   handover(id, since) { return http('GET', `/api/live/${enc(id)}/handover?since=${enc(since)}`); }
+  sent(id, since) { return http('GET', `/api/live/${enc(id)}/sent?since=${since}`); }
 }
 const enc = encodeURIComponent;
 
@@ -89,6 +90,19 @@ const SCRIPT = [
     rule: [true, ['MSG-01', 'MSG-04'], 'States only confirmed facts; promises a next update time it can keep'],
     whyHuman: 'Mass messages go to the customer service supervisor.',
     reject: { alt: { title: 'Tell passengers flight by flight about the ground stop', plan: 'Send a separate message per flight, each with its own expected time.' } } },
+  { at: 700, key: 'care1032', agent: 'passenger_care', action: 'rebook_customers', role: 'customer_service_supervisor', urgent: true, safety: false,
+    title: 'Rebook 4 Customers from cancelled WN1032 to Dallas', headline: 'Rebook 4 Customers from cancelled WN1032 to Dallas', target: { flight_id: 'WN1032' }, pax: 4, wrongInfo: 0,
+    plan: 'WN1032 to Dallas is cancelled. Put each Customer on the best flight still open today, or tomorrow with a hotel when nothing works tonight.',
+    trigger: [['11:30', 'network_recovery', 'WN1032 cancelled: no legal crew before the stop ends'], ['11:39', 'passenger_care', '4 Customers on WN1032 need a new way to Dallas']],
+    inputs: [['care_plan', 204, '11:39'], ['recovery_plan', 98, '11:30']], options: [], rule: [true, [], 'Within the hotel budget; no Customer left without a plan'],
+    whyHuman: 'Rebooking a whole flight goes to the customer service supervisor.', reject: { last: true, consequence: 'The 4 Customers stay without a flight until an agent rebooks them at the counter.' },
+    care: { customers: [
+      { id: 'PAX0102', name: 'Daniel Okafor', action: 'rebook', detail: { flights: [{ flight_id: 'WN1046', dep: '16:10', arr: '17:45' }] }, why: 'Earliest seat to Dallas today; wheelchair booked at both ends' },
+      { id: 'PAX0144', name: 'Priya Nair', action: 'rebook', detail: { flights: [{ flight_id: 'WN1046', dep: '16:10', arr: '17:45' }] }, why: 'Same flight, keeps her meeting tonight' },
+      { id: 'PAX0310', name: 'Luis Romero', action: 'hotel', detail: { flights: [{ flight_id: 'WN1050', dep: '07:05', arr: '08:40' }], hotel: { name: 'Hilton KCI Airport', price: 139, shuttle: 'every 20 min, door 4' } }, why: 'Tonight is full; first flight tomorrow plus a hotel' },
+      { id: 'PAX0311', name: 'Ana Romero', action: 'hotel', detail: { flights: [{ flight_id: 'WN1050', dep: '07:05', arr: '08:40' }], hotel: { name: 'Hilton KCI Airport', price: 0, shuttle: 'every 20 min, door 4' } }, why: 'Travelling with Luis; same room' } ],
+      message_text: 'Your flight WN1032 to Dallas was cancelled because of the thunderstorms. We have booked you on a new flight; your new trip is in the app and we have texted the details.',
+      auto_done: [{ action: 'refund', count: 2, total: 318 }] } },
   ...[1, 2, 3, 4].map((i) => ({ at: 695, group: 'station_staff:move_gate_agents:695', agent: 'station_staff', action: 'move_gate_agents', role: 'station_manager',
     urgent: false, safety: false, title: `Move gate agent to gate ${['B53', 'B55', 'B57', 'B60'][i - 1]}`, target: { flight_id: ['WN1027', 'WN1028', 'WN1029', 'WN1030'][i - 1] }, pax: 120, wrongInfo: 0,
     plan: `Move one gate agent to gate ${['B53', 'B55', 'B57', 'B60'][i - 1]}, where delayed passengers are gathering.`,
@@ -146,6 +160,7 @@ const SCRIPT = [
 
 // What each kind of decision changes, and who is told, in the practice session.
 const CHANGES = {
+  rebook_customers: () => ['Daniel Okafor and Priya Nair on WN1046 today 16:10', 'Luis and Ana Romero on WN1050 tomorrow 07:05, hotel booked'],
   extend_crew_duty: (q) => [`Crew ${q.target.crew_id} may work until 16:05`, `${q.target.flight_id} keeps its slot after the stop`],
   delay_flight: (q) => [`${q.target.flight_id} now leaves 13:43`, 'Gate B57 held until 14:00'],
   assign_reserve_crew: (q) => [`Reserve crew ${q.target.crew_id} on ${q.target.flight_id}`, 'Original crew released to rest'],
@@ -164,6 +179,7 @@ const D = {
   crew: ['crew', 'Crew', 'crew', 3], ramp: ['ramp', 'Ramp crew radios', 'staff', 1], hotel: ['hotel_desk', 'Hotel desks', 'staff', 4], ccagents: ['call_center_agents', 'Call center agents', 'call_center', 3],
 };
 const DESTS = {
+  rebook_customers: ['app', 'sms', 'counter', 'ccagents', 'hotel'],
   extend_crew_duty: ['crew', 'gates', 'counter', 'ccagents'], delay_flight: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'crew', 'ccagents'],
   assign_reserve_crew: ['crew', 'gates', 'ccagents'], send_mass_message: ['app', 'sms', 'gate', 'cc', 'counter', 'gates', 'ccagents'],
   move_gate_agents: ['gates'], divert_flight: ['app', 'sms', 'gate', 'cc', 'crew', 'ccagents'], pause_ramp_tasks: ['ramp', 'gates', 'crew'],
@@ -183,7 +199,7 @@ class PracticeApi {
     this.s = { run_id, roles: body.roles || [], status: 'running', minute: 660, speed_idle: 5, speed_pending: 1 / 6, started_at: new Date().toISOString(),
       questions: [], nextId: 1, scriptIdx: 0, decisions: [], approvedKeys: new Set(), wrongTotal: 0, todayTotal: 0, beat: performance.now(), lastReal: performance.now(),
       versions: { situation: 1, network_recovery: 96, passenger_care: 200, station_staff: 40, communication: 300 }, lastRun: {}, edges: [],
-      notes: {}, reports: [], closedGates: new Set(), rebooked: {}, refunded: new Set() };
+      notes: {}, reports: [], closedGates: new Set(), rebooked: {}, refunded: new Set(), sentLog: [] };
     this.sessionsList.push(this.s);
     this.timer = setInterval(() => this._tick(), 250);
     return { run_id };
@@ -246,6 +262,7 @@ class PracticeApi {
     s.decisions.push({ id: q.id, title: q.title, role: ROLE_TITLES[q.role] || q.role, action: q.action, answer: status, reason,
       asked: hm(q.askedMin), answered: hm(m), waited_min: Math.round(m - q.askedMin), by });
     if (status === 'approved' && q.key) s.approvedKeys.add(q.key);
+    if (status === 'approved') this._sendFor(q, m);
     s.versions.communication += q.msg && status === 'approved' ? 1 : 0;
   }
 
@@ -272,6 +289,7 @@ class PracticeApi {
       if_declined: q.lastOption || q.reject.last ? q.reject.consequence : 'The co-pilot comes back with a different plan.',
       bundle: q.askedMin >= 690 ? { id: 'b1', title: 'Ground stop at MCI, 11:30', started: '11:30' } : { id: 'b0', title: 'Normal operations', started: '05:00' },
       section: q.urgent || q.safety ? 'urgent' : 'routine',
+      care: q.care || null,
       allowed_changes: q.action === 'delay_flight' ? { delay_min: [83, 100, 130] } : q.action === 'move_gate_agents' ? { gate: ['B53', 'B55', 'B57', 'B60'] } : null,
       why: { plan: q.plan, trigger: q.trigger.map(([t, source, text]) => ({ t, source, text })), inputs: q.inputs.map(([kind, version, t]) => ({ kind, version, t })),
         options_considered: q.options.map(([option, why_not]) => ({ option, why_not })), rule_check: { ok: q.rule[0], rules: q.rule[1], text: q.rule[2] }, why_human: q.whyHuman },
@@ -441,7 +459,15 @@ class PracticeApi {
     const script = fid === 'WN2031' && m >= 735 && m < 850 ? 'WN2031 from Denver landed in St. Louis because of thunderstorms at Kansas City. It will fly on to Kansas City when the airport reopens, expected around 14:00.'
       : fid === 'WN1033' && swapOk ? 'WN1033 to Baltimore now leaves at 15:14 from gate B58, with a fresh crew. Boarding starts 14:44.'
       : stop ? `Thunderstorms have stopped all departures at Kansas City. We expect to restart around ${m < 780 ? '13:00' : '14:00'}. Next update by ${hm(Math.ceil((m + 1) / 30) * 30)}.` : 'On time.';
-    return { id: fid, ...F, est_dep: F.sched_dep, est_arr: F.sched_arr, status, script: { text: script, updated: hm(Math.max(660, m - 3)) },
+    const told = (key) => s.questions.some((q) => q.key === key && q.status === 'approved');
+    const lagging = (fid === 'WN2031' && m >= 735 && m < 850 && !told('maya-div')) || (fid === 'WN1033' && swapOk && !s.questions.some((q) => q.maya === 'swapmsg' && q.status === 'approved'));
+    const since = hm(fid === 'WN2031' ? 735 : 870);
+    const old = fid === 'WN2031' ? 'WN2031 from Denver, landing 13:02' : 'WN1033 delayed, new time to come';
+    const one_story = [['app', lagging ? old : script, !lagging], ['sms', lagging ? old : script, !lagging], ['gate_screen', lagging ? old : status, !lagging],
+      ['call_center', lagging ? old : script, !lagging], ['counter', stop || swapOk ? (lagging ? old : script) : null, stop || swapOk ? !lagging : null],
+      ['gate_agents', stop || swapOk ? (lagging ? old : script) : null, stop || swapOk ? !lagging : null], ['crew', F.crew ? `${F.crew.id}: ${status}` : null, F.crew ? true : null]]
+      .map(([place, says, matches]) => ({ place, says, matches, since: matches === false ? since : hm(Math.max(660, m - 3)) }));
+    return { id: fid, ...F, truth: script === 'On time.' ? `${fid} is on time.` : script, one_story, est_dep: F.sched_dep, est_arr: F.sched_arr, status, script: { text: script, updated: hm(Math.max(660, m - 3)) },
       notes: (s.notes[fid] || []), on_screens: { app: script, sms: script, gate_screen: status, call_center: script } };
   }
   async flight(id, fid) { return this._flightInfo(fid); }
@@ -452,8 +478,8 @@ class PracticeApi {
     const rejectedSwap = this.s.questions.some((q) => q.key === 'swap' && q.lastOption && q.status === 'rejected');
     return [
       { id: 'PAX0001', name: 'Maya Torres', booking_ref: 'QX7K2M', flight_id: 'WN1033', status: rejectedSwap ? 'Needs rebooking' : swapOk ? 'Confirmed, leaves 15:14' : 'Delayed', needs: [] },
-      { id: 'PAX0102', name: 'Daniel Okafor', booking_ref: 'LM4P9R', flight_id: 'WN1031', status: 'Held: ground stop', needs: ['wheelchair'] },
-      { id: 'PAX0144', name: 'Priya Nair', booking_ref: 'ZT8D3W', flight_id: 'WN1034', status: 'Delayed to 13:43', needs: [] },
+      { id: 'PAX0102', name: 'Daniel Okafor', booking_ref: 'LM4P9R', flight_id: 'WN1032', status: 'Flight cancelled', needs: ['wheelchair'] },
+      { id: 'PAX0144', name: 'Priya Nair', booking_ref: 'ZT8D3W', flight_id: 'WN1032', status: 'Flight cancelled', needs: [] },
       { id: 'PAX0207', name: 'Sam Whitfield (age 11)', booking_ref: 'UM2B6K', flight_id: 'WN1033', status: 'Delayed', needs: ['unaccompanied_minor'] },
     ];
   }
@@ -474,17 +500,20 @@ class PracticeApi {
       { option_id: 'r3', flights: [{ flight_id: 'WN3005', from: 'MCI', to, dep: '06:30', arr: '10:15' }], arrives: 'tomorrow 10:15', seats_left: 22, why: 'Nonstop, but overnight: a hotel is booked automatically', recommended: false },
     ];
     const focus = maya ? (await this.state()).focus : null;
-    return { id: c.id, name: c.name, trip, true_status: rebooked ? `Rebooked on ${rebooked.flights.map((f) => f.flight_id).join(' + ')}` : focus ? focus.true_status : c.status,
-      screens: focus ? focus.screens : [], needs: c.needs, rebooking, hotel: rebooked && rebooked.option_id === 'r3' ? { name: 'Hilton KCI Airport', confirmed: true, auto: true } : null, refund_due: s.refunded.has(cid) ? false : c.status.includes('ancel') };
+    const messages = s.sentLog.filter((x) => x.to === c.name || (x.count > 1 && c.flight_id && x.text.includes(c.flight_id))).map((x) => ({ t: x.t, channel: x.channel, text: x.text }));
+    const refunds = s.refunded.has(cid) ? [{ amount: 189, status: 'issued', t: (s.sentLog.find((x) => x.to === c.name && x.kind === 'refund') || {}).t || '' }] : [];
+    return { messages, refunds, id: c.id, name: c.name, trip, true_status: rebooked ? `Rebooked on ${rebooked.flights.map((f) => f.flight_id).join(' + ')}` : focus ? focus.true_status : c.status,
+      screens: focus ? focus.screens : [], needs: c.needs, rebooking, hotel: rebooked && rebooked.option_id === 'r3' ? { name: 'Hilton KCI Airport', price: 139, shuttle: 'every 20 min, door 4', status: 'booked automatically' } : null, refund_due: s.refunded.has(cid) ? false : c.status.includes('ancel') };
   }
   async rebook(id, cid, body) {
     const c = await this.customer(id, cid);
     const opt = c.rebooking.find((o) => o.option_id === body.option_id);
     this.s.rebooked[cid] = opt;
+    this._send(Math.floor(this.s.minute), c.name, 'text', 'rebook', `You're now on ${opt.flights.map((f) => `${f.flight_id} at ${f.dep}`).join(' then ')}, arriving ${opt.arrives}.`);
     this.s.decisions.push({ id: 900 + this.s.decisions.length, title: `Rebooked ${c.name} on ${opt.flights.map((f) => f.flight_id).join(' + ')}`, role: 'counter_gate_agent', action: 'rebook', answer: 'approved', reason: '', asked: hm(this.s.minute), answered: hm(this.s.minute), waited_min: 0 });
     return this.customer(id, cid);
   }
-  async refund(id, cid) { this.s.refunded.add(cid); return { ok: true }; }
+  async refund(id, cid) { this.s.refunded.add(cid); const c = this._customers().find((x) => x.id === cid); this._send(Math.floor(this.s.minute), c ? c.name : cid, 'email', 'refund', 'Your refund of $189 has been issued to your original payment. It can take 5 to 7 business days to appear.'); return { ok: true }; }
   async station() {
     const s = this.s, m = Math.floor(s.minute);
     const gates = ['B50', 'B52', 'B53', 'B54', 'B55', 'B56', 'B57', 'B58', 'B59', 'B60'].map((g, i) => {
@@ -516,6 +545,20 @@ class PracticeApi {
     return { since, decisions: n, open: open.map((q) => ({ id: q.id, title: q.headline || q.title })), watch, auto_done: s.refunded.size,
       text: `Since ${since}: ${n} decisions made, ${open.length} still open. ${watch.join(' ')}` };
   }
+
+
+  _send(m, to, channel, kind, text, count = 1) { this.s.sentLog.push({ t: hm(m + 1), minute: m + 1, to, channel, kind, text, count }); }
+  _sendFor(q, m) {
+    if (q.msg) this._send(m, `${q.pax.toLocaleString()} Customers`, 'app + text', 'message', q.plan.includes('"') ? q.plan.replace(/^.*?"(.*)".*$/, '$1') : q.plan, q.pax);
+    if (q.key === 'swap') { this._send(m, 'Crew C35', 'crew', 'message', 'You are assigned to WN1033 MCI to BWI, departing 15:14 from gate B58. Report by 14:30.'); this._send(m, 'Gate agents', 'staff_note', 'message', 'WN1033 now leaves 15:14 from B58 with crew C35. Boarding 14:44.'); }
+    if (q.care) {
+      for (const c of q.care.customers) this._send(m, c.name, 'text', c.action === 'hotel' ? 'hotel' : 'rebook', c.action === 'hotel'
+        ? `Your new flight is ${c.detail.flights[0].flight_id} tomorrow at ${c.detail.flights[0].dep}. Tonight you're booked at the ${c.detail.hotel.name}; shuttle ${c.detail.hotel.shuttle}.`
+        : `You're now on ${c.detail.flights[0].flight_id} to Dallas today at ${c.detail.flights[0].dep}, arriving ${c.detail.flights[0].arr}.`);
+      for (const a of q.care.auto_done || []) this._send(m, `${a.count} Customers`, 'email', 'refund', `Refunds issued automatically for unused fares: $${a.total} in total.`, a.count);
+    }
+  }
+  async sent(id, since) { return this.s.sentLog.filter((x) => x.minute > since); }
 
   async history() { return { decisions: [...this.s.decisions].reverse() }; }
 

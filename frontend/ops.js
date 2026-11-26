@@ -2,6 +2,7 @@
 // Flight positions come from the day's events up to the live clock; nothing here writes anything.
 import { NetworkMap } from './map.js';
 import { stormWindow, weatherAt, stormCell, compass } from './weather.js';
+import { oneStoryHtml } from './story.js';
 
 const $ = (id) => document.getElementById(id);
 const hhmm = (m) => { const v = Math.max(0, Math.round(m)); return `${String(Math.floor(v / 60) % 24).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`; };
@@ -275,6 +276,7 @@ export class OpsView {
         ];
         return main + `<tr class="expand"><td colspan="5">
           <dl class="fl-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+          ${oneStoryHtml(d)}
           ${d?.script?.text ? `<div class="script"><span class="k">What to tell Customers${d.script.updated ? `, updated ${esc(d.script.updated)}` : ''}</span><p>${esc(d.script.text)}</p></div>` : ''}
           ${d?.notes?.length ? `<ul class="notes">${d.notes.slice(-3).map((n) => `<li><b>${esc(n.t)}</b> ${esc(n.role)}: ${esc(n.text)}</li>`).join('')}</ul>` : ''}
           <div class="act-row"><button class="btn" type="button" data-follow="${esc(r.f.id)}">${sel ? 'Following on the map' : 'Show on the map'}</button>
