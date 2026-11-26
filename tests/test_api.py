@@ -20,7 +20,7 @@ def test_every_station_has_map_coordinates(db):
 
 def test_front_end_page_is_served():
     r = client.get("/")
-    assert r.status_code == 200 and "Ground-Stop Co-Pilot" in r.text
+    assert r.status_code == 200 and "MCI Ops Co-Pilot" in r.text            # the app's name (front end: "One app")
 
 
 def test_runs_endpoint_answers(db):
