@@ -89,6 +89,15 @@ export function drawTrace(container, graph, { onNode } = {}) {
 // Row 1: what happened -> every agent's input -> the shared state -> rule check and orchestrator -> you.
 // Row 2: what your answer changed -> one truth -> sent to every screen and every person at once.
 const AGENT_ORDER = ['situation', 'network_recovery', 'passenger_care', 'station_staff', 'communication'];
+// Shorten text to fit a width, measured with the real font, ending in "…".
+const measureCtx = document.createElement('canvas').getContext('2d');
+function fitText(text, width, font) {
+  measureCtx.font = font;
+  let t = String(text ?? '');
+  if (measureCtx.measureText(t).width <= width) return t;
+  while (t.length > 1 && measureCtx.measureText(t + '…').width > width) t = t.slice(0, -1);
+  return t.trimEnd() + '…';
+}
 const DEST_ICON = {
   app: '<path d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 3v13h10V5zm5 15.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>',
   sms: ICONS.communication,
@@ -106,11 +115,16 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
   const H2 = Math.max(m.dests.length * DS - 8, Math.min(4, m.changes.length) * 58 - 10, 150);
   const H = R2 + H2;
   const info = [];
-  const box = (x, y, w, h, cls, iconSvg, lines, sub, data) => {
+  const box = (x, y, w, h, cls, iconSvg, lines, sub, data, reserve = 0) => {
     const i = info.push(data) - 1;
     const tx = iconSvg ? 40 : 12;
+    const big = /\b(shared|hub)\b/.test(cls);
+    const room = w - tx - 8 - reserve;
+    lines = lines.map((l) => fitText(l, room, `${big ? 700 : 600} ${big ? 14 : 13}px Inter, system-ui, sans-serif`));
+    if (sub) sub = fitText(sub, room, '400 11px Inter, system-ui, sans-serif');
     const ly = sub ? h / 2 - 3 - (lines.length - 1) * 8 : h / 2 + 5 - (lines.length - 1) * 8;
-    return `<g class="df ${cls}" transform="translate(${x},${y})" tabindex="0" role="button" data-i="${i}" aria-label="${esc(lines.join(' '))}">
+    return `<g class="df ${cls}" transform="translate(${x},${y})" tabindex="0" role="button" data-i="${i}" aria-label="${esc(data && (data.label || data.name) || lines.join(' '))}">
+      <title>${esc(data && (data.label || data.name) || lines.join(' '))}</title>
       <rect width="${w}" height="${h}" rx="9"/>
       ${iconSvg ? `<svg x="11" y="${h / 2 - 10}" width="20" height="20" viewBox="0 0 24 24" class="df-ico">${iconSvg}</svg>` : ''}
       ${lines.map((l, k) => `<text x="${tx}" y="${ly + k * 16}" class="df-label">${esc(l)}</text>`).join('')}
@@ -139,8 +153,7 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
   // agents
   m.agents.forEach((a, k) => {
     const y = k * (AH + AG);
-    g += box(176, y, 200, AH, a.involved ? 'agent on' : 'agent off', ICONS[a.key], [a.name], null, a);
-    if (a.involved) g += `<text x="${176 + 194}" y="${y + 24}" class="df-ver" text-anchor="end">${esc(a.short || '')}</text>`;
+    g += box(176, y, 200, AH, a.involved ? 'agent on' : 'agent off', ICONS[a.key], [a.name], a.involved && a.short ? a.short : null, a);
     e += curve(376, y + AH / 2, 404, H1 / 2, a.involved ? 'on' : 'off');
   });
 
@@ -173,7 +186,7 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
       e += curve(260, R2 + k * 58 + 24, 300, R2 + H2 / 2, m.preview ? 'preview' : 'on');
     });
     // one truth hub
-    g += box(300, R2, 120, H2, `hub ${m.preview ? 'preview' : 'on'}`, ICONS.communication, ['One update'], m.hub.sub, m.hub);
+    g += box(300, R2, 140, H2, `hub ${m.preview ? 'preview' : 'on'}`, ICONS.communication, ['One update'], m.hub.sub, m.hub);
     // destinations
     if (!m.dests.length) {
       g += `<text x="470" y="${R2 + 22}" class="df-sub">${m.preview ? 'Who is told shows up here once you answer.' : 'No one needed telling, or the messages are still being written.'}</text>`;
@@ -185,7 +198,7 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
       const mark = st === 'delivered' ? `✓ ${d.t || ''}` : st === 'failed' ? 'failed, retrying' : st === 'waiting' ? 'sending…' : 'will be told';
       g += box(x, y, 300, DS - 8, `dest ${st}`, DEST_ICON[d.icon] || DEST_ICON.staff, [d.label], null, d);
       g += `<text x="${x + 290}" y="${y + (DS - 8) / 2 + 4}" class="df-mark ${st}" text-anchor="end">${esc(mark)}</text>`;
-      e += `<path class="df-edge ${st === 'waiting' ? 'sending' : st === 'preview' ? 'preview' : st === 'delivered' ? 'on' : 'bad'}" d="M420,${R2 + H2 / 2} C445,${R2 + H2 / 2} 445,${y + (DS - 8) / 2} ${x - 3},${y + (DS - 8) / 2}" marker-end="url(#dfa)"/>`;
+      e += `<path class="df-edge ${st === 'waiting' ? 'sending' : st === 'preview' ? 'preview' : st === 'delivered' ? 'on' : 'bad'}" d="M440,${R2 + H2 / 2} C455,${R2 + H2 / 2} 455,${y + (DS - 8) / 2} ${x - 3},${y + (DS - 8) / 2}" marker-end="url(#dfa)"/>`;
     });
   }
 

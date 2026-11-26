@@ -28,6 +28,7 @@
   <div class="top-right">
     <label class="field" id="role-field" hidden><span class="field-label">You are</span><select id="role"></select></label>
     <button id="report-btn" class="btn" type="button" hidden>Report from the floor</button>
+    <button id="popups-btn" class="btn ghost" type="button" hidden aria-pressed="true">Message pop-ups: on</button>
     <button id="theme" class="btn ghost" type="button">Dark mode</button>
   </div>
 </header>
@@ -217,6 +218,7 @@
 </dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>
+<div id="sent-stack" class="sent-stack" aria-live="polite" aria-label="Messages being sent"></div>
 <script type="module" src="/live.js"></script>
 </body>
 </html>
