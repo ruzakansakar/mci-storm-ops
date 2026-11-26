@@ -247,7 +247,7 @@ function renderDetail() {
         <input type="radio" name="opt-${it.id}" value="${esc(o.id)}" ${o.id === chosen ? 'checked' : ''} ${rec || options.length === 1 ? 'disabled' : ''}>
         <span class="opt-body"><span class="opt-label">${esc(plain(o.label))}${o.recommended ? ' <span class="tagx ok">Suggested</span>' : ''}</span>
         <span class="opt-why">${esc(plain(o.why || ''))}</span>${o.effect ? `<span class="opt-eff">${esc(o.effect)}</span>` : ''}</span></label>`).join('')}</div>
-      ${!rec && changes ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).map(([k, vals]) => `<label class="field"><span class="field-label">${({ delay_min: 'Extra delay (minutes)', gate: 'Gate', crew_id: 'Crew', extension_min: 'Duty extension (minutes)', message_text: 'Message wording' })[k] || plain(k)}</span>
+      ${!rec && changes && Object.values(changes).some((v) => Array.isArray(v) && v.every((x) => typeof x !== 'object')) ? `<details class="adjust"><summary>Change something before approving</summary><div class="adjust-row">${Object.entries(changes).filter(([, v]) => Array.isArray(v) && v.every((x) => typeof x !== 'object')).map(([k, vals]) => `<label class="field"><span class="field-label">${({ delay_min: 'Extra delay (minutes)', gate: 'Gate', crew_id: 'Crew', extension_min: 'Duty extension (minutes)', message_text: 'Message wording' })[k] || plain(k)}</span>
         <select data-change="${esc(k)}"><option value="">Keep as suggested</option>${vals.map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('')}</div></details>` : ''}</section>
     ${careHtml(it)}
     <section class="d-sec warnbox"><h3>${it.last_option ? 'This is the last option' : 'If you say no'}</h3><p>${esc(plain(ifNo))}</p></section>
@@ -319,7 +319,7 @@ function careHtml(it) {
   const what = (x) => {
     const f = (x.detail?.flights || []).map((fl) => `${fl.flight_id} ${fl.dep}${fl.arr ? `, arrives ${fl.arr}` : ''}`).join(' then ');
     if (x.action === 'hotel') return `${f ? `${f}, ` : ''}hotel: ${x.detail?.hotel?.name || ''}${x.detail?.hotel?.price ? ` (${money(x.detail.hotel.price)})` : ''}`;
-    if (x.action === 'refund') return `Refund ${money(x.detail?.amount)}`;
+    if (x.action === 'refund') return x.detail?.amount != null ? `Refund ${money(x.detail.amount)}` : 'Refund of the unused fare';
     if (x.action === 'ride') return `Ride home${x.detail?.amount ? ` (${money(x.detail.amount)})` : ''}`;
     return f;
   };
@@ -327,8 +327,8 @@ function careHtml(it) {
     <ul class="care-list">${c.customers.map((x) => `<li><div><b>${esc(x.name)}</b> <span class="tagx quiet">${esc({ rebook: 'Rebook', hotel: 'Rebook + hotel', refund: 'Refund', ride: 'Ride' }[x.action] || x.action)}</span>
       <br>${esc(what(x))}<br><span class="muted">${esc(plain(x.why))}</span></div>
       <button class="btn" type="button" data-cust="${esc(x.id)}">Open Customer</button></li>`).join('')}</ul>
-    ${c.message_text ? `<div class="script"><span class="k">What they'll be told</span><p>${esc(c.message_text)}</p></div>` : ''}
-    ${(c.auto_done || []).length ? `<p class="muted small">Done automatically: ${c.auto_done.map((a) => `${a.count} ${a.action}${a.count > 1 ? 's' : ''}${a.total ? `, ${money(a.total)} in total` : ''}`).join('; ')}.</p>` : ''}</section>`;
+    <div class="script"><span class="k">What they'll be told</span><p>${c.message_text ? esc(c.message_text) : '<span class="muted">Communication writes the exact words as soon as you approve; they will show here and in the message pop-ups.</span>'}</p></div>
+    ${(c.auto_done || []).length ? `<p class="muted small">Already done automatically today: ${c.auto_done.map((a) => `${a.count} ${a.action}${a.count > 1 ? 's' : ''}${a.total ? ` (${money(a.total)})` : ''}`).join(', ')}.</p>` : ''}</section>`;
 }
 
 async function decide(ids, body, done) {
@@ -468,11 +468,11 @@ async function showCustomer(id) {
         <div><b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)} ${o.recommended ? '<span class="tagx ok">Suggested</span>' : ''}
         <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null ? `, ${o.seats_left} seats left` : ''}</span></div>
         <button class="btn ${o.recommended ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Approve this rebooking</button></li>`).join('')}</ul>` : '<p class="muted">No rebooking needed or available right now.</p>'}
-    ${c.hotel ? `<p><b>Hotel:</b> ${esc(c.hotel.name)}${c.hotel.price ? `, $${c.hotel.price}` : ''}${c.hotel.shuttle ? `, shuttle ${esc(c.hotel.shuttle)}` : ''}${c.hotel.status ? ` <span class="muted">(${esc(plain(c.hotel.status))})</span>` : ''}</p>` : ''}
-    ${(c.refunds || []).length ? `<p><b>Refunds:</b> ${c.refunds.map((r) => `$${r.amount} ${esc(r.status)}${r.t ? ` at ${esc(r.t)}` : ''}`).join('; ')}</p>` : ''}
+    ${c.hotel ? `<p><b>Hotel:</b> ${esc(c.hotel.name)}${c.hotel.price ? `, $${c.hotel.price}` : ''}${c.hotel.shuttle === true ? ', shuttle included' : c.hotel.shuttle ? `, shuttle ${esc(c.hotel.shuttle)}` : ''}${c.hotel.status ? ` <span class="muted">(${esc(plain(c.hotel.status))})</span>` : ''}</p>` : ''}
+    ${(c.refunds || []).length ? `<p><b>Refunds:</b> ${c.refunds.map((r) => `${r.amount != null ? `$${r.amount}` : 'Unused fare'} ${esc(r.status)}${r.t ? ` at ${esc(r.t)}` : ''}`).join('; ')}</p>` : ''}
     <div class="act-row">${c.refund_due ? '<button class="btn" id="refund" type="button">Refund instead</button>' : ''}</div>
     <h3>Messages they received</h3>
-    ${(c.messages || []).length ? `<ol class="msgs">${c.messages.map((x) => `<li><span class="t">${esc(x.t)}</span> <span class="tagx quiet">${esc(x.channel)}</span> "${esc(x.text)}"</li>`).join('')}</ol>` : '<p class="muted">No messages yet.</p>'}`;
+    ${(c.messages || []).length ? `<ol class="msgs">${c.messages.map((x) => `<li><span class="t">${esc(x.t)}</span> <span class="tagx quiet">${esc(cap(CHANNEL_WORDS[x.channel] || plain(x.channel || 'note')))}</span> "${esc(x.text)}"</li>`).join('')}</ol>` : '<p class="muted">No messages yet.</p>'}`;
   card.querySelectorAll('[data-rebook]').forEach((b) => b.addEventListener('click', async () => {
     try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); toast('Rebooked. The new trip goes out to every screen and every agent.'); showCustomer(id); }
     catch (err) { toast(`Could not rebook: ${err.message}`, true); }
@@ -593,12 +593,14 @@ async function refreshSent() {
   const first = !ui.sentPrimed; ui.sentPrimed = true;
   if (!rows || !rows.length) return;
   ui.sentSince = Math.max(ui.sentSince, ...rows.map((r) => r.minute || 0));
-  if (!ui.popups || first) return;   // do not replay the morning on first load
   const ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
-  for (const r of rows.slice(-4)) {
+  ui.sentSeen ||= new Set();
+  const fresh = rows.filter((r) => { const k = `${r.minute}|${r.to}|${r.kind}|${r.text}`; if (ui.sentSeen.has(k)) return false; ui.sentSeen.add(k); return true; });
+  if (first || !ui.popups) return;
+  for (const r of fresh.slice(-4)) {
     const el = document.createElement('div');
     el.className = `sent-pop ${r.kind || 'message'}`;
-    el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}, ${esc(r.t)}</span><span class="sp-text">"${esc(r.text)}"</span>`;
+    el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${r.channel ? `${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}` : `${esc({ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update')} for ${esc(r.to)}`}, ${esc(r.t)}</span><span class="sp-text">"${esc(String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, ''))}"</span>`;
     $('sent-stack').appendChild(el);
     setTimeout(() => el.classList.add('out'), 7000);
     setTimeout(() => el.remove(), 7600);
