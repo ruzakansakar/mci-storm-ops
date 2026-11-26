@@ -156,7 +156,8 @@ class Tracer:
             bits = [p.get(k) for k in ("flight_id", "reason", "new_departure", "expected_end", "diverted_to") if p.get(k)]
             bits = [hhmm(b) if isinstance(b, str) and re.match(r"\d{4}-\d\d-\d\dT", b) else str(b) for b in bits]
             out.append({"t": hhmm(e["occurred_at"]), "source": self.feed_of(agent, e["type"]),
-                        "text": e["type"].replace("_", " ") + (": " + ", ".join(bits) if bits else "")})
+                        "text": e["type"].replace("_", " ") + (": " + ", ".join(bits) if bits else ""),
+                        "type": e["type"], "payload": {k: v for k, v in p.items() if not isinstance(v, (dict, list))}})
         return out
 
     def options_considered(self, agent, action, proposal, now):

@@ -92,5 +92,50 @@ destinations:
     customer_service: counter
     wheelchair: wheelchair_agents
 
+# EVENT BUNDLES: every question belongs to the event that caused it (the orchestrator's incident), else "Normal operations".
+bundles:
+  titles:                         # an incident's kind -> its title in the queue (the start time is added: "..., 11:30")
+    weather: "Ground stop at MCI"
+    faa_program: "FAA program at MCI"
+    ground_stop: "Ground stop at MCI"
+    it_outage: "Systems outage"
+    security: "Security event at MCI"
+    airport: "Airport problem at MCI"
+    crew: "Crew problem"
+    other: "Disruption at MCI"
+    unknown: "Disruption at MCI"
+  never_grouped:                  # hard decisions are always decided one by one (assumption: every rebooking counts as hard)
+    [call_in_reserve_crew, swap_crews, deadhead_crew, extend_crew_duty, flag_crew_legality, divert_flight, cancel_flight,
+     delay_flight, rebook_passenger]
+
+# APPROVE WITH A CHANGE: what a person may change before approving, per action. The changed proposal is rule-checked again.
+allowed_changes:
+  assign_gates: [gate]                         # another gate free for the plane's whole stay
+  delay_flight: [delay_min]                    # minutes added to the proposed new departure
+  call_in_reserve_crew: [crew_id]              # another LEGAL reserve or crew the agent found
+  swap_crews: [crew_id]
+  deadhead_crew: [crew_id]
+  send_status_update: [text]                   # message wording; the facts and the message check stay
+  draft_message: [text]
+  send_mass_message: [text]
+  send_staff_briefing: [text]
+  extend_crew_duty: [extension_min]            # how many minutes of extension you approve
+  delay_min_values: [0, 15, 30, 60]            # assumption: the choices offered (0 = as proposed)
+  extension_min_values: [30, 60, 90, 120]      # assumption: up to the legal maximum (2 h before takeoff, 14 CFR 117.19)
+
+# FRONTLINE VIEWS (flight, Customer, station, clocks, handover)
+views:
+  frontline_roles: [counter_gate_agent]   # frontline staff: flight and Customer views, reports and notes; no approval queue
+  search_min_chars: 2             # assumption: a Customer search needs at least this many characters
+  search_max_results: 20          # assumption
+  rebooking_max_options: 3        # assumption: later flights shown to a Customer
+  crew_clock_within_min: 180      # assumption: the crew clock lists crews legal for less than this
+  rebook_offer_delay_min: 60      # assumption: a counter offers other flights to a Customer whose flight out is this late
+  significant_delay_min: 180      # DOT: a significant delay for a domestic flight is 3 hours or more (a refund is due if declined)
+  refund_due_days: 7              # the DOT prompt-refund timing for card purchases (config/rules law: refund_timing_days)
+  watch_tarmac_min: 120           # assumption: the handover warns about a tarmac wait this long (the limit is 180)
+  report_kinds: [gate_unavailable, jet_bridge_slow, long_queue, special_assistance_waiting, equipment_issue, other]
+  text_max_chars: 500             # assumption: a report or note is short plain text
+
 focus:
   random_day: most_trip_changes   # a random day follows the tracked passenger with the most trip changes so far (picked once)

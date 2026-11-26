@@ -610,6 +610,11 @@ def assess(ctx, memory: Memory | None = None, write: bool = True, settings: dict
         else:
             a["status"] = "normal"
             a["decision_ids"] = ["A01"]
+    for r in st.floor_reports:                           # live mode: every report from the floor is evidence (none otherwise)
+        a["evidence"].append({"event_id": r["event_id"], "at": r["at"], "type": "floor_report", "source": "floor",
+                              "points_to": r["kind"], "note": f"floor report ({r['kind'].replace('_', ' ')}"
+                              + (f", {r['flight_id']}" if r.get("flight_id") else "") + (f", gate {r['gate']}" if r.get("gate") else "")
+                              + f"): {r.get('text') or ''}".rstrip(": ")})
     a["summary"] = _summary(a, st)
     a["_state"] = st
 

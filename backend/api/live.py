@@ -38,8 +38,17 @@ ROLES = None
 def known_roles():
     global ROLES
     if ROLES is None:
-        ROLES = _roles()
+        ROLES = _roles() | set(_live()["views"]["frontline_roles"])
     return ROLES
+
+
+def _live():
+    from backend.execution.live_human import load_settings
+    return load_settings()
+
+
+def frontline():
+    return set(_live()["views"]["frontline_roles"])
 
 
 class StartBody(BaseModel):
@@ -64,9 +73,49 @@ class ControlBody(BaseModel):
 
 class DecideBody(BaseModel):
     question_ids: list[int] = Field(min_length=1, max_length=200)
-    action: Literal["approve", "reject", "wait", "hand_off"]
+    action: Literal["approve", "approve_option", "approve_with_change", "reject", "wait", "hand_off"]
+    option_id: str | None = Field(None, max_length=20)
+    change: dict | None = None
     reason: str = Field("", max_length=500)
     minutes: int | None = None
+
+    @field_validator("change")
+    @classmethod
+    def _small(cls, v):
+        if v is not None and (len(v) > 3 or any(not isinstance(k, str) or len(str(x)) > 1000 for k, x in v.items())):
+            raise ValueError("change: at most 3 short fields")
+        return v
+
+
+class ReportBody(BaseModel):
+    kind: Literal["gate_unavailable", "jet_bridge_slow", "long_queue", "special_assistance_waiting", "equipment_issue", "other"]
+    flight_id: str | None = Field(None, pattern=r"^WN\d{3,4}$")
+    gate: str | None = Field(None, pattern=r"^[A-Z]{1,2}\d{1,3}$")
+    text: str = Field("", max_length=500)
+    role: str = Field("", max_length=60)
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, v):
+        if v and v not in known_roles():
+            raise ValueError(f"unknown role: {v}")
+        return v
+
+
+class NoteBody(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    role: str = Field("", max_length=60)
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, v):
+        if v and v not in known_roles():
+            raise ValueError(f"unknown role: {v}")
+        return v
+
+
+class RebookBody(BaseModel):
+    option_id: str = Field(min_length=1, max_length=20)
 
 
 # ------------------------------------------------------------ helpers
@@ -144,9 +193,14 @@ def decide(run_id: str, body: DecideBody):
         raise HTTPException(422, "wait needs minutes (10 or 15)")
     if body.action == "reject" and not body.reason.strip():
         raise HTTPException(422, "a reason is required to reject")
+    if body.action == "approve_option" and not body.option_id:
+        raise HTTPException(422, "approve_option needs option_id")
+    if body.action == "approve_with_change" and not body.change:
+        raise HTTPException(422, "approve_with_change needs change")
     with s.lock:
         try:
-            results = s.decide(list(dict.fromkeys(body.question_ids)), body.action, body.reason, body.minutes)
+            results = s.decide(list(dict.fromkeys(body.question_ids)), body.action, body.reason, body.minutes,
+                               body.option_id, body.change)
         except DecideError as e:
             _fail(e)
     failed = [r for r in results if r["error"]]
@@ -154,8 +208,74 @@ def decide(run_id: str, body: DecideBody):
         first = failed[0]
         raise HTTPException(first["code"], {"error": first["error"], "blocked_by": first.get("blocked_by") or [],
                                             "results": [{k: r[k] for k in ("id", "status", "error")} for r in results]})
-    return {"ok": not failed, "results": [{"id": r["id"], "status": r["status"], "error": r["error"],
+    return {"ok": not failed, "results": [{"id": r["id"], "status": r["status"], "error": r["error"], "done": r.get("done"),
                                            **({"blocked_by": r["blocked_by"]} if r.get("blocked_by") else {})} for r in results]}
+
+
+def _running(run_id):
+    s, row = _session(run_id)
+    if s is None:
+        raise HTTPException(409, f"The session is {row['status']} (read-only after it ended or the server restarted).")
+    return s
+
+
+def _live_session(run_id):
+    """A session in this process (the flight, Customer, station and clock views read the live world)."""
+    s, row = _session(run_id)
+    if s is None or s.world is None:
+        raise HTTPException(409, "This view needs a session running in this server (it reads the live world).")
+    return s
+
+
+def _frontline(role):
+    if role not in frontline():
+        raise HTTPException(403, "Customer lookups are for frontline staff (role counter_gate_agent).")
+
+
+@router.post("/{run_id}/reports")
+def report(run_id: str, body: ReportBody):
+    s = _running(run_id)
+    with s.lock:
+        try:
+            return s.report(body.kind, body.flight_id, body.gate, body.text, body.role)
+        except DecideError as e:
+            _fail(e)
+
+
+@router.post("/{run_id}/flights/{flight_id}/notes")
+def add_note(run_id: str, flight_id: str, body: NoteBody):
+    s = _running(run_id)
+    with s.lock:
+        try:
+            return s.add_note(flight_id, body.text, body.role)
+        except DecideError as e:
+            _fail(e)
+
+
+@router.post("/{run_id}/customers/{pid}/rebook")
+def rebook(run_id: str, pid: str, body: RebookBody, role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _running(run_id)
+    with s.lock:
+        if s.world is None or pid not in s.world.truth:
+            raise HTTPException(404, f"No Customer {pid}.")
+        try:
+            return s.rebook(pid, body.option_id)
+        except DecideError as e:
+            _fail(e)
+
+
+@router.post("/{run_id}/customers/{pid}/refund")
+def refund(run_id: str, pid: str, role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _running(run_id)
+    with s.lock:
+        if s.world is None or pid not in s.world.truth:
+            raise HTTPException(404, f"No Customer {pid}.")
+        try:
+            return s.refund(pid)
+        except DecideError as e:
+            _fail(e)
 
 
 # ------------------------------------------------------------ reads
@@ -199,10 +319,12 @@ def state(run_id: str):
 def queue(run_id: str, roles: str | None = Query(None, max_length=1000)):
     s, row = _session(run_id)
     wanted = None if roles in ("", "all") else [r for r in roles.split(",") if r] if roles else None
+    if wanted and set(wanted) <= frontline():
+        return {"items": []}                               # frontline staff have no approval queue
     if s is not None:
         with s.lock:
             if roles is None and s.roles:
-                wanted = s.roles                          # the roles chosen at the start: the default view only
+                wanted = [r for r in s.roles if r not in frontline()] or None   # the start roles: the default view only
             return {"items": s.queue_items(wanted)}
     if roles is None and row["roles"]:
         wanted = row["roles"]
@@ -270,6 +392,69 @@ def history(run_id: str):
                     "answered": fmt(q["answered_minute"]) if q["answered_minute"] is not None else "",
                     "waited_min": (q["answered_minute"] - q["asked_minute"]) if q["answered_minute"] is not None else 0})
     return {"decisions": out}
+
+
+@router.get("/{run_id}/flights/{flight_id}/notes")
+def notes(run_id: str, flight_id: str):
+    s = _live_session(run_id)
+    with s.lock:
+        if flight_id not in s.world.flights:
+            raise HTTPException(404, f"No flight {flight_id}.")
+        return list(s.notes.get(flight_id, []))
+
+
+@router.get("/{run_id}/flights/{flight_id}")
+def flight(run_id: str, flight_id: str):
+    s = _live_session(run_id)
+    with s.lock:
+        f = s.views.flight(flight_id)
+    if f is None:
+        raise HTTPException(404, f"No flight {flight_id}.")
+    return f
+
+
+@router.get("/{run_id}/customers")
+def customers(run_id: str, q: str = Query("", max_length=60), role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _live_session(run_id)
+    with s.lock:
+        return s.views.search(q)
+
+
+@router.get("/{run_id}/customers/{pid}")
+def customer(run_id: str, pid: str, role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _live_session(run_id)
+    with s.lock:
+        c = s.views.customer(pid)
+    if c is None:
+        raise HTTPException(404, f"No Customer {pid}.")
+    return c
+
+
+@router.get("/{run_id}/station")
+def station(run_id: str):
+    s = _live_session(run_id)
+    with s.lock:
+        return s.views.station()
+
+
+@router.get("/{run_id}/clocks")
+def clocks(run_id: str):
+    s = _live_session(run_id)
+    with s.lock:
+        return s.views.clocks()
+
+
+@router.get("/{run_id}/handover")
+def handover(run_id: str, since: str | None = Query(None, pattern=r"^\d{1,2}:\d{2}$")):
+    s = _live_session(run_id)
+    m = None
+    if since:
+        h, mm = since.split(":")
+        m = int(h) * 60 + int(mm)
+    with s.lock:
+        return s.views.handover(m)
 
 
 @router.get("/{run_id}/results")

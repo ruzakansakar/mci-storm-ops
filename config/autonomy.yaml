@@ -1,0 +1,29 @@
+# What the co-pilot may do ON ITS OWN in live mode (chosen by the airline). Everything not listed here goes to a person.
+# Each automatic action is carried out through the normal path (rule check, then the agent's runner), logged with actor
+# "copilot:auto", shown in the history (answer "auto"), in the day summary and in its trace ("Done automatically: <rule>").
+# It never reaches the approval queue. today / copilot / orchestrated modes do not read this file.
+#
+# A setting that would automate a safety or legal item is REFUSED when the file is loaded (backend/execution/live_autonomy.py).
+
+automatic:
+  - id: dot_automatic_refund
+    rule: "the DOT automatic refund rule (14 CFR 260.6): a Customer whose flight is cancelled or significantly changed gets a refund if they decline the new trip"
+    action: offer_refund
+    decision_ids: [N02]           # Passenger Care's legal-floor refund offer (config/decisions.yaml)
+  - id: hotel_within_budget
+    rule: "a hotel room within the nightly hotel budget"
+    action: issue_compensation
+    kind: assign                  # one room for one Customer (Passenger Care's room assignment)
+    max_cost_usd: 150             # assumption: the airline's nightly hotel budget per room (the contracted hotels are $109-159)
+  - id: ride_within_contract
+    rule: "a ride within the contracted limit"
+    action: arrange_ground_transport
+    max_cost_usd: 70              # assumption: the contracted Uber XL trip (up to 10 miles) costs $70; vans ($325+/h) go to a person
+
+# Never automatic, whatever is written above: a safety or legal item. Listed by category so a wrong setting is caught at load.
+never_automatic:
+  crew_legality: [flag_crew_legality, call_in_reserve_crew, swap_crews, deadhead_crew, extend_crew_duty]
+  diversion: [divert_flight, recover_diverted_aircraft]
+  cancellation: [cancel_flight]
+  tarmac: [start_deplaning, return_to_gate, keep_on_board_exception, arrange_food_water, arrange_diversion_deplaning]
+  lightning: [ramp_closure, reopen_ramp, stop_work_for_staff_safety, flag_ramp_service_impact]

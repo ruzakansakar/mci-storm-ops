@@ -144,6 +144,7 @@ class State:
     last_event_at: dict = field(default_factory=dict)          # feed -> time of its last event
     unreadable: list = field(default_factory=list)             # (event id, type, why) set aside
     human_answers: dict = field(default_factory=dict)          # conflict key -> {answer, role, at}: a named human's A09 answer
+    floor_reports: list = field(default_factory=list)          # live mode: reports from the floor (evidence only)
     duplicates: int = 0
     incident_seen: bool = False                                # something abnormal was signalled earlier today
     messy: list = field(default_factory=list)                  # (time, feed, "duplicate" | "unreadable") when messy data came in
@@ -307,6 +308,9 @@ def _apply(st: State, e: dict):
             st.human_answers[p["conflict_key"]] = {"answer": p.get("answer_side"), "role": p.get("decided_by_role"), "at": when}
     elif typ == "next_day_flight_created":
         st.next_day_flights += 1
+    elif typ == "floor_report":
+        st.floor_reports.append({"event_id": e.get("id"), "at": when.isoformat(), "kind": p.get("kind"), "flight_id": p.get("flight_id"),
+                                 "gate": p.get("gate"), "text": p.get("text"), "role": p.get("role")})
     else:
         f = st.flights.get(p.get("flight_id"))
         if f is None:

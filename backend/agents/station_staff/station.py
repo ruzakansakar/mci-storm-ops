@@ -91,7 +91,8 @@ def _state(events, station, s):
     """What has happened by T, from the events only."""
     st = {"eta": {}, "etd": {}, "arrived": {}, "departed": {}, "cancelled": {}, "diverted": {}, "pushed": {}, "tarmac": {},
           "ramp": {"open": True, "closed_since": None, "expected_end": None, "closures": []}, "terminal": {},
-          "gates": {}, "tasks": {}, "called_in": {}, "paused": [], "decided": {}}
+          "gates": {}, "tasks": {}, "called_in": {}, "paused": [], "decided": {},
+          "closed_gates": set(), "queues": []}            # live mode: reports from the floor (none in any other mode)
     back = timedelta(minutes=s["diversions"]["flight_back_min"])
     for e in sorted(events, key=lambda e: (e["occurred_at"], e["id"])):
         p, typ, at = e.get("payload") or {}, e["type"], e["occurred_at"]
@@ -149,6 +150,10 @@ def _state(events, station, s):
             st["paused"].append({"from": _dt(p["from"]), "staff_ids": list(p.get("staff_ids") or []), "rid": p.get("recommendation")})
         elif typ == "station_decision_recorded":
             st["decided"][p.get("recommendation")] = p
+        elif typ == "floor_report" and p.get("kind") == "gate_unavailable" and p.get("gate"):
+            st["closed_gates"].add(p["gate"])                  # stop using that gate
+        elif typ == "floor_report" and p.get("kind") == "long_queue":
+            st["queues"].append({"at": at, "gate": p.get("gate"), "flight_id": p.get("flight_id")})
     return st
 
 
@@ -290,8 +295,8 @@ class Station:
         wheel = self.wheelchair()                         # vulnerable passengers get their staff first
         child = self.children()
         tasks = self.flight_work()
-        shortages = self.shortages(tasks)
-        self.call_in(shortages)
+        shortages = self.shortages(tasks) + self.queue_gaps()
+        self.call_in([x for x in shortages if not x.get("from_floor")])
         tarmac = self.tarmac(gates)
         terminal = self.terminal()
         return {"gates": gates, "tasks": tasks, "wheelchair": wheel, "child": child, "staff_shortages": shortages,
@@ -411,7 +416,11 @@ class Station:
         stands = [f"R{i + 1}" for i in range(S["remote_stands"])]
         tol = timedelta(minutes=S["conflict_tolerance_min"])
 
+        closed = st.get("closed_gates") or set()          # live mode: a gate the floor reported unavailable is never used
+
         def holder(gate, a, b, me):
+            if gate in closed:
+                return "a report from the floor (gate unavailable)"
             return next((o["flight_id"] for o in occ if o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
                          and (o["kind"] == "overnight" or o["from"] <= a)), None)
 
@@ -419,11 +428,11 @@ class Station:
 
         def taken_any(gate, a, b, me):
             # anyone at all (earlier or later) holding the gate then: a NEW gate must be free of everybody (5b)
-            return any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"]) for o in occ)
+            return gate in closed or any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"]) for o in occ)
 
         def taken(gate, a, b, me):
             # a plane that lands earlier (or was there overnight) keeps its gate; a later one moves
-            return any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
+            return gate in closed or any(o["gate"] == gate and o["flight_id"] != me and _overlap(a, b, o["from"], o["to"])
                        and (o["kind"] == "overnight" or o["from"] <= a) for o in occ)
 
         out = []
@@ -763,6 +772,19 @@ class Station:
         return out
 
     # ------------------------------------------------------------ staff shortages and calling people in
+    def queue_gaps(self):
+        """Live mode: a long queue reported from the floor is a staffing gap at that place, for a while (settings floor.*)."""
+        out = []
+        f = self.s.get("floor") or {}
+        for q in self.st.get("queues") or []:
+            end = q["at"] + timedelta(minutes=f.get("long_queue_gap_min", 30))
+            if end <= self.now:
+                continue
+            out.append({"role": "gate_agent" if q.get("gate") else "customer_service", "from": _iso(q["at"]), "to": _iso(end),
+                        "needed": None, "on_duty": None, "short_by": f.get("long_queue_short_by", 1),
+                        "where": q.get("gate") or "check-in", "from_floor": True})
+        return out
+
     def shortages(self, tasks):
         """Per role, 15-minute slots in the next horizon where the work needs more people than are on shift and not on a break."""
         G = self.static["groups"]

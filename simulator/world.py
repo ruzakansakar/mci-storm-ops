@@ -857,7 +857,11 @@ class World:
             moved = []
             for pid in facts.get("passenger_ids") or []:
                 b = next((b for b in self.bookings.get(pid, []) if b["status"] != "cancelled"
-                          and (self.flights[b["flight_id"]].get("_next_day") or self.flights[b["flight_id"]]["status"] == "cancelled")
+                          and (self.flights[b["flight_id"]].get("_next_day") or self.flights[b["flight_id"]]["status"] == "cancelled"
+                               # live mode: a Customer at the counter leaves the (delayed) flight the agent names; only that
+                               # path sends from_flight, so no other mode changes
+                               or (facts.get("from_flight") == b["flight_id"]
+                                   and self.flights[b["flight_id"]]["status"] in WAITING_DEP))
                           and self.flights[b["flight_id"]]["destination"] == to["destination"]), None)
                 if b is None or self._room(to) < 1:
                     continue
@@ -873,6 +877,28 @@ class World:
             if not moved:
                 return {"applied": False, "reason": "no passenger could be moved (seats or bookings changed)"}
             return {"applied": True, "moved": moved}
+        if action == "extend_crew_duty":
+            # A person (the captain and crew scheduling) decided a pilot duty extension (D02, human only; live mode). The world
+            # applies it as today's process applies the captain's own extension: once per crew, never above the legal maximum.
+            if f is None or f["status"] not in WAITING_DEP:
+                return {"applied": False, "reason": f"{facts.get('flight_id')} is no longer waiting ({f and f['status']})"}
+            crew = self._crew_for(f, "pilot")
+            if crew is None or crew.get("pilot_duty_left_min") is None:
+                return {"applied": False, "reason": "no pilots on record for this flight"}
+            if crew["id"] in self.extended:
+                return {"applied": False, "reason": f"pilots {crew['id']} already had their one extension"}
+            ext = int(facts.get("extension_min") or 0)
+            if ext <= 0 or ext > int(facts.get("max_extension_min") or 0):
+                return {"applied": False, "reason": f"an extension of {ext} min is not within the legal limit"}
+            left = crew["pilot_duty_left_min"]
+            self.extended.add(crew["id"])
+            self._set("crews", crew, crew["id"], "crew", f"approved pilot duty extension for {f['id']} (D02)",
+                      pilot_duty_left_min=left + ext)
+            self._emit("pilot_duty_extended", "MCI", {"flight_id": f["id"], "crew_id": crew["id"], "extension_min": ext,
+                                                      "duty_left_before_min": left, "decision": "human",
+                                                      "decided_by": facts.get("decided_by") or "captain and crew scheduling",
+                                                      "decision_id": "D02", "legal_basis": "pilot_fdp_extension_before_takeoff_max_h"})
+            return {"applied": True, "extension_min": ext}
         return {"applied": False, "reason": f"'{action}' is not applied to the world in this phase"}
 
     def _crew_for(self, f, role):

@@ -630,6 +630,7 @@ class Copilot:
         questions = escalate_holds(ctx, self.view, self.settings)
         st = result["state"]
         world = self._world(ctx, st, now)
+        self.last_world = world                    # the facts the message check used this minute (live mode re-checks edits)
 
         def record(kind, payload):
             ctx.outputs.append((kind, serial(payload)))

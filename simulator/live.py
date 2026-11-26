@@ -196,7 +196,7 @@ class LiveSession:
         self.auto_paused = False
         self.baseline = baseline
         self.orchestrated = None
-        self.humans = self.copilot = self.world = self.channels = self.comparison = self.tracer = self.after = None
+        self.humans = self.copilot = self.world = self.channels = self.comparison = self.tracer = self.after = self.plain = None
         self.focus = self.focus_name = None
         self.focus_since = {}            # channel -> (wrong?, since minute)
         self.trip_changes = {}
@@ -207,6 +207,10 @@ class LiveSession:
         self.save_now = False
         self.result = None
         self.results_obj = None
+        self.notes = {}                  # flight -> [{t, role, text}]: notes staff wrote on a flight (notes only)
+        self.reports = []                # reports from the floor, as sent
+        self.first_trip, self.disrupted_since, self.stranded_since = {}, {}, {}
+        self.views = None
         self.thread = None
         self.conn = None
 
@@ -231,7 +235,8 @@ class LiveSession:
                 self.orchestrated = load_run_metrics(self.conn, run_id_for(self.seed, self.scenario, "orchestrated"))
                 self._save_session()
             self.baseline = self.baseline or Baseline({})
-            kw = {"writer": LiveWriter(self.conn, self.run_id, self.seed)} if self.conn is not None else {}
+            self.writer = LiveWriter(self.conn, self.run_id, self.seed) if self.conn is not None else None
+            kw = {"writer": self.writer} if self.writer is not None else {}
             until = self.until
             self.result = simulate(self.seed, self.scenario, mode="orchestrated", data=self.data, run_id=self.run_id,
                                    humans=self._humans, on_ready=self._ready, on_tick=self._tick, until=until, **kw)
@@ -266,6 +271,14 @@ class LiveSession:
         self.tracer = make_tracer(copilot)
         self.after = After(copilot, channels, self.s)
         self.humans.tracer, self.humans.queue, self.humans.after = self.tracer, copilot.queue, self.after
+        from backend.execution.live_autonomy import load as load_autonomy
+        from backend.execution.live_plain import Plain
+        self.plain = Plain(copilot, self.s)
+        self.humans.plain, self.humans.copilot, self.humans.autonomy = self.plain, copilot, load_autonomy()
+        self.humans.closed_gates = {}                            # gate -> note: reported unavailable from the floor
+        from backend.execution.live_views import Views
+        self.views = Views(self)
+        self.first_trip = {pid: list(t["itinerary"]) for pid, t in world.truth.items()}
         copilot.human_only_port = self.humans.human_only        # human-only decisions come to you (live mode only)
         self.humans.wrong_pax = channels.dis_pax
         if self.scenario != "random":
@@ -341,7 +354,17 @@ class LiveSession:
         h.events = []
         self.save_now = True
 
+    def _track(self, t):
+        """When each tracked Customer was first disrupted and first stranded (for the clocks)."""
+        for pid, tr in self.world.truth.items():
+            if pid not in self.disrupted_since and (tr["status"] not in ("confirmed", "scheduled") or
+                                                    list(tr["itinerary"]) != self.first_trip.get(pid)):
+                self.disrupted_since[pid] = t
+            if pid not in self.stranded_since and tr["status"] in ("cancelled", "overnight"):
+                self.stranded_since[pid] = t
+
     def _metrics(self, t):
+        self._track(t)
         cmp = self.comparison
         n = cmp.counts[-1] if cmp.counts else 0
         self.total += n
@@ -429,9 +452,15 @@ class LiveSession:
                         "status": "escalated" if q.escalated else q.status,
                         "snoozed_until": hhmm(q.snoozed_until) if q.status == "snoozed" else None,
                         "can_wait": not blocked, "blocked_by": [{"id": b.id, "title": b.title} for b in blocked],
-                        "last_option": q.last_option, "consequence_if_rejected": q.consequence or "", "why": q.why})
+                        "last_option": q.last_option, "consequence_if_rejected": q.consequence or "", "why": q.why,
+                        **self.plain_of(q), "bundle": q.bundle, "section": q.section,
+                        "allowed_changes": self.humans.allowed_changes(q)})
         out.sort(key=lambda i: (-i["priority_score"], i["id"]))
         return out
+
+    def plain_of(self, q):
+        p = q.plain or {}
+        return {k: p.get(k) for k in ("headline", "story", "recommendation", "options", "effect", "if_declined")}
 
     def question(self, qid):
         return self.humans.by_id.get(qid) if self.humans else None
@@ -447,6 +476,8 @@ class LiveSession:
         if t["snapshot"] == "answered" and self.world is not None and not t.get("continued"):
             t.pop("preview", None)
             self.after.extend(t, q, self.world.events)
+            if self.plain is not None:
+                self.plain.relabel(t, q)
             t["continued"] = True                                  # the after-the-answer part is in (never added twice)
         return t
 
@@ -468,10 +499,14 @@ class LiveSession:
                 ans = "waited"
             elif q.status == "answered_by_duty_manager":
                 ans = "handed_off" if q.handed_off else "escalated"
+            elif q.status == "auto":
+                ans = "auto"
             else:
                 ans = names.get(q.status, q.status)
-            out.append({"id": q.id, "title": q.title, "role": q.role, "action": q.action, "answer": ans,
-                        "reason": (q.answer or {}).get("reason") or "", "asked": q.asked,
+            out.append({"id": q.id, "title": q.title, "headline": (q.plain or {}).get("headline"), "role": q.role,
+                        "action": q.action, "answer": ans, "done": q.done, "bundle": q.bundle,
+                        "reason": (q.answer or {}).get("reason") or (q.auto_rule and f"Done automatically: {q.auto_rule}") or "",
+                        "asked": q.asked,
                         "answered": hhmm(q.answered_at) if q.answered_at else "",
                         "waited_min": int((q.answered_at - q.asked_at).total_seconds() // 60) if q.answered_at
                         else sum(w["minutes"] for w in q.waited)})
@@ -493,14 +528,105 @@ class LiveSession:
         incidents = [i for i in (self.copilot.incidents.all if self.copilot else []) if i.status != "resolved"]
         return {"agents": agents, "orchestrator": {"open_incidents": len(incidents), "queue": self.pending_count()}, "edges": edges}
 
-    def decide(self, ids, action, reason=None, minutes=None):
+    def decide(self, ids, action, reason=None, minutes=None, option_id=None, change=None):
         if self.status in ("finished", "stopped"):
             raise DecideError(409, f"the session is {self.status}")
-        res = self.humans.decide(ids, action, self.now(), reason, minutes)
+        res = self.humans.decide(ids, action, self.now(), reason, minutes, option_id, change)
         self._record_events(self.minute)
         self.humans.refresh(self.now())
         self.save_now = True
         return res
+
+    # ------------------------------------------------------------ the floor: reports and flight notes (writes)
+    def report(self, kind, flight_id=None, gate=None, text="", role=""):
+        """A report from the floor goes into shared state as a floor_report event (agents read it through their contracts)."""
+        if self.status in ("finished", "stopped"):
+            raise DecideError(409, f"the session is {self.status}")
+        if flight_id and flight_id not in self.world.flights:
+            raise DecideError(404, f"no flight {flight_id}")
+        payload = {"kind": kind, "flight_id": flight_id, "gate": gate, "text": text, "role": role,
+                   "reported_at": self.now().isoformat()}
+        self.copilot.side_event_id -= 1
+        self.copilot.store.events.append({"id": self.copilot.side_event_id, "occurred_at": self.now(), "published_at": None,
+                                          "type": "floor_report", "station": "MCI", "payload": dict(payload)})
+        self.world.events.append({"t": self.minute, "type": "floor_report", "actor": f"human:{role or 'floor'}",
+                                  "actor_name": f"human:{role or 'floor'}", "station": "MCI", "payload": serial(payload),
+                                  "incident": False})
+        if kind == "gate_unavailable" and gate:
+            self.humans.closed_gates[gate] = text or "reported unavailable from the floor"
+        self.reports.append({"t": fmt(self.minute), **payload})
+        self.save_now = True
+        return {"ok": True, "report": self.reports[-1]}
+
+    def add_note(self, flight_id, text, role):
+        if flight_id not in self.world.flights:
+            raise DecideError(404, f"no flight {flight_id}")
+        if self.status in ("finished", "stopped"):
+            raise DecideError(409, f"the session is {self.status}")
+        note = {"t": fmt(self.minute), "role": role, "text": text}
+        self.notes.setdefault(flight_id, []).append(note)
+        self.world.events.append({"t": self.minute, "type": "flight_note_added", "actor": f"human:{role or 'floor'}",
+                                  "actor_name": f"human:{role or 'floor'}", "station": None,
+                                  "payload": {"flight_id": flight_id, "text": text, "role": role}, "incident": False})
+        self.save_now = True
+        return list(self.notes[flight_id])
+
+    def rebook(self, pid, option_id):
+        """Rebook a Customer through Passenger Care's path: a rebook_passenger decision (K01), rule-checked and carried out by
+        the reservations system exactly as an approved Passenger Care rebooking is in orchestrated mode."""
+        from backend.execution.executor import apply_approved
+        if self.status in ("finished", "stopped"):
+            raise DecideError(409, f"the session is {self.status}")
+        opts = {o["option_id"]: o for o in self.views.rebooking(pid)}
+        if option_id not in opts:
+            raise DecideError(409 if opts else 409, "that option is not open for this Customer" if opts else
+                              "this Customer has no rebooking options (their trip was not cancelled or moved to tomorrow)")
+        to = opts[option_id]["flights"][0]["flight_id"]
+        facts = {"passenger_ids": [pid], "flight_id": to}
+        if not self.views.stranded(pid):                       # leaving a delayed flight: name it
+            facts["from_flight"] = self.views.leaving_on(pid)
+        proposal = {"id": f"counter-{pid}-{self.minute}", "agent": "passenger_care", "action": "rebook_passenger",
+                    "decision_ids": ["K01"], "facts": facts}
+        out = apply_approved(proposal, self.now(), self.copilot.apply_port)
+        self._event_frontline("customer_rebooked" if out["applied"] else "customer_rebook_refused",
+                              {"passenger_id": pid, "flight_id": to, "reason": out.get("reason")})
+        if not out["applied"]:
+            raise DecideError(409, "Could not rebook: " + str(out.get("reason") or "the rule check said no"))
+        return {"ok": True, "trip": self.views.trip(pid)}
+
+    def refund(self, pid):
+        """A refund through Passenger Care's path: its own refund offer for this Customer, approved and rule-checked again."""
+        from types import SimpleNamespace
+        if self.status in ("finished", "stopped"):
+            raise DecideError(409, f"the session is {self.status}")
+        care = self.copilot.care
+        rid = care.memory.proposed.get(("refund", pid)) if care else None
+        if rid is None:
+            raise DecideError(409, "Passenger Care has no refund for this Customer (no cancellation or significant change on record)")
+        rec = care.context.saved.get(("recommendations", rid)) or {}
+        if rec.get("status") in ("approved", "done_automatically") or any(
+                q.status == "auto" and q.rec_id == rid and q.agent == "passenger_care" for q in self.humans.questions):
+            return {"ok": True, "trip": self.views.trip(pid), "refund": "already issued"}
+        q = SimpleNamespace(rec_id=rid, role="counter_gate_agent", answer={"waited_min": 0}, agent="passenger_care")
+        a = care.approved(q, self.now(), self.copilot.care_publish(self.now()))
+        if a is None or a.get("void"):
+            raise DecideError(409, "The refund could not be issued: " + "; ".join((a or {}).get("void") or ["it is no longer pending"]))
+        for actor, kind, payload in self.copilot.vendor_out:
+            self.world.events.append({"t": self.minute, "type": kind, "actor": "system", "actor_name": actor, "station": None,
+                                      "payload": serial(payload), "incident": False})
+        self.copilot.vendor_out = []
+        self._event_frontline("customer_refunded", {"passenger_id": pid, "recommendation": rid})
+        for lq in self.humans.questions:
+            if lq.agent == "passenger_care" and lq.rec_id == rid and lq.status in OPEN:
+                lq.status, lq.answered_at, lq.done = "approved", self.now(), "Refund issued at the counter"
+                lq.answer = {"decision": "approved", "by": "human:counter_gate_agent", "t": fmt(self.minute)}
+        return {"ok": True, "trip": self.views.trip(pid), "refund": "issued"}
+
+    def _event_frontline(self, kind, payload):
+        self.world.events.append({"t": self.minute, "type": kind, "actor": "human:counter_gate_agent",
+                                  "actor_name": "human:counter_gate_agent", "station": None, "payload": serial(payload),
+                                  "incident": False})
+        self.save_now = True
 
     def control(self, action, speed_idle=None, speed_pending=None):
         c = self.s["clock"]
@@ -559,6 +685,8 @@ class LiveSession:
     def _save(self, final=False):
         from psycopg.types.json import Jsonb
         self.save_now = False
+        if getattr(self, "writer", None) is not None and self.world is not None and not final:
+            self.writer.flush(self.world, self.channels)       # the run's events so far (the day page reads them while it runs)
         h = self.humans
         with self.conn.cursor() as cur:
             if h is not None:

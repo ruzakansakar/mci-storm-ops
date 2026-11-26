@@ -48,6 +48,8 @@ event_feeds:
     police_tsa_notice: [kind, action, area]
   decisions:                            # answers from named humans to its questions (e.g. A09: which source is right?)
     human_decision_recorded: [decision_id, conflict_key, flight_id, answer_side, decided_by_role, answered_at]
+  floor:                                # live mode: reports from staff on the floor (evidence only)
+    floor_report: [kind, flight_id, gate, text, role, reported_at]
   system_monitor:                       # stand-in for the IT monitoring that writes system_health
     system_status_changed: [system, status]
 

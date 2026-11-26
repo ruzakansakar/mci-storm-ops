@@ -42,6 +42,8 @@ event_feeds:
     staff_called_in: [staff_id, role, from, to, recommendation, approved_by]
     ramp_tasks_paused: [recommendation, from, staff_ids]
     station_decision_recorded: [recommendation, action, approved_by, waited_min, status]
+  floor:                               # live mode: what staff on the floor report (the co-pilot's own report tool)
+    floor_report: [kind, flight_id, gate, text, role, reported_at]
 # Shared state: the latest versions <= T, these fields only.
 shared_reads:
   situation_assessments:

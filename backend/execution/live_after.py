@@ -19,7 +19,8 @@ CHANNEL_NAMES = {"app": "App", "sms": "SMS", "gate_screen": "Gate screen", "call
 STATION_REC = ("gate_assigned", "gate_released", "staff_assigned", "staff_released", "staff_called_in", "child_supervisor_assigned",
                "ramp_tasks_paused", "station_decision_recorded")
 CARE_REC = ("hotel_room_assigned", "hotel_rooms_held", "hotel_rooms_released", "care_decision_recorded")
-FLIGHT = ("flight_delayed", "flight_delay_updated", "flight_cancelled", "reserve_crew_assigned", "crew_reassigned")
+FLIGHT = ("flight_delayed", "flight_delay_updated", "flight_cancelled", "reserve_crew_assigned", "crew_reassigned",
+          "pilot_duty_extended", "flight_departed")
 MSG = ("message_delivered", "message_dropped", "channel_update_failed", "staff_note_published", "crew_message_delivered")
 
 
@@ -49,7 +50,7 @@ class EventIndex:
                 self.add(("rec", p.get("asked_by"), str(p["recommendation"])), e)
             if k in ("incident_updated", "incident_closed"):
                 self.add(("incident",), e)
-            if p.get("question_id") is not None and str(e.get("actor", "")).startswith("human:"):
+            if p.get("question_id") is not None and str(e.get("actor", "")).startswith(("human:", "system:live", "copilot:")):
                 self.add(("question", p["question_id"]), e)
             if k in MSG:
                 mid = p.get("message_id") or (p.get("id") if k == "crew_message_delivered" else None)
@@ -179,9 +180,21 @@ class After:
             if e["type"] == "human_decision_recorded":
                 out.append((e, f"conflict answered: {e['payload'].get('answer_side')}"))
         for e in self.idx.get("question", q.id):                 # a human-only decision: your answer is the record
+            p = e["payload"]
             if e["type"] == "human_decision_recorded":
-                p = e["payload"]
-                out.append((e, f"{p.get('decision_id')} {p.get('answer')} by {str(p.get('decided_by_role')).replace('_', ' ')}"))
+                out.append((e, f"Your decision was recorded: {p.get('answer')} (as {str(p.get('decided_by_role')).replace('_', ' ')})"))
+            elif e["type"] == "human_decision_applied":
+                out.append((e, f"Pilots' duty extended by {p.get('extension_min')} min for {p.get('flight_id')}" if p.get("applied")
+                            else f"Not carried out: {p.get('reason')}"))
+                if p.get("applied"):
+                    for g in self.idx.get("flight", p.get("flight_id")):
+                        if g["type"] == "pilot_duty_extended" and g["t"] == e["t"]:
+                            out.append((g, f"Crew records: pilots {g['payload'].get('crew_id')} now have "
+                                           f"{g['payload'].get('duty_left_before_min', 0) + g['payload'].get('extension_min', 0)} "
+                                           f"min of duty left"))
+                        elif g["type"] == "flight_departed" and g["t"] >= e["t"]:
+                            out.append((g, f"{p.get('flight_id')} departed at {_fmt(g['t'])}"))
+                            break
         return [(e, l) for e, l in out if e["t"] >= t0]
 
     def messages(self, q, changes):

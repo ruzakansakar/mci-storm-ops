@@ -7,7 +7,13 @@ Everything is saved.
 - Code: `backend/api/live.py` (routes), `simulator/live.py` (session and clock), `backend/execution/live_human.py` (you, in front
   of the simulated people), `backend/execution/live_trace.py` (why and trace). Settings: `config/live.yaml`.
 - Times are `"HH:MM"` local (America/Chicago). `minute` is minutes after midnight.
-- Only three routes write: `start`, `control` and `decide`. All other routes only read.
+- Routes that write:
+  - `start`, `control` and `decide`;
+  - from the floor: `reports`, flight `notes` (POST), and a Customer's `rebook` and `refund`.
+
+  Every other route only reads.
+- All user-facing text says "Customers" (Southwest's word). Headlines, stories, trace labels and the agents' sentences never
+  contain code words, rule ids or version numbers.
 - Errors:
   - `404`: unknown run or question.
   - `409`: a blocked wait, a question already answered, a session that has ended, or results asked for before the end of the day.
@@ -109,6 +115,45 @@ This call is also the heartbeat.
   - Your answer is recorded as `human_decision_recorded` (actor `human:<role>`). Nothing in the co-pilot carries it out.
   - The same why, trace and last-option rules apply.
 
+### Added to every queue item (branch live-ui); every field above is kept
+
+```
+"headline":"Keep WN1031 to Denver flying today: extend the pilots' duty",
+"story":[{"t":"12:15","text":"Thunderstorms and lightning at MCI. FAA ground stop until about 13:00; 75% sure it lifts by 14:30."},
+         {"t":"12:16","text":"Network Recovery asked a person to decide; it passed the rule check and went to crew scheduling."}],
+"recommendation":"...",
+"options":[{"id":"opt1","label":"...","why":"...","recommended":true,"effect":"..."},
+           {"id":"opt2","label":"Use reserve R12 instead","crew_id":"R12","why":"legal too; the agent ranked it lower",
+            "recommended":false,"effect":"..."}],
+"effect":{"customers":158,"connections":16,"flights":1,"text":"Touches 158 Customers, 16 connecting, 1 flight (WN1031)."},
+"if_declined":"...",
+"bundle":{"id":"incident-1","title":"Ground stop at MCI, 11:30","started":"11:30"},
+"section":"urgent"|"routine",
+"allowed_changes":{"gate":["G06","G07"]} | {"delay_min":[0,15,30,60]} | {"crew_id":["R12","R09"]} | {"text":"..."} | null
+```
+
+- **Plain language.** Everything is built only from recorded data:
+  - `headline`, `story`, `recommendation` and `if_declined` come from the proposal, the agent's recommendation, the events
+    the agent was given and the shared versions.
+  - `options` lists the recommended option first, then only the real alternatives the agent produced. For a crew action these
+    are the other legal reserves and crews; for a cancellation, the delay it was compared with. Otherwise there is one option.
+- **Human-only questions** (for example extending crew duty): `recommended` is false on every option; the co-pilot only shows
+  the facts.
+- **`bundle`**: the incident that caused the question. A question with no incident goes to
+  `{"id":"normal","title":"Normal operations"}`.
+- **`section`**: `urgent` if the question is urgent, safety or legal, or due soon; otherwise `routine`.
+- **`group_key`**: agent, action, role and bundle, for questions that don't depend on each other. Hard decisions never share
+  one: crew, diversion, cancellation, delay and every rebooking.
+- **Automatic actions** never appear in the queue. These are, per `config/autonomy.yaml`:
+  - refunds the DOT automatic refund rule requires;
+  - hotel rooms within the nightly budget;
+  - rides within the contracted limit.
+
+  Each is logged with actor `copilot:auto`. It appears in the history (`"answer":"auto"`), in the day summary
+  (`results.decisions.auto`) and in its trace ("Done automatically: <rule>"). A setting that would automate a safety or legal
+  item is refused when the file is loaded.
+- **The frontline role `counter_gate_agent`** has no approval queue: `?roles=counter_gate_agent` returns `[]`.
+
 ## GET /api/live/{run_id}/questions/{id}/trace
 
 The flowchart of one decision: from the outside world to the question, and after you answer, on to what it did. It is saved
@@ -177,9 +222,32 @@ the human) to Communication, and to a destination that is still waiting or faile
 ## POST /api/live/{run_id}/decide
 
 ```
-body {"question_ids":[12],"action":"approve"|"reject"|"wait"|"hand_off","reason":"","minutes":10}
-->   {"ok":true,"results":[{"id":12,"status":"approved","error":null}]}
+body {"question_ids":[12],"action":"approve"|"approve_option"|"approve_with_change"|"reject"|"wait"|"hand_off",
+      "option_id":"opt2","change":{"gate":"G07"},"reason":"","minutes":10}
+->   {"ok":true,"results":[{"id":12,"status":"approved","error":null,"done":"Approved with your change: WN2034 goes to gate G07"}]}
 ```
+
+- **`approve_option`** carries out that option instead of the recommended one:
+  - another legal crew is assigned;
+  - "delay instead" declines the cancellation for good, and Network Recovery plans a delay;
+  - "do not extend" is your final no.
+- **`approve_with_change`** accepts only what `allowed_changes` lists (`config/live.yaml`):
+  - `gate`: a gate free for the plane's whole stay;
+  - `delay_min`: minutes added to the proposed time;
+  - `crew_id`: another legal reserve or crew the agent found;
+  - `text`: new wording for a message with one wording for everyone;
+  - `extension_min`: for an approved duty extension.
+
+  The changed proposal goes through the rule check again. A change that breaks a rule is a `409` with the reason in plain
+  words (for example "This change breaks a rule: rung 4 (legal): crew would end with 16 min of duty left (need a 30 min
+  buffer)"). Changed wording keeps the message's facts and checks, so a time or flight not backed by a fact is refused.
+- **Human-only decisions take effect.** Approving a pilot duty extension (D02) is carried out by the world at the next minute,
+  as an approved action is in orchestrated mode:
+  - the pilots' duty is extended by the approved minutes (up to the legal 2 hours, once per crew);
+  - the flight can depart;
+  - the trace shows the changes ("Pilots' duty extended by 120 min for WN1031", "WN1031 departed at 14:45").
+
+  A rejection keeps today's behaviour.
 
 - `reject` needs a `reason`. `wait` needs `minutes` of 10 or 15, and is refused (`409`, `blocked_by` in the answer) while another
   open question depends on this one.
@@ -217,6 +285,68 @@ body {"question_ids":[12],"action":"approve"|"reject"|"wait"|"hand_off","reason"
 
 `answer` is one of `approved`, `rejected`, `waited`, `handed_off` or `escalated` (answered by the duty manager after the
 deadline). `waited_min` is the minutes from asked to answered; for a question you only put off, it is the minutes you waited.
+
+## Reports from the floor and flight notes
+
+```
+POST /api/live/{run_id}/reports {"kind":"gate_unavailable"|"jet_bridge_slow"|"long_queue"|"special_assistance_waiting"|
+                                 "equipment_issue"|"other","flight_id":null,"gate":null,"text":"","role":""}
+->   {"ok":true,"report":{...}}
+GET|POST /api/live/{run_id}/flights/{flight_id}/notes {"text","role"} -> [{"t","role","text"}]
+```
+
+A report is a `floor_report` event in shared state, read through the agents' contracts:
+- **Station & Staff:** stops using a gate reported unavailable. It treats a long queue as a staffing gap at that place (30 min,
+  short by one: a gate agent at a gate, else customer service).
+- **Situation:** lists every report as evidence.
+- **The other kinds** are notes only.
+
+Flight notes are notes only; no agent reads them.
+
+## Flight and Customer views
+
+These need the session to be running in this server (`409` otherwise). Customer routes are for the frontline role only
+(`?role=counter_gate_agent`, the default; `403` for other roles). They return names and booking references only, never a
+contact detail.
+
+```
+GET /api/live/{run_id}/flights/{flight_id}
+ -> {"id","from","to","sched_dep","est_dep","sched_arr","est_arr","status","gate","crew":{"id","legal_until"},
+     "customers":0,"connections":0,"script":{"text","updated"},"notes":[...],
+     "on_screens":{"app":"","sms":"","gate_screen":"","call_center":""}}
+GET /api/live/{run_id}/customers?q=<name or booking ref>  -> [{"id","name","booking_ref","flight_id","status"}]
+GET /api/live/{run_id}/customers/{id}
+ -> {"id","name","trip":[{"flight_id","from","to","dep","arr","status"}],"true_status","screens":[...],
+     "needs":["wheelchair"|"unaccompanied_minor"],
+     "rebooking":[{"option_id","flights":[...],"arrives","seats_left","why","recommended"}],"hotel":null|{...},"refund_due":false}
+POST /api/live/{run_id}/customers/{id}/rebook {"option_id"}  and  POST .../refund {}   -> {"ok":true,"trip":[...]}
+```
+
+- **`script`**: the newest message the co-pilot actually sent about the flight (a staff note first).
+- **`on_screens`**: what most of the flight's tracked Customers see on each screen.
+- **`rebooking`**: offered when the Customer's trip was cancelled or moved to tomorrow, or their flight out of MCI is at least
+  60 min late. The options are other flights today to their destination with seats left in the reservation system. Passenger
+  Care's own advice is recommended; otherwise the earliest arrival.
+- **`rebook`**: goes through Passenger Care's rebooking path (decision K01), the rule check and the reservation system. The
+  change reaches every screen through the normal truth feed.
+- **`refund`**: approves Passenger Care's own refund offer for the Customer through its path, and is rule-checked again.
+
+## Station, clocks, handover
+
+```
+GET /api/live/{run_id}/station
+ -> {"ramp":{"open","reason","since"},"gates":[{"gate","status":"open"|"closed"|"in_use","flight_id","staffed","note"}],
+     "staffing_gaps":[{"role","from","to","short_by"}]}
+GET /api/live/{run_id}/clocks
+ -> {"tarmac":[{"flight_id","minutes","limit":180}],"crew":[{"crew_id","flight_id","legal_until","minutes_left"}],
+     "refunds":[{"customer_id","flight_id","due_by","status":"auto_issued"|"due"}],
+     "special_assistance":[{"customer_id","need","flight_id","waiting_min"}]}
+GET /api/live/{run_id}/handover?since=HH:MM
+ -> {"since","decisions":0,"open":[...],"watch":["plain sentences"],"auto_done":0,"text":"plain summary"}
+```
+
+`/api/day/{run_id}` also works for a live run still in progress; it shows the events saved so far, written every 5 simulated
+minutes.
 
 ## GET /api/live/sessions
 

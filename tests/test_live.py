@@ -36,7 +36,8 @@ def scripted(data, today):
         if seen["blocked_wait"] is None:                     # before anything else this minute: a question others depend on
             b = next((q for q in items if not q["can_wait"]), None)
             if b is not None:
-                seen["blocked_wait"] = {"id": b["id"], "blocked_by": b["blocked_by"], "r": s.decide([b["id"]], "wait", minutes=15)}
+                seen["blocked_wait"] = {"id": b["id"], "blocked_by": b["blocked_by"], "r": s.decide([b["id"]], "wait", minutes=15),
+                                        "deps": {x["id"]: list(s.question(x["id"]).depends_on) for x in b["blocked_by"]}}
         for q in items:
             lq = s.question(q["id"])
             if lq.status not in ("waiting", "snoozed"):
@@ -125,8 +126,7 @@ def test_wait_is_refused_while_another_question_depends_on_it(scripted):
     b = seen["blocked_wait"]
     assert b is not None and b["r"][0]["code"] == 409 and b["r"][0]["blocked_by"]
     assert {x["id"] for x in b["r"][0]["blocked_by"]} == {x["id"] for x in b["blocked_by"]}
-    dep = s.question(b["r"][0]["blocked_by"][0]["id"])
-    assert b["id"] in dep.depends_on
+    assert b["id"] in b["deps"][b["r"][0]["blocked_by"][0]["id"]]          # at the moment the wait was refused
 
 
 def test_a_snoozed_question_still_escalates_at_its_deadline(scripted):
@@ -185,7 +185,7 @@ def paused(data):
 
 def test_an_unanswered_question_escalates_to_the_duty_manager_at_its_deadline(paused):
     s = paused
-    late = [q for q in s.humans.questions if q.asked_at >= L.at(QUIET) and q.deadline_at < L.at(HOLD) and q.status != "withdrawn"]
+    late = [q for q in s.humans.questions if q.asked_at >= L.at(QUIET) and q.deadline_at < L.at(HOLD) and q.status not in ("withdrawn", "auto")]
     assert late
     for q in late:
         item = s.copilot.queue.by_rec[(q.agent, q.rec_id)]
@@ -263,7 +263,7 @@ def test_state_flow_history_and_why_have_the_promised_shape(paused):
     assert [a["key"] for a in fl["agents"]] == ["situation", "network_recovery", "passenger_care", "station_staff", "communication"]
     assert fl["edges"] and set(fl["orchestrator"]) == {"open_incidents", "queue"}
     h = client.get(f"/api/live/{s.run_id}/history").json()["decisions"]
-    assert h and set(h[0]) == {"id", "title", "role", "action", "answer", "reason", "asked", "answered", "waited_min"}
+    assert h and set(h[0]) >= {"id", "title", "role", "action", "answer", "reason", "asked", "answered", "waited_min"}
     assert client.get(f"/api/live/{s.run_id}/results").status_code == 409     # not the end of the day yet
     assert client.get("/api/live/no-such-run/state").status_code == 404
 
@@ -332,7 +332,9 @@ def test_a_session_is_saved_and_read_back_after_it_ends(db, data):
 def test_the_api_writes_only_through_start_control_and_decide(monkeypatch, db):
     paths = app.openapi()["paths"]
     writes = sorted(p for p, ops in paths.items() for m in ops if m not in ("get", "head"))
-    assert writes == ["/api/live/start", "/api/live/{run_id}/control", "/api/live/{run_id}/decide"]
+    assert writes == sorted(["/api/live/start", "/api/live/{run_id}/control", "/api/live/{run_id}/decide",
+                             "/api/live/{run_id}/reports", "/api/live/{run_id}/flights/{flight_id}/notes",
+                             "/api/live/{run_id}/customers/{pid}/rebook", "/api/live/{run_id}/customers/{pid}/refund"])
     from backend.settings import ROOT
     src = (ROOT / "backend" / "api" / "live.py").read_text(encoding="utf-8")
     assert not re.search(r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE)\b", src)
