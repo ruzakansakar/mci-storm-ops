@@ -1,9 +1,9 @@
-# MCI Ground-Stop Co-Pilot
+# MCI Groundwork
 
-A class project: an AI operations co-pilot for Southwest Airlines at Kansas City (MCI) during any ground stop
+A class project: Groundwork, an operations assistant for Southwest Airlines at Kansas City (MCI) during any ground stop
 (weather, FAA outage, IT outage, airport or security event).
 
-Southwest's own systems stay the official record. The co-pilot keeps a time-stamped copy (the **shared live view**),
+Southwest's own systems stay the official record. Groundwork keeps a time-stamped copy (the **shared live view**),
 checks that the app, texts, gate screens and call center all tell each passenger the same thing, and proposes
 actions for humans to approve.
 
@@ -20,7 +20,7 @@ All passenger and staff data here is **synthetic**, generated from the class fil
 | 3 | Simulator + debug page (+ realism and rules cleanup) | **done** |
 | 4a | Situation agent | **done** |
 | 4b-1 | Communication agent, part 1: detect channel mismatches | **done** |
-| 4b-2 | Communication agent, part 2: fix screens + today vs with co-pilot | **done** |
+| 4b-2 | Communication agent, part 2: fix screens + today vs with Groundwork | **done** |
 | 4c | Shared state: Communication reads the Situation agent's picture; app/SMS screens only for passengers who have them | **done** |
 | 4b-3 | Communication messages + conflict holds that clear (evidence or a person) | **done** |
 | 4d | Network Recovery agent (advisory: crews, delays/cancellations, hold or divert, recovery) | **done** |
@@ -148,7 +148,7 @@ All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumptio
    `a31_storm` is the fixed class story: storm stop 11:30-14:00 (first announced to end at 13:00), lightning closes the ramp
    12:10-12:45, and A31 is airborne from Denver with 55 min of spare fuel.
 2. **The truth.** Minute by minute the simulator moves flights, planes, crews, bags and bookings, the way Southwest's systems would
-   record them *today*, with no co-pilot: flights wait out the stop, a flight that would leave more than 150 min late is
+   record them *today*, with no Groundwork: flights wait out the stop, a flight that would leave more than 150 min late is
    cancelled, a plane diverts once its spare holding fuel minus the extra flying to its alternate airport falls to 10 min (the same sum as the rules' fuel check), and people on a cancelled flight get the next flight
    to the same place that has room (or are left with no seat). It makes no clever choices.
 3. **The screens.** The app, text messages, gate screens and call center each copy the truth later than it happened:
@@ -160,7 +160,7 @@ All numbers are in `config/simulator.yaml` (made-up ones are marked `# assumptio
    in `simulator/channels.py` measures them.
 5. **Same seed, same day.** Only seeded random numbers are used, so the same seed and scenario always give the same events and numbers.
 
-**A more realistic storm.** Today's process (no co-pilot) now also has the usual knock-on effects, so the class story produces
+**A more realistic storm.** Today's process (no Groundwork) now also has the usual knock-on effects, so the class story produces
 cancellations naturally instead of only delays:
 - **Schedule thinning:** when a ground stop of 60+ minutes is announced, the lowest-priority departures (P4 first, then P3) scheduled
   during the stop and up to 2 hours after it are cancelled, up to a cap.
@@ -186,7 +186,7 @@ cancellations naturally instead of only delays:
 
 The simulator never imports `backend/rules`: it only causes problems, it does not decide anything.
 
-## How the co-pilot is put together (agreed setup, before Phase 4)
+## How Groundwork is put together (agreed setup, before Phase 4)
 
 **Five agents and an orchestrator.** There is no guardrail agent and no separate crew agent.
 
@@ -215,7 +215,7 @@ on the tarmac and the food-and-water exception), and writes the person's role an
 **The rules of the world** live in `config/rules/` (law, Southwest policy, our assumptions, the safety ladder, who decides what).
 
 **The decision catalog** (`config/decisions.yaml`, built from the table in `scripts/build_decisions.py`) lists every decision the
-co-pilot may raise: 195 of them, in 20 families (A detect ... T security). Each says what triggers it, its deadline, which agent raises
+Groundwork may raise: 195 of them, in 20 families (A detect ... T security). Each says what triggers it, its deadline, which agent raises
 it, who decides (matching `autonomy.yaml`), which rules the rule check runs, the data it needs, whom it affects, and whether the
 a31_storm seed 7 day raises it. `python -m scripts.decisions` prints a summary and the gaps (decisions the simulator can't trigger yet,
 rules that had to be added as assumptions).
@@ -377,7 +377,7 @@ python -m simulator.report --latest       # the debug page has a "Communication 
   measures recall, precision, detection delay, cause accuracy, critical cases, stale-feed handling and name reads.
   Summary: `reports/chaos/communication.html`; the chaos index gets a Communication column.
 
-## How the co-pilot fixes screens (Phase 4b-2)
+## How Groundwork fixes screens (Phase 4b-2)
 
 Each minute, Communication reads the published trip records and delivery receipts through its contract. It groups wrong
 fields into one correction per passenger and channel. Critical cases go first, then nearer departures, then older mistakes.
@@ -431,7 +431,7 @@ random days. The chosen seeds are saved in `reports/chaos/comparison-seeds.json`
 events. Random-day comparisons include published chaos overlays, late deliveries and feed outages. They are evaluation only;
 settings are never calibrated on them. `python -m chaos.judge_communication --seed7-only` re-scores detection in memory.
 
-**Result (verified).** Seed 7: passenger-minutes on a wrong screen 13,625 today vs 6,152 with co-pilot (55% fewer), critical
+**Result (verified).** Seed 7: passenger-minutes on a wrong screen 13,625 today vs 6,152 with Groundwork (55% fewer), critical
 1,594 vs 570, lost updates still wrong at day end 12 vs 0. Maya's screens after her 14:55 rebooking: app 15:12 -> 14:57, SMS
 15:14 -> 14:59, gate 15:20 -> 15:06, call center 15:32 -> 15:17; her call center, stuck on "diverted" all afternoon today, shows
 "delayed" at 14:43. On 20 fresh random days: 51% fewer on average (15 days had wrong screens), best 72%, worst 13%, no day
@@ -453,7 +453,7 @@ seven rules (written in `config/agents/_shared.yaml`, enforced in `backend/contr
    is still running, so it leaves a heartbeat every time it runs, and readers check that.
 7. When two agents disagree about the same fact, both views are logged and a human is asked; nobody quietly picks one.
 
-In co-pilot mode each minute runs Situation first (on its normal schedule), then Communication, then the rule check and delivery.
+In advise-only mode each minute runs Situation first (on its normal schedule), then Communication, then the rule check and delivery.
 Situation's versions are exactly the same as in its standalone replay. Communication uses Situation's picture to hold corrections on
 a flight where Situation reports conflicting data (and to resume when that clears), notices if Situation stops running (corrections
 carry on; the supervisor is told after 30 minutes), and keeps the latest picture ready for messages in 4b-3.
@@ -462,7 +462,7 @@ carry on; the supervisor is told after 30 minutes), and keeps the latest picture
 them on file (app+SMS 197, SMS only 65, app+email 47, email only 11). Maya Torres has app + SMS: a story override in
 `config/seed.yaml`, applied after her random draw so no one else changes.
 
-**Result.** Seed 7: 11,744 passenger-minutes on a wrong screen today vs 6,190 with co-pilot (47% fewer). On the same 20 random days
+**Result.** Seed 7: 11,744 passenger-minutes on a wrong screen today vs 6,190 with Groundwork (47% fewer). On the same 20 random days
 as before: 48% fewer on average, none worse. On 20 extra days with source conflicts and feed outages
 (`reports/chaos/comparison-extra.html`): 49% fewer on average, none worse; 115 corrections held for Situation conflicts on 8 days.
 
@@ -561,7 +561,7 @@ overnight. Children flying alone and wheelchair users on an affected flight come
   nonstop. **Wheelchair users** get help requests written down for Station & Staff (the next agent).
 - **Rebooking advice:** a better flight than today's, where the Network Recovery plan shows seats. It is advice only; bookings
   are never changed.
-- **What is applied.** In co-pilot mode, room holds and approved rooms are applied to the co-pilot's own hotel_assignments
+- **What is applied.** In advise-only mode, room holds and approved rooms are applied to Groundwork's own hotel_assignments
   table. Flights and bookings are never changed.
 - **The overnight message.** Once a room is approved, the Communication agent tells the passenger which hotel and how to get
   there, with no money mentioned.
@@ -572,7 +572,7 @@ Communication reads only the proposed delays, cancellations, crew actions and ap
 It prepares passenger and crew messages immediately, with their originating plan version and proposal number. Internal
 staff notes can say a change is under review; they never go to passenger channels.
 
-In co-pilot mode, simulated network operations control and crew scheduling answer only proposals that passed the rule
+In advise-only mode, simulated network operations control and crew scheduling answer only proposals that passed the rule
 check. Approval is recorded but does not change flights or crews. A draft stays held as **approved, waiting to take effect**
 until an operational application confirmation and current flight/crew records agree with it. Crew messages also retain
 O09's supervisor approval. Changed facts cause a new draft; rejection or supersession discards the old one. Passenger
@@ -609,7 +609,7 @@ The Station & Staff agent looks after the people and the ground at MCI. It sees 
   until the guardian collects them (station manager); this closes Passenger Care's request.
 - **Ramp and terminal.** Closing or reopening the ramp is the ramp supervisor's call: it only asks. It warns when the terminal
   nears its capacity.
-- **What is applied.** In co-pilot mode, approved (or automatic) gates and staff go to the co-pilot's own gate_assignments and
+- **What is applied.** In advise-only mode, approved (or automatic) gates and staff go to Groundwork's own gate_assignments and
   staff_assignments tables. Flights, bookings, crews and the staff roster are never changed.
 - **The link to Network Recovery.** Network Recovery reads the station's ramp status and gate and staff shortages and never
   proposes a departure while the ramp is closed or in a 15-minute slot with no ramp crew or gate agents left; such a departure
@@ -620,7 +620,7 @@ wheelchair and child coverage, and the departures Network Recovery moved.
 
 ## The orchestrator (Phase 5a)
 
-Plain code, no AI. It owns the co-pilot's minute loop and coordinates; in this part it changes nothing in the world.
+Plain code, no AI. It owns Groundwork's minute loop and coordinates; in this part it changes nothing in the world.
 
 - **Every minute** it runs the agents in order (Situation, Network Recovery, Passenger Care, Station & Staff, Communication),
   each seeing only data up to that minute through its own contract.
@@ -702,9 +702,9 @@ python -m backend.api
 
 Then open http://127.0.0.1:8000 (it opens by itself). Press play, drag the time bar, switch light/dark, or pick another simulated day at the top.
 
-What step 0 shows: a tilted, simulated 3D map of today's routes around MCI with flights moving in real time, MCI's status (operations, ramp, weather), the numbers right now, a departures and arrivals board, what the co-pilot is doing, and which agents have checked in. The storm, incident, approvals and other pages come in the next steps.
+What step 0 shows: a tilted, simulated 3D map of today's routes around MCI with flights moving in real time, MCI's status (operations, ramp, weather), the numbers right now, a departures and arrivals board, what Groundwork is doing, and which agents have checked in. The storm, incident, approvals and other pages come in the next steps.
 
-## Front end: MCI Ops Co-Pilot (branch live-ui)
+## Front end: Groundwork (branch live-ui)
 
 `python -m backend.api`, then open http://127.0.0.1:8000 and press "Start the day". One app with tabs:
 - **Operations**: map with the storm, flight board (click a flight to open it, again to close; "Show on the map" follows it), weather, gates, ramp and staffing gaps.

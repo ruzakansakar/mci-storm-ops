@@ -1,5 +1,5 @@
 // Draws a decision's trace (or any small flow graph) as an SVG flowchart: left to right on wide screens,
-// top to bottom on narrow ones. Columns follow the path information takes through the co-pilot.
+// top to bottom on narrow ones. Columns follow the path information takes through Groundwork.
 import { ICONS } from './icons.js';
 
 const RANK = { feed: 0, situation: 1, network_recovery: 2, passenger_care: 2, station_staff: 2, communication: 3, rule_check: 4, orchestrator: 5, question: 6, human: 7 };
@@ -135,7 +135,7 @@ export function drawDecisionFlow(container, m, { onNode } = {}) {
   let g = '', e = '';
 
   // column headings
-  const heads = [[0, 'What happened'], [180, "The co-pilot's agents"], [404, 'Shared picture'], [530, 'Safety rules'], [730, 'You']];
+  const heads = [[0, 'What happened'], [180, "Groundwork's agents"], [404, 'Shared picture'], [530, 'Safety rules'], [730, 'You']];
   const heads2 = [[0, m.preview ? 'What changes if you approve' : 'What changed'], [300, 'One update'], [470, m.preview ? 'Who will be told, at the same time' : 'Everyone told, at the same time']];
   for (const [x, t] of heads) g += `<text x="${x}" y="-12" class="df-head">${esc(t)}</text>`;
   for (const [x, t] of heads2) g += `<text x="${x}" y="${R2 - 12}" class="df-head">${esc(t)}</text>`;

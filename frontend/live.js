@@ -1,4 +1,4 @@
-// MCI Ops Co-Pilot: one app for the station. The user is the human in the loop for every decision
+// Groundwork: one app for the station. The user is the human in the loop for every decision
 // the agents cannot make alone; legally required small actions (refunds) are done automatically and logged.
 import { pickApi, ROLE_TITLES, FRONTLINE } from './live-api.js';
 import { icon } from './icons.js';
@@ -35,7 +35,8 @@ const agentName = (k) => ({ situation: 'Situation', network_recovery: 'Network R
 const kindName = (k) => ({ situation: 'weather and operations picture', recovery_plan: 'flight and crew plan', care_plan: 'Customer care plan', station_plan: 'station plan', communication: 'message',
   network_recovery: 'flight and crew plan', passenger_care: 'Customer care plan', station_staff: 'station plan' }[k] || 'update');
 const listWords = (a) => a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`;
-const plain = (s) => String(s ?? '').replace(/\b[a-z]+(_[a-z]+)+\b/g, (w) => w.replace(/_/g, ' '));
+const plain = (s) => String(s ?? '').replace(/\b[a-z]+(_[a-z]+)+\b/g, (w) => w.replace(/_/g, ' '))
+  .replace(/\b[Tt]he co-pilot's\b/g, "Groundwork's").replace(/\b[Tt]he co-pilot\b/g, 'Groundwork').replace(/\b[Cc]o-pilot\b/g, 'Groundwork');
 
 // ---------------------------------------------------------------- start
 async function showPast() {
@@ -103,7 +104,7 @@ $('report-form').addEventListener('submit', async (e) => {
   if (gate && !/^[A-Z]{1,2}\d{1,3}$/.test(gate)) { toast('Gate should look like B53 or G05.', true); return; }
   if (flight && !/^WN\d{3,4}$/.test(flight)) { toast('Flight should look like WN1031.', true); return; }
   const body = { kind: fd.get('kind'), gate, flight_id: flight, text: fd.get('text'), role: ui.role };
-  try { await ui.api.report(ui.run, body); toast('Report sent. The co-pilot is taking it into account.'); $('report-dlg').close(); e.target.reset(); }
+  try { await ui.api.report(ui.run, body); toast('Report sent. Groundwork is taking it into account.'); $('report-dlg').close(); e.target.reset(); }
   catch (err) { toast(`Could not send the report: ${err.message}`, true); }
 });
 function openNote(flightId) { ui.noteFlight = flightId; $('note-title').textContent = `Note on ${flightId}`; $('note-dlg').showModal(); }
@@ -227,13 +228,13 @@ function renderDetail() {
   const box = $('detail');
   const { it, rec } = current();
   ui.detailSig = detailSig();
-  if (!it) { box.innerHTML = `<div class="detail-empty">${icon('orchestrator', 'ico big')}<p>When the co-pilot needs you, the situation, its suggestion and your options appear here.</p></div>`; return; }
+  if (!it) { box.innerHTML = `<div class="detail-empty">${icon('orchestrator', 'ico big')}<p>When Groundwork needs you, the situation, its suggestion and your options appear here.</p></div>`; return; }
   const group = rec ? rec.group : it.group_size > 1 ? itemGroup(it) : [it];
   const w = it.why || {};
   const story = it.story?.length ? it.story : (w.trigger || []).map((x) => ({ t: x.t, text: x.text }));
   const options = it.options?.length ? it.options : [{ id: 'opt1', label: headline(it), why: it.recommendation || w.plan, recommended: true }];
   const chosen = rec?.optionId || ui.choice[it.id] || options.find((o) => o.recommended)?.id || options[0].id;
-  const ifNo = it.if_declined || it.consequence_if_rejected || 'The co-pilot comes back with a different plan.';
+  const ifNo = it.if_declined || it.consequence_if_rejected || 'Groundwork comes back with a different plan.';
   const changes = it.allowed_changes || null;
   const ANSWER = { approved: 'Approved', rejected: 'Declined', hand_off: 'Sent to the duty manager' };
   box.innerHTML = `
@@ -245,7 +246,7 @@ function renderDetail() {
     ${it.effect?.text || it.passengers_affected ? `<p class="d-effect">${esc(String(it.effect?.text || `${num(it.passengers_affected)} Customers affected`).replace(/\.+$/, ''))}${it.safety_legal ? ' <span class="tagx bad">Safety or legal</span>' : ''}</p>` : ''}
     <section class="d-sec"><h3>What's going on</h3>
       <ol class="story">${story.map((x) => `<li><span class="t">${esc(x.t)}</span><span>${esc(plain(x.text))}</span></li>`).join('') || '<li class="muted">No details recorded.</li>'}</ol></section>
-    <section class="d-sec"><h3>${options.length > 1 ? 'Your options' : 'The co-pilot suggests'}</h3>
+    <section class="d-sec"><h3>${options.length > 1 ? 'Your options' : 'Groundwork suggests'}</h3>
       <div class="options" role="radiogroup" aria-label="Options">${options.map((o) => `<label class="option ${o.id === chosen ? 'on' : ''}">
         <input type="radio" name="opt-${it.id}" value="${esc(o.id)}" ${o.id === chosen ? 'checked' : ''} ${rec || options.length === 1 ? 'disabled' : ''}>
         <span class="opt-body"><span class="opt-label">${esc(plain(o.label))}${o.recommended ? ' <span class="tagx ok">Suggested</span>' : ''}</span>
@@ -259,7 +260,7 @@ function renderDetail() {
       <p class="in-short" id="in-short"></p></section>
     <footer class="actions">${rec
       ? `<div class="act-row">${visible().length ? `<button class="btn primary" id="next" type="button">Next decision (${visible().length} waiting)</button>` : '<span class="muted">Nothing else is waiting for you.</span>'}</div>`
-      : ui.mode === 'decline' ? `<label class="reason"><span>Why not? The co-pilot uses this to look for something else.</span><textarea id="reason" rows="2"></textarea></label>
+      : ui.mode === 'decline' ? `<label class="reason"><span>Why not? Groundwork uses this to look for something else.</span><textarea id="reason" rows="2"></textarea></label>
         <div class="act-row"><button class="btn danger" id="do-decline" type="button">Decline${group.length > 1 ? ` all ${group.length}` : ''}</button><button class="btn" id="back" type="button">Back</button></div>`
       : `<div class="act-row">
           <button class="btn primary" id="do-approve" type="button">${group.length > 1 ? `Approve all ${group.length}` : 'Approve'}</button>
@@ -292,8 +293,8 @@ function renderDetail() {
   box.querySelector('#back')?.addEventListener('click', () => { ui.mode = null; renderDetail(); });
   box.querySelector('#do-decline')?.addEventListener('click', () => {
     const reason = box.querySelector('#reason').value.trim();
-    if (!reason) { toast('Add a short reason so the co-pilot knows what to change.', true); return; }
-    decide(ids, { action: 'reject', reason }, 'Declined. The co-pilot will look for something else.');
+    if (!reason) { toast('Add a short reason so Groundwork knows what to change.', true); return; }
+    decide(ids, { action: 'reject', reason }, 'Declined. Groundwork will look for something else.');
   });
   box.querySelectorAll('[data-wait]').forEach((b) => b.addEventListener('click', () => decide([it.id], { action: 'wait', minutes: Number(b.dataset.wait) }, `It'll come back in ${b.dataset.wait} minutes, or sooner if its deadline gets close.`)));
   box.querySelector('#do-handoff')?.addEventListener('click', () => decide(ids, { action: 'hand_off' }, 'Sent to the duty manager.'));
@@ -309,7 +310,7 @@ function inShort(it, rec, m) {
   parts.push(`${agentName(it.agent)} asked ${ROLE_TITLES[it.role] || it.role_title || 'a person'} to decide: ${plain(headline(it)).replace(/\.$/, '')}.`);
   if (!rec) parts.push(it.status === 'escalated' ? 'It went to the duty manager because the deadline passed.' : `It is waiting for you until ${it.deadline}.`);
   else if (rec.answer === 'approved') parts.push(rec.notSuggested ? `You chose "${plain(rec.optionLabel)}" at ${rec.at}.` : `You approved at ${rec.at}${rec.change ? ' with a change' : ''}.`);
-  else if (rec.answer === 'rejected') parts.push(`You declined at ${rec.at}${rec.reason ? ` ("${rec.reason}")` : ''}; the co-pilot looks for something else.`);
+  else if (rec.answer === 'rejected') parts.push(`You declined at ${rec.at}${rec.reason ? ` ("${rec.reason}")` : ''}; Groundwork looks for something else.`);
   else parts.push(`You sent it to the duty manager at ${rec.at}.`);
   if (!m.preview && m.changes.length) parts.push(`What changed: ${m.changes.map((c) => plain(c.label)).join('; ')}.`);
   const delivered = m.dests.filter((d) => d.status === 'delivered');
@@ -484,7 +485,7 @@ async function showCustomer(id) {
       </dl></div>`).join('')}</div>
     ${c.international ? '<p><span class="tagx warn">International trip</span></p>' : ''}
     ${oneStoryHtml(flight)}
-    <div class="rebook-box" id="rebook-box">${c.rebooking?.length ? rebookList(c.rebooking, 'The co-pilot suggests') : `<button class="btn primary" type="button" id="rebook-ask">Rebook this Customer</button>
+    <div class="rebook-box" id="rebook-box">${c.rebooking?.length ? rebookList(c.rebooking, 'Groundwork suggests') : `<button class="btn primary" type="button" id="rebook-ask">Rebook this Customer</button>
       <span class="muted small">For a Customer who asks to change, or a flight running late.</span>`}</div>
     ${c.hotel ? `<p><b>Hotel:</b> ${esc(c.hotel.name)}${c.hotel.price ? `, $${c.hotel.price}` : ''}${c.hotel.shuttle === true ? ', shuttle included' : c.hotel.shuttle ? `, shuttle ${esc(c.hotel.shuttle)}` : ''}${c.hotel.status ? ` <span class="muted">(${esc(plain(c.hotel.status))})</span>` : ''}</p>` : ''}
     ${(c.refunds || []).length ? `<p><b>Refunds:</b> ${c.refunds.map((r) => `${r.amount != null ? `$${r.amount}` : 'Unused fare'} ${esc(r.status)}${r.t ? ` at ${esc(r.t)}` : ''}`).join('; ')}</p>` : ''}
@@ -629,7 +630,7 @@ async function refreshSummary() {
   const r = await ui.api.results(ui.run).catch(() => null);
   if (!r) $('results').innerHTML = `<div class="card"><h2>How the day went</h2><p class="muted">The comparison with today's process is ready when the day ends at 23:59.</p></div>`;
   if (r) {
-    const cols = [['Your day', r.you, 'you'], ["Today's process", r.today, 'today'], ['Co-pilot, approving everything', r.orchestrated, 'auto']].filter((c) => c[1]);
+    const cols = [['Your day', r.you, 'you'], ["Today's process", r.today, 'today'], ['Groundwork, approving everything', r.orchestrated, 'auto']].filter((c) => c[1]);
     const row = (label, key, fmt = num) => `<tr><th>${label}</th>${cols.map(([, v, cls]) => `<td class="${cls}">${v[key] != null ? fmt(v[key]) : '-'}</td>`).join('')}</tr>`;
     const d = r.decisions || {};
     $('results').innerHTML = `<div class="card results-hero"><h2>${ui.state?.status === 'finished' ? 'How the day went' : 'How the day is going'}</h2>

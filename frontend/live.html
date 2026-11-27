@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MCI Ops Co-Pilot</title>
+<title>Groundwork</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
@@ -17,7 +17,7 @@
   <div class="brand">
     <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 18.5l16-6-4 9-3.5-2.5-2.5 3-1-4.5z" fill="currentColor"/></svg>
     <div>
-      <div class="brand-name">MCI Ops Co-Pilot</div>
+      <div class="brand-name">Groundwork</div>
       <div class="brand-sub">Kansas City station</div>
     </div>
   </div>
@@ -41,7 +41,7 @@
 <main id="start" class="start">
   <section class="card start-card">
     <h1>Run a live storm day</h1>
-    <p class="lead">Weather, flights and Customers are simulated. The co-pilot's agents run live, and the decisions they can't make alone come to you. Small actions the law already requires, like refunds, are done automatically and logged.</p>
+    <p class="lead">Weather, flights and Customers are simulated. Groundwork's agents run live, and the decisions they can't make alone come to you. Small actions the law already requires, like refunds, are done automatically and logged.</p>
     <form id="start-form">
       <fieldset>
         <legend>Which day</legend>
@@ -178,9 +178,9 @@
   <!-- How it works -->
   <section class="tab-panel" id="tab-flow" hidden>
     <div class="card">
-      <h2>How the co-pilot works, live</h2>
+      <h2>How Groundwork works, live</h2>
       <p class="muted">Each agent writes what it finds to the shared state, and the others read it from there. A box lights up when its agent has just written something.</p>
-      <div class="sysflow-wrap"><svg class="sysflow" id="sysflow" viewBox="0 0 1120 400" role="img" aria-label="The co-pilot's agents and how information moves between them"></svg></div>
+      <div class="sysflow-wrap"><svg class="sysflow" id="sysflow" viewBox="0 0 1120 400" role="img" aria-label="Groundwork's agents and how information moves between them"></svg></div>
       <h3>Latest hand-overs</h3>
       <ol class="ticker" id="ticker"></ol>
     </div>
@@ -190,7 +190,7 @@
 <dialog id="report-dlg" class="dlg">
   <form method="dialog" id="report-form">
     <h2>Report from the floor</h2>
-    <p class="muted small">Tell the co-pilot what you see. It goes into the shared picture straight away.</p>
+    <p class="muted small">Tell Groundwork what you see. It goes into the shared picture straight away.</p>
     <label class="field"><span class="field-label">What's happening</span>
       <select name="kind">
         <option value="gate_unavailable">A gate can't be used</option>
@@ -212,7 +212,7 @@
 <dialog id="note-dlg" class="dlg">
   <form method="dialog" id="note-form">
     <h2 id="note-title">Note on a flight</h2>
-    <p class="muted small">Everyone who opens this flight sees your note, and the co-pilot reads it too.</p>
+    <p class="muted small">Everyone who opens this flight sees your note, and Groundwork reads it too.</p>
     <label class="field"><span class="field-label">Note</span><textarea name="text" rows="3" required></textarea></label>
     <div class="act-row"><button class="btn primary" type="submit">Add note</button><button class="btn" type="button" id="note-cancel">Cancel</button></div>
   </form>
