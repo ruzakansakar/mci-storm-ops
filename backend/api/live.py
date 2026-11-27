@@ -6,13 +6,25 @@ an older one (or one that ended with a server restart) from the database, read-o
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.execution.live_human import OPEN, DecideError
 from simulator import live as L
 from simulator.clock import fmt
 
 router = APIRouter(prefix="/api/live")
+
+
+class LiveError(HTTPException):
+    """An error whose detail is always one plain sentence; extra facts (who blocks a wait, per-question results) beside it."""
+
+    def __init__(self, code, message, **extra):
+        super().__init__(code, str(message))
+        self.extra = extra
+
+
+class Body(BaseModel):
+    model_config = ConfigDict(extra="ignore")         # unknown fields (e.g. "to_role") are accepted and ignored
 
 
 def _roles():
@@ -51,7 +63,7 @@ def frontline():
     return set(_live()["views"]["frontline_roles"])
 
 
-class StartBody(BaseModel):
+class StartBody(Body):
     seed: int = Field(7, ge=0, le=2 ** 31 - 1)
     scenario: Literal["a31_storm", "random"] = "a31_storm"
     roles: list[str] = Field(default_factory=list, max_length=20)
@@ -65,13 +77,13 @@ class StartBody(BaseModel):
         return list(dict.fromkeys(v))
 
 
-class ControlBody(BaseModel):
+class ControlBody(Body):
     action: Literal["pause", "resume", "speed"]
     speed_idle: float | None = Field(None, gt=0)
     speed_pending: float | None = Field(None, gt=0)
 
 
-class DecideBody(BaseModel):
+class DecideBody(Body):
     question_ids: list[int] = Field(min_length=1, max_length=200)
     action: Literal["approve", "approve_option", "approve_with_change", "reject", "wait", "hand_off"]
     option_id: str | None = Field(None, max_length=20)
@@ -87,7 +99,7 @@ class DecideBody(BaseModel):
         return v
 
 
-class ReportBody(BaseModel):
+class ReportBody(Body):
     kind: Literal["gate_unavailable", "jet_bridge_slow", "long_queue", "special_assistance_waiting", "equipment_issue", "other"]
     flight_id: str | None = Field(None, pattern=r"^WN\d{3,4}$")
     gate: str | None = Field(None, pattern=r"^[A-Z]{1,2}\d{1,3}$")
@@ -102,7 +114,7 @@ class ReportBody(BaseModel):
         return v
 
 
-class NoteBody(BaseModel):
+class NoteBody(Body):
     text: str = Field(min_length=1, max_length=500)
     role: str = Field("", max_length=60)
 
@@ -114,8 +126,17 @@ class NoteBody(BaseModel):
         return v
 
 
-class RebookBody(BaseModel):
+class RebookBody(Body):
     option_id: str = Field(min_length=1, max_length=20)
+
+
+class Assignment(Body):
+    customer_id: str = Field(min_length=1, max_length=20)
+    option_id: str = Field(min_length=1, max_length=20)
+
+
+class FlightRebookBody(Body):
+    assignments: list[Assignment] = Field(min_length=1, max_length=300)
 
 
 # ------------------------------------------------------------ helpers
@@ -151,7 +172,7 @@ def _session(run_id):
 
 
 def _fail(e: DecideError):
-    raise HTTPException(e.code, {"error": e.message, "blocked_by": [{"id": b.id, "title": b.title} for b in e.blocked_by]})
+    raise LiveError(e.code, e.message, blocked_by=[{"id": b.id, "title": b.title} for b in e.blocked_by])
 
 
 def _saved_questions(run_id):
@@ -206,8 +227,8 @@ def decide(run_id: str, body: DecideBody):
     failed = [r for r in results if r["error"]]
     if failed and len(failed) == len(results):            # nothing was decided: the error is the answer
         first = failed[0]
-        raise HTTPException(first["code"], {"error": first["error"], "blocked_by": first.get("blocked_by") or [],
-                                            "results": [{k: r[k] for k in ("id", "status", "error")} for r in results]})
+        raise LiveError(first["code"], first["error"], blocked_by=first.get("blocked_by") or [],
+                        results=[{k: r[k] for k in ("id", "status", "error")} for r in results])
     return {"ok": not failed, "results": [{"id": r["id"], "status": r["status"], "error": r["error"], "done": r.get("done"),
                                            **({"blocked_by": r["blocked_by"]} if r.get("blocked_by") else {})} for r in results]}
 
@@ -462,6 +483,45 @@ def sent(run_id: str, since: int = Query(0, ge=0, le=1440)):
     s = _live_session(run_id)
     with s.lock:
         return s.views.sent(since)
+
+
+@router.get("/{run_id}/out_of_date")
+def out_of_date(run_id: str):
+    s = _live_session(run_id)
+    with s.lock:
+        return s.views.out_of_date()
+
+
+@router.get("/{run_id}/customers/{pid}/rebooking")
+def customer_rebooking(run_id: str, pid: str, reason: Literal["customer_request"] = Query("customer_request"),
+                       role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _live_session(run_id)
+    with s.lock:
+        if pid not in s.world.truth:
+            raise HTTPException(404, f"No Customer {pid}.")
+        return {"customer_id": pid, "reason": reason, "options": s.views.request_options(pid)}
+
+
+@router.get("/{run_id}/flights/{flight_id}/customers")
+def flight_customers(run_id: str, flight_id: str, role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _live_session(run_id)
+    with s.lock:
+        out = s.views.flight_customers(flight_id)
+    if out is None:
+        raise HTTPException(404, f"No flight {flight_id}.")
+    return out
+
+
+@router.post("/{run_id}/flights/{flight_id}/rebook")
+def flight_rebook(run_id: str, flight_id: str, body: FlightRebookBody, role: str = Query("counter_gate_agent")):
+    _frontline(role)
+    s = _running(run_id)
+    with s.lock:
+        if s.world is None or flight_id not in s.world.flights:
+            raise HTTPException(404, f"No flight {flight_id}.")
+        return s.rebook_many(flight_id, [a.model_dump() for a in body.assignments])
 
 
 @router.get("/{run_id}/results")

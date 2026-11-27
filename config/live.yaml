@@ -134,6 +134,9 @@ views:
   rebook_offer_delay_min: 60      # assumption: a counter offers other flights to a Customer whose flight out is this late
   significant_delay_min: 180      # DOT: a significant delay for a domestic flight is 3 hours or more (a refund is due if declined)
   refund_due_days: 7              # the DOT prompt-refund timing for card purchases (config/rules law: refund_timing_days)
+  option_labels: ["Best option", "Next best", "Third choice"]   # ranked rebooking options on request (then "Option 4", ...)
+  request_max_options: 6          # assumption: options shown when a Customer asks to change their flight
+  international_regions: ["Mexico / Caribbean"]   # a station region that makes a trip international (config/seed stations)
   watch_tarmac_min: 120           # assumption: the handover warns about a tarmac wait this long (the limit is 180)
   report_kinds: [gate_unavailable, jet_bridge_slow, long_queue, special_assistance_waiting, equipment_issue, other]
   text_max_chars: 500             # assumption: a report or note is short plain text

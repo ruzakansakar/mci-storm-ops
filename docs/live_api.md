@@ -14,7 +14,9 @@ Everything is saved.
   Every other route only reads.
 - All user-facing text says "Customers" (Southwest's word). Headlines, stories, trace labels and the agents' sentences never
   contain code words, rule ids or version numbers.
-- Errors:
+- Errors: `detail` is always one plain sentence (never a list or an object). Extra facts sit beside it, for example
+  `{"detail":"another open question depends on this one","blocked_by":[{"id":14,"title":"..."}]}`. Unknown body fields (for
+  example `"to_role"`) are accepted and ignored.
   - `404`: unknown run or question.
   - `409`: a blocked wait, a question already answered, a session that has ended, or results asked for before the end of the day.
   - `422`: invalid input.
@@ -104,6 +106,8 @@ This call is also the heartbeat.
 - `passengers_seeing_wrong_info_now`: for a passenger message, how many of its passengers see wrong information now, until it is
   approved. It is 0 for questions that do not change what passengers see.
 - `can_wait: false`: another open question depends on this one (`blocked_by`).
+- `can_hand_off` (true or false) and `hand_off_reason`: false only for human-only decisions, where you are the named person
+  and the duty manager can't take it.
 - `last_option: true`: you said no once and the agent has no other plan. A second no applies `consequence_if_rejected` through
   today's process.
 - `why.options_considered`: only options the agent itself produced. It is often empty.
@@ -366,11 +370,66 @@ The flight view also has:
   - `counter`: nothing is ever sent to the counter, so it is always `null`.
   - Every field is `null` for a place nothing was sent to.
 
+## Who sees out-of-date information
+
+```
+GET /api/live/{run_id}/out_of_date
+ -> {"total":120,"ten_min_ago":95,"flights":[{"flight_id","label","customers","channels":[{"channel","since"}],"truth"}]}
+```
+
+- `total` is the same count as `state.truth.wrong_now`: Customers with at least one screen that disagrees with the truth.
+- `flights` groups them by the flight they are on (each Customer is counted once), sorted by Customers. Each lists its wrong
+  screens with the minute they went wrong, and the flight's `truth` sentence.
+- `ten_min_ago` is `wrong_now` from the minute row ten minutes earlier.
+
+## A Customer's legs, rebooking on request, a flight's Customers
+
+The Customer view's `trip` legs also have:
+- `sched_dep`, `sched_arr`, `est_dep`, `est_arr`;
+- `gate` (for a leg at MCI, from the station plan);
+- `status`;
+- `connection`: `{"to_flight","minutes","at_risk"}`, or `null` on the last leg. `at_risk` means shorter than the rules'
+  minimum connection time.
+
+The view also has `international`: true if the Customer is in the international group or a station on the trip is in an
+international region, false if every station has a recorded region, `null` if one is not recorded.
+
+```
+GET /api/live/{run_id}/customers/{id}/rebooking?reason=customer_request
+ -> {"customer_id","reason":"customer_request","options":[{"option_id":"c1","rank":1,"label":"Best option","recommended":true,
+     "flights":[{"flight_id","dep","arr","from","to"}],"arrives":"19:45","seats_left":3,"why":"Arrives in Dallas at 19:45 today, nonstop, 3 seats left"}]}
+```
+
+- The options cover any flight out of MCI not yet flown, even if it is on time.
+- They are every other flight to the final destination with seats left: today's, and tomorrow's already on the schedule.
+  A tomorrow option's `why` says whether a hotel night is needed or the Customer can go home.
+- Ranked by the earliest arrival, then fewer connections, then the same day. Labels: "Best option", "Next best",
+  "Third choice", then "Option 4" and so on.
+- `POST /customers/{id}/rebook {"option_id":"c1"}` accepts these ids as well as the disruption options (`r1`...).
+
+A counter rebooking changes the Customer's trip record. Communication then sends them the new trip on its own, through the
+normal shared-state path, in exact words: "Hi Amelia. Your trip has changed. You are now booked on WN1048 to St. Louis...".
+That message appears in `/sent` (with `customer_id`) and in the Customer's `messages`, and their screens update.
+
+```
+GET  /api/live/{run_id}/flights/{id}/customers
+ -> {"flight":{"id","from","to","sched_dep","est_dep","status","gate","truth"},
+     "customers":[{"id","name","status","needs","international","connection","best_option":{...as above...}|null,"rebooked":false}]}
+POST /api/live/{run_id}/flights/{id}/rebook {"assignments":[{"customer_id","option_id"}]}
+ -> {"flight_id","results":[{"customer_id","ok":true,"error":null,"trip":[...]}]}
+```
+
+- The list covers the flight's Customers now, plus those already moved off it (`rebooked: true`).
+- Each assignment goes through the same path and rule check as a single rebooking, and is its own result: one failure doesn't
+  stop the others.
+- These routes are for the frontline role (`counter_gate_agent`).
+
 ## GET /api/live/{run_id}/sent?since=<minute>
 
 ```
 [{"t":"11:31","minute":691,"to":"Nora Okafor" | "143 Customers on WN1033" | "Gate agents and call center" | "Crew R07",
-  "channel":"sms"|"app"|"staff_note"|"crew"|null,"kind":"message"|"refund"|"hotel"|"rebook","text":"exact words","count":1}]
+  "channel":"sms"|"app"|"staff_note"|"crew"|null,"kind":"message"|"refund"|"hotel"|"rebook","text":"exact words","count":1,
+  "customer_id":"PAX0073"|null}]
 ```
 
 Newest last. It covers delivered messages, staff notes and crew messages, plus refund, hotel and rebooking confirmations.
@@ -379,6 +438,8 @@ Newest last. It covers delivered messages, staff notes and crew messages, plus r
 - **Confirmations of one kind in the same minute** are one row with their count. They have no message words or channel on
   record, so their `text` is a plain confirmation and `channel` is `null`.
 - **There is no email row:** nothing in the simulation sends email.
+- **`customer_id`** is set on every row that went to exactly one Customer, and `null` for grouped rows, staff notes and crew
+  messages.
 
 - **`script`**: the newest message the co-pilot actually sent about the flight (a staff note first).
 - **`on_screens`**: what most of the flight's tracked Customers see on each screen.

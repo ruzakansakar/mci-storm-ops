@@ -296,7 +296,7 @@ def test_frontline_role_and_no_contact_details_anywhere(ui):
     found = client.get(f"/api/live/{rid}/customers?q=maya&role=counter_gate_agent").json()
     assert found and set(found[0]) == {"id", "name", "booking_ref", "flight_id", "status"}
     one = client.get(f"/api/live/{rid}/customers/{found[0]['id']}?role=counter_gate_agent").json()
-    assert set(one) == {"id", "name", "trip", "true_status", "screens", "needs", "rebooking", "hotel", "refund_due", "messages",
+    assert set(one) == {"id", "name", "trip", "true_status", "screens", "needs", "rebooking", "hotel", "refund_due", "messages", "international",
                         "refunds"}
     fl = client.get(f"/api/live/{rid}/flights/WN1033").json()
     assert set(fl) == {"id", "from", "to", "sched_dep", "est_dep", "sched_arr", "est_arr", "status", "gate", "crew", "customers",
@@ -460,7 +460,7 @@ def test_everything_sent_newest_last_with_mass_sends_grouped(ui):
     rows = seen["sent"]
     assert rows and [r["minute"] for r in rows] == sorted(r["minute"] for r in rows)
     for r in rows:
-        assert set(r) == {"t", "minute", "to", "channel", "kind", "text", "count"} and r["minute"] >= 11 * 60 + 25
+        assert set(r) == {"t", "minute", "to", "channel", "kind", "text", "count", "customer_id"} and r["minute"] >= 11 * 60 + 25
         assert r["kind"] in ("message", "refund", "hotel", "rebook") and r["count"] >= 1
     mass = [r for r in rows if r["kind"] == "message" and r["count"] > 1]
     assert mass and all(r["to"].endswith("Customers") or " Customers on " in r["to"] for r in mass)

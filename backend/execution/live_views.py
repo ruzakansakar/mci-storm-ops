@@ -181,19 +181,22 @@ class Views:
                              "channel": "crew", "kind": "message", "text": p.get("text"), "count": 1})
             elif k == "care_decision_recorded" and p.get("action") == "offer_refund":
                 who = [names.get(x) or x for x in p.get("passenger_ids") or []]
+                ids = p.get("passenger_ids") or []
                 rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": ", ".join(who) or None, "channel": None, "kind": "refund",
                              "text": "Refund offered if the new trip is declined (Passenger Care's legal-floor refund).",
-                             "count": max(1, len(who))})
+                             "count": max(1, len(who)), "customer_id": ids[0] if len(ids) == 1 else None})
             elif k == "hotel_room_assigned":
                 rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": names.get(p.get("passenger_id")) or p.get("passenger_id"),
                              "channel": None, "kind": "hotel", "text": f"Room booked at {self._hotel_name(p.get('hotel_id'))}.",
-                             "count": 1})
+                             "count": 1, "customer_id": p.get("passenger_id")})
             elif (k == "decision_applied" and p.get("action") == "rebook_passenger") or k == "customer_rebooked":
                 moved = p.get("moved") or p.get("facts", {}).get("passenger_ids") or [p.get("passenger_id")]
                 to = (p.get("facts") or {}).get("flight_id") or p.get("flight_id")
                 who = [names.get(x) or x for x in moved if x]
+                ids = [x for x in moved if x]
                 rows.append({"t": fmt(e["t"]), "minute": e["t"], "to": who[0] if len(who) == 1 else f"{len(who)} Customers",
-                             "channel": None, "kind": "rebook", "text": f"Rebooked onto {to}.", "count": max(1, len(who))})
+                             "channel": None, "kind": "rebook", "text": f"Rebooked onto {to}.", "count": max(1, len(who)),
+                             "customer_id": ids[0] if len(ids) == 1 else None})
         merged = []                                       # confirmations of one kind in one minute: one row with its count
         for r in rows:
             if r["kind"] in ("refund", "hotel", "rebook") and merged and merged[-1]["kind"] == r["kind"]                     and merged[-1]["minute"] == r["minute"] and merged[-1].get("text") == r.get("text"):
@@ -201,6 +204,7 @@ class Views:
                 m["count"] += r["count"]
                 m["_who"] = m.get("_who", [m["to"]]) + [r["to"]]
                 m["to"] = f"{m['count']} Customers"
+                m["customer_id"] = None
                 continue
             merged.append(r)
         for m in merged:
@@ -210,10 +214,14 @@ class Views:
             pids, fl = g.pop("_pids"), g.pop("_flights")
             if g["count"] == 1:
                 g["to"] = names.get(pids[0]) or pids[0]
+                g["customer_id"] = pids[0]
             else:
                 one = sorted(fl)[0] if len(fl) == 1 else None
                 g["to"] = f"{g['count']} Customers" + (f" on {one}" if one else "")
         rows.sort(key=lambda r: r["minute"])
+        for r in rows:
+            r.setdefault("customer_id", None)
+            r.pop("_one", None)
         return rows
 
     def _hotel_name(self, hid):
@@ -299,12 +307,42 @@ class Views:
         return (self.w.truth[pid]["itinerary"] or [None])[-1]
 
     def trip(self, pid):
+        """Each leg as the operational record has it, and the connection to the next leg (at risk when it is shorter than the
+        minimum connection time in the rules)."""
+        mct = int(read_limits()["min_connection_min"])
+        itin = list(self.w.pax_truth(pid)["itinerary"])
         out = []
+        for i, fid in enumerate(itin):
+            f = self.w.flights.get(fid) or {}
+            conn = None
+            if i + 1 < len(itin) and itin[i + 1] in self.w.flights:
+                nxt = self.w.flights[itin[i + 1]]
+                gap = (nxt.get("est_dep") or nxt["sched_dep"]) - (f.get("est_arr") or f.get("sched_arr") or 0)
+                conn = {"to_flight": nxt["id"], "minutes": int(gap), "at_risk": gap < mct}
+            out.append({"flight_id": fid, "from": f.get("origin"), "to": f.get("destination"), "dep": fmt(f.get("est_dep")),
+                        "arr": fmt(f.get("est_arr")), "sched_dep": fmt(f.get("sched_dep")), "sched_arr": fmt(f.get("sched_arr")),
+                        "est_dep": fmt(f.get("est_dep")), "est_arr": fmt(f.get("est_arr")),
+                        "gate": self.gate_of(fid) if "MCI" in (f.get("origin"), f.get("destination")) else None,
+                        "status": f.get("status"), "connection": conn})
+        return out
+
+    def international(self, pid):
+        """True if the Customer is in the international group or a leg goes to or from a station recorded as international;
+        False if every station on the trip has a recorded region; None if one is not recorded."""
+        if self.w.passengers[pid].get("segment") == "international":
+            return True
+        region = {x["code"]: x.get("region") for x in self.w.stations.values()} if isinstance(self.w.stations, dict) else \
+            {x["code"]: x.get("region") for x in self.w.stations}
+        intl = (self.s.s["views"].get("international_regions") or [])
+        regions = []
         for fid in self.w.pax_truth(pid)["itinerary"]:
             f = self.w.flights.get(fid) or {}
-            out.append({"flight_id": fid, "from": f.get("origin"), "to": f.get("destination"), "dep": fmt(f.get("est_dep")),
-                        "arr": fmt(f.get("est_arr")), "status": f.get("status")})
-        return out
+            for code in (f.get("origin"), f.get("destination")):
+                if code and code != "MCI":
+                    regions.append(region.get(code))
+        if any(r in intl for r in regions if r):
+            return True
+        return None if any(r is None for r in regions) or not regions else False
 
     def customer(self, pid):
         if pid not in self.w.truth:
@@ -319,7 +357,7 @@ class Views:
         return {"id": pid, "name": p.get("full_name"), "trip": self.trip(pid), "true_status": screen_text(t), "screens": screens,
                 "needs": [NEEDS[p["segment"]]] if p.get("segment") in NEEDS else [],
                 "rebooking": self.rebooking(pid), "hotel": self.hotel(pid), "refund_due": self.refund_due(pid),
-                "messages": self.messages_to(pid), "refunds": self.refunds(pid)}
+                "messages": self.messages_to(pid), "refunds": self.refunds(pid), "international": self.international(pid)}
 
     def messages_to(self, pid):
         """The exact words this Customer received: every message delivered to one of their channels."""
@@ -365,6 +403,100 @@ class Views:
         return {"name": h.get("name") or entry.get("hotel_name"), "price": price if price is not None else h.get("rate_usd"),
                 "currency": "USD", "shuttle": h.get("shuttle") or entry.get("shuttle"),
                 "status": "assigned" if assigned is not None else entry.get("hotel_status")}
+
+    def request_options(self, pid):
+        """Any Customer may ask to change their flight out of MCI that has not left, even on time: every other flight to their
+        final destination with seats left (today, or tomorrow's flights already on the schedule), ranked by the earliest
+        arrival, then fewer connections, then the same day. Nothing is invented: times and seats are the reservation system's."""
+        leg = self.leaving_on(pid)
+        if leg is None:
+            return []
+        t = self.w.pax_truth(pid)
+        dest = t["destination"]
+        cur = self.w.flights[leg]
+        itin = list(t["itinerary"])
+        before = itin[: itin.index(leg)]
+        mct = int(read_limits()["min_connection_min"])
+        ready = self.w.t
+        if before and before[-1] in self.w.flights:              # still to land at MCI: the new flight must wait for them
+            prev = self.w.flights[before[-1]]
+            if prev.get("status") != "arrived":
+                ready = max(ready, (prev.get("est_arr") or prev["sched_arr"]) + mct)
+        local = bool(self.w.passengers[pid].get("lives_locally"))
+        city = self.s.plain.cities.get(dest, dest) if self.s.plain else dest
+        out = []
+        for f in self.w.departures:
+            if f["destination"] != dest or f["id"] == cur["id"] or f["status"] not in WAITING_DEP or f["est_dep"] <= ready:
+                continue
+            seats = self.w._room(f)
+            if seats < 1:
+                continue
+            next_day = bool(f.get("_next_day")) or f["est_dep"] >= 1440
+            why = (f"Arrives in {city} at {fmt(f['est_arr'])}{' tomorrow' if next_day else ' today'}, nonstop, "
+                   f"{seats} seat{'s' if seats != 1 else ''} left")
+            if next_day:
+                why += "; overnight: " + ("the Customer lives locally and can go home" if local else "a hotel night is needed")
+            out.append({"flights": [{"flight_id": f["id"], "dep": fmt(f["est_dep"]), "arr": fmt(f["est_arr"]), "from": f["origin"],
+                                     "to": f["destination"]}],
+                        "arrives": fmt(f["est_arr"]) + (" (tomorrow)" if next_day else ""), "seats_left": int(seats), "why": why,
+                        "_key": (f["est_arr"], 0, next_day, f["id"])})
+        out.sort(key=lambda o: o.pop("_key"))
+        labels = self.cfg["option_labels"]
+        for i, o in enumerate(out, 1):
+            o.update(option_id=f"c{i}", rank=i, label=labels[i - 1] if i <= len(labels) else f"Option {i}", recommended=i == 1)
+        return out[: self.cfg["request_max_options"]]
+
+    # ------------------------------------------------------------ 2. who sees wrong information, by flight
+    def out_of_date(self):
+        """Customers whose screens disagree with the truth now (the channels' own count, the same as truth.wrong_now), by the
+        flight they are on, with each wrong screen and since when; ten minutes ago from the saved minute rows."""
+        ch = self.s.channels
+        by = {}
+        for (pid, channel, field) in ch.dis:
+            if field == "bag_routing" and (pid not in ch.dis_pax):
+                continue
+            fid = self.current_flight(pid)
+            row = by.setdefault(fid, {"customers": set(), "channels": {}})
+            row["customers"].add(pid)
+            since = self.s.wrong_since.get((pid, channel))
+            if since is not None:
+                row["channels"][channel] = min(row["channels"].get(channel, since), since)
+            else:
+                row["channels"].setdefault(channel, None)
+        flights = []
+        for fid, row in by.items():
+            f = self.w.flights.get(fid)
+            flights.append({"flight_id": fid, "label": self.s.plain.flight(fid) if self.s.plain else fid,
+                            "customers": len(row["customers"]),
+                            "channels": [{"channel": c, "since": fmt(m) if m is not None else None}
+                                         for c, m in sorted(row["channels"].items(), key=lambda kv: (kv[1] is None, kv[1] or 0))],
+                            "truth": self.truth_of(f) if f else None})
+        flights.sort(key=lambda r: (-r["customers"], r["flight_id"] or ""))
+        ago = next((r["wrong_now"] for r in reversed(self.s.minutes) if r["minute"] <= self.w.t - 10), None)
+        return {"total": len(ch.dis_pax), "ten_min_ago": ago, "flights": flights}
+
+    # ------------------------------------------------------------ 6. a flight's Customers
+    def flight_customers(self, fid):
+        f = self.w.flights.get(fid)
+        if f is None:
+            return None
+        now = {p: self.w.pax_truth(p) for p in self.w.truth}        # the bookings as they stand this minute
+        pids = sorted({p for p, t in now.items() if fid in t["itinerary"]} | {p for p, it in self.s.first_trip.items() if fid in it})
+        out = []
+        for pid in pids:
+            p = self.w.passengers[pid]
+            legs = self.trip(pid)
+            leg = next((x for x in legs if x["flight_id"] == fid), None)
+            opts = self.request_options(pid) if fid in now[pid]["itinerary"] else []
+            out.append({"id": pid, "name": p.get("full_name"), "status": now[pid]["status"],
+                        "needs": [NEEDS[p["segment"]]] if p.get("segment") in NEEDS else [],
+                        "international": self.international(pid), "connection": (leg or {}).get("connection"),
+                        "best_option": opts[0] if opts else None,
+                        "rebooked": fid in self.s.first_trip.get(pid, []) and fid not in now[pid]["itinerary"]})
+        return {"flight": {"id": fid, "from": f["origin"], "to": f["destination"], "sched_dep": fmt(f["sched_dep"]),
+                           "est_dep": fmt(f.get("est_dep")), "status": f["status"], "gate": self.gate_of(fid),
+                           "truth": self.truth_of(f)},
+                "customers": out}
 
     def care_entry(self, pid):
         rows = self.s.copilot.store.records["care_plans"]

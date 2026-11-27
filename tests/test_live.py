@@ -224,7 +224,7 @@ def test_api_wait_on_a_question_others_depend_on_is_409_with_who_blocks(paused):
     if blocked is None:                                      # make one: a dependent question on the same flight
         pytest.fail("no dependent questions open at 12:05")
     r = client.post(f"/api/live/{s.run_id}/decide", json={"question_ids": [blocked["id"]], "action": "wait", "minutes": 10})
-    assert r.status_code == 409 and r.json()["detail"]["blocked_by"] == blocked["blocked_by"]
+    assert r.status_code == 409 and isinstance(r.json()["detail"], str) and r.json()["blocked_by"] == blocked["blocked_by"]
     bad = client.post(f"/api/live/{s.run_id}/decide", json={"question_ids": [blocked["id"]], "action": "wait", "minutes": 7})
     assert bad.status_code in (409, 422)
     assert client.post(f"/api/live/{s.run_id}/decide", json={"question_ids": [blocked["id"]], "action": "reject"}).status_code == 422
@@ -334,7 +334,8 @@ def test_the_api_writes_only_through_start_control_and_decide(monkeypatch, db):
     writes = sorted(p for p, ops in paths.items() for m in ops if m not in ("get", "head"))
     assert writes == sorted(["/api/live/start", "/api/live/{run_id}/control", "/api/live/{run_id}/decide",
                              "/api/live/{run_id}/reports", "/api/live/{run_id}/flights/{flight_id}/notes",
-                             "/api/live/{run_id}/customers/{pid}/rebook", "/api/live/{run_id}/customers/{pid}/refund"])
+                             "/api/live/{run_id}/customers/{pid}/rebook", "/api/live/{run_id}/customers/{pid}/refund",
+                             "/api/live/{run_id}/flights/{flight_id}/rebook"])
     from backend.settings import ROOT
     src = (ROOT / "backend" / "api" / "live.py").read_text(encoding="utf-8")
     assert not re.search(r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE)\b", src)

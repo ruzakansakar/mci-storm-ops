@@ -210,6 +210,7 @@ class LiveSession:
         self.notes = {}                  # flight -> [{t, role, text}]: notes staff wrote on a flight (notes only)
         self.reports = []                # reports from the floor, as sent
         self.first_trip, self.disrupted_since, self.stranded_since = {}, {}, {}
+        self.wrong_since = {}            # (passenger, screen) -> the minute it started to disagree with the truth
         self.views = None
         self.thread = None
         self.conn = None
@@ -356,7 +357,14 @@ class LiveSession:
         self.save_now = True
 
     def _track(self, t):
-        """When each tracked Customer was first disrupted and first stranded (for the clocks)."""
+        """When each tracked Customer was first disrupted and first stranded (for the clocks), and since when each screen is
+        wrong (the channels' own list of wrong screens, the same count as truth.wrong_now)."""
+        wrong = {(pid, ch) for pid, ch, _ in self.channels.dis}
+        for k in list(self.wrong_since):
+            if k not in wrong:
+                del self.wrong_since[k]
+        for k in wrong:
+            self.wrong_since.setdefault(k, t)
         for pid, tr in self.world.truth.items():
             if pid not in self.disrupted_since and (tr["status"] not in ("confirmed", "scheduled") or
                                                     list(tr["itinerary"]) != self.first_trip.get(pid)):
@@ -456,6 +464,9 @@ class LiveSession:
                         "last_option": q.last_option, "consequence_if_rejected": q.consequence or "", "why": q.why,
                         **self.plain_of(q), "bundle": q.bundle, "section": q.section,
                         "allowed_changes": self.humans.allowed_changes(q),
+                        "can_hand_off": not (q.proposal or {}).get("human_only"),
+                        "hand_off_reason": ("a human-only decision: you are the named person, so the duty manager can't take it"
+                                            if (q.proposal or {}).get("human_only") else None),
                         **({"care": self.views.care_block(q)} if q.agent == "passenger_care" and self.views else {})})
         out.sort(key=lambda i: (-i["priority_score"], i["id"]))
         return out
@@ -579,13 +590,13 @@ class LiveSession:
         from backend.execution.executor import apply_approved
         if self.status in ("finished", "stopped"):
             raise DecideError(409, f"the session is {self.status}")
-        opts = {o["option_id"]: o for o in self.views.rebooking(pid)}
+        opts = {o["option_id"]: o for o in self.views.rebooking(pid) + self.views.request_options(pid)}
         if option_id not in opts:
             raise DecideError(409 if opts else 409, "that option is not open for this Customer" if opts else
                               "this Customer has no rebooking options (their trip was not cancelled or moved to tomorrow)")
         to = opts[option_id]["flights"][0]["flight_id"]
         facts = {"passenger_ids": [pid], "flight_id": to}
-        if not self.views.stranded(pid):                       # leaving a delayed flight: name it
+        if not self.views.stranded(pid):                       # leaving a flight that has not gone (late or on time): name it
             facts["from_flight"] = self.views.leaving_on(pid)
         proposal = {"id": f"counter-{pid}-{self.minute}", "agent": "passenger_care", "action": "rebook_passenger",
                     "decision_ids": ["K01"], "facts": facts}
@@ -595,6 +606,24 @@ class LiveSession:
         if not out["applied"]:
             raise DecideError(409, "Could not rebook: " + str(out.get("reason") or "the rule check said no"))
         return {"ok": True, "trip": self.views.trip(pid)}
+
+    def rebook_many(self, fid, assignments):
+        """Several Customers off one flight, each through the same path as a single rebooking (and its rule check)."""
+        out = []
+        for a in assignments:
+            pid, opt = a.get("customer_id"), a.get("option_id")
+            if pid not in self.world.truth:
+                out.append({"customer_id": pid, "ok": False, "error": f"no Customer {pid}", "trip": None})
+                continue
+            if fid not in self.world.pax_truth(pid)["itinerary"]:
+                out.append({"customer_id": pid, "ok": False, "error": f"{pid} is not on {fid}", "trip": None})
+                continue
+            try:
+                r = self.rebook(pid, opt)
+                out.append({"customer_id": pid, "ok": True, "error": None, "trip": r["trip"]})
+            except DecideError as e:
+                out.append({"customer_id": pid, "ok": False, "error": e.message, "trip": None})
+        return {"flight_id": fid, "results": out}
 
     def refund(self, pid):
         """A refund through Passenger Care's path: its own refund offer for this Customer, approved and rule-checked again."""
