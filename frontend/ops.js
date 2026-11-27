@@ -119,7 +119,8 @@ function snapshot(t) {
 const PLANE = '<path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z" transform="rotate(90 12 12)"/>';
 
 export class OpsView {
-  constructor({ api, run, onFlightNotes }) {
+  constructor({ api, run, onFlightNotes, onFlightCustomers }) {
+    this.onFlightCustomers = onFlightCustomers;
     this.api = api; this.run = run; this.board = 'dep'; this.open = new Set(); this.t = 660; this.lastLoad = 0; this.flightCache = {};
     this.onFlightNotes = onFlightNotes;
     this.map = new NetworkMap($('map'), $('tooltip'));
@@ -135,6 +136,8 @@ export class OpsView {
     $('board').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-follow]');
       if (btn) { this.select(btn.dataset.follow, true); return; }
+      const fc = e.target.closest('[data-fcust]');
+      if (fc) { this.onFlightCustomers && this.onFlightCustomers(fc.dataset.fcust); return; }
       const nb = e.target.closest('[data-notes]');
       if (nb) { this.onFlightNotes && this.onFlightNotes(nb.dataset.notes); return; }
       const tr = e.target.closest('tr[data-id]');
@@ -280,6 +283,7 @@ export class OpsView {
           ${d?.script?.text ? `<div class="script"><span class="k">What to tell Customers${d.script.updated ? `, updated ${esc(d.script.updated)}` : ''}</span><p>${esc(d.script.text)}</p></div>` : ''}
           ${d?.notes?.length ? `<ul class="notes">${d.notes.slice(-3).map((n) => `<li><b>${esc(n.t)}</b> ${esc(n.role)}: ${esc(n.text)}</li>`).join('')}</ul>` : ''}
           <div class="act-row"><button class="btn" type="button" data-follow="${esc(r.f.id)}">${sel ? 'Following on the map' : 'Show on the map'}</button>
+          <button class="btn primary" type="button" data-fcust="${esc(r.f.id)}">See all ${d?.customers ?? r.f.pax ?? ''} Customers</button>
           <button class="btn" type="button" data-notes="${esc(r.f.id)}">Add a note</button></div></td></tr>`;
       }).join('') + '</tbody>';
   }

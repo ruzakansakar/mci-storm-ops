@@ -368,3 +368,30 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--bg);
 .sent-pop.out { opacity: 0; transform: translateY(8px); }
 .sp-head { font-weight: 700; } .sp-text { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .sent-pop { transition: none; } }
+
+/* full trip, ranked rebooking */
+.legs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.leg { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.leg.hit { border-color: var(--warn); background: var(--warn-soft); }
+.leg-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.leg-top .link { margin-left: auto; font-size: 14px; }
+.fl-facts.small { margin: 6px 0 0; } .fl-facts.small dd { font-size: 14px; }
+.rebook-box { margin: 8px 0 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.rebook-box .rebook { width: 100%; }
+.rebook .tagx { margin-right: 6px; }
+
+/* out of date */
+.ood { margin-top: 16px; border: 2px solid var(--bad); }
+.ood-list { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.ood-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft); }
+
+/* everyone on a flight */
+.wide-dlg { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; margin: 0; border-radius: 0; border: 0; padding: 20px max(16px, calc((100vw - 1280px) / 2)); }
+.wide-dlg .fd-head h2 { font-size: 26px; }
+.fd-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.fd-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 0 0 10px; }
+.fd-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.fd-table td { white-space: normal; vertical-align: top; }
+.fd-act { white-space: nowrap; }
+.fd-all { position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; align-items: center; }
+.sent-pop.link { pointer-events: auto; cursor: pointer; } .sent-pop.link:hover { border-color: var(--accent); }

@@ -151,11 +151,12 @@
         </div>
       </div>
     </section>
+    <section class="card ood" id="ood" aria-label="Out of date right now" hidden></section>
     <div class="cust-grid">
       <section class="card" aria-label="Find a Customer">
         <h2>Find a Customer</h2>
         <form id="cust-form" class="search"><label class="sr-only" for="cust-q">Name, booking reference or flight</label>
-          <input id="cust-q" type="search" placeholder="Name, booking reference or flight" autocomplete="off"><button class="btn primary" type="submit">Search</button></form>
+          <input id="cust-q" type="search" placeholder="Name, booking reference, or a flight like WN1033" autocomplete="off"><button class="btn primary" type="submit">Search</button></form>
         <ul class="cust-list" id="cust-list"></ul>
       </section>
       <section class="card cust-card" id="cust-card" aria-live="polite"><p class="muted">Pick a Customer to see their trip, what their screens say and their rebooking options.</p></section>
@@ -215,6 +216,11 @@
     <label class="field"><span class="field-label">Note</span><textarea name="text" rows="3" required></textarea></label>
     <div class="act-row"><button class="btn primary" type="submit">Add note</button><button class="btn" type="button" id="note-cancel">Cancel</button></div>
   </form>
+</dialog>
+
+<dialog id="flight-dlg" class="dlg wide-dlg" aria-labelledby="fd-title">
+  <div class="fd-head"><h2 id="fd-title">Customers on this flight</h2><button class="btn" type="button" id="fd-close">Back</button></div>
+  <div id="fd-body"><p class="muted">Loading…</p></div>
 </dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>

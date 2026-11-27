@@ -61,7 +61,7 @@ function open(runId) {
   $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false; $('popups-btn').hidden = false;
   history.replaceState(null, '', `?run=${encodeURIComponent(runId)}${ui.api.practice ? '&mock=1' : ''}`);
   $('role').innerHTML = Object.entries(ALL_ROLES).map(([k, v]) => `<option value="${k}" ${k === ui.role ? 'selected' : ''}>${esc(v)}</option>`).join('');
-  ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote });
+  ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote, onFlightCustomers: openFlight });
   loop();
 }
 $('role').addEventListener('change', () => {
@@ -81,7 +81,7 @@ function setTab(name) {
   if (name === 'ops' && ui.state) ui.ops.update(ui.state.minute);
 }
 document.querySelectorAll('[data-tab]').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
-$('truth-strip').addEventListener('click', () => setTab('customers'));
+$('truth-strip').addEventListener('click', () => { setTab('customers'); refreshOod(); $('ood').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
 
 $('pause').addEventListener('click', async () => {
   ui.state = await ui.api.control(ui.run, { action: ui.state && ui.state.status === 'running' ? 'pause' : 'resume' });
@@ -99,7 +99,10 @@ $('report-cancel').addEventListener('click', () => $('report-dlg').close());
 $('report-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
-  const body = { kind: fd.get('kind'), gate: fd.get('gate') || null, flight_id: fd.get('flight_id') || null, text: fd.get('text'), role: ui.role };
+  const gate = String(fd.get('gate') || '').trim().toUpperCase() || null, flight = String(fd.get('flight_id') || '').trim().toUpperCase().replace(/^(\d)/, 'WN$1') || null;
+  if (gate && !/^[A-Z]{1,2}\d{1,3}$/.test(gate)) { toast('Gate should look like B53 or G05.', true); return; }
+  if (flight && !/^WN\d{3,4}$/.test(flight)) { toast('Flight should look like WN1031.', true); return; }
+  const body = { kind: fd.get('kind'), gate, flight_id: flight, text: fd.get('text'), role: ui.role };
   try { await ui.api.report(ui.run, body); toast('Report sent. The co-pilot is taking it into account.'); $('report-dlg').close(); e.target.reset(); }
   catch (err) { toast(`Could not send the report: ${err.message}`, true); }
 });
@@ -108,7 +111,7 @@ $('note-cancel').addEventListener('click', () => $('note-dlg').close());
 $('note-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = new FormData(e.target).get('text');
-  try { await ui.api.addNote(ui.run, ui.noteFlight, { text, role: ALL_ROLES[ui.role] }); toast(`Note added to ${ui.noteFlight}.`); $('note-dlg').close(); e.target.reset(); ui.ops.fetchFlight(ui.noteFlight); }
+  try { await ui.api.addNote(ui.run, ui.noteFlight, { text, role: ui.role }); toast(`Note added to ${ui.noteFlight}.`); $('note-dlg').close(); e.target.reset(); ui.ops.fetchFlight(ui.noteFlight); }
   catch (err) { toast(`Could not add the note: ${err.message}`, true); }
 });
 
@@ -262,11 +265,18 @@ function renderDetail() {
           <button class="btn primary" id="do-approve" type="button">${group.length > 1 ? `Approve all ${group.length}` : 'Approve'}</button>
           <button class="btn" id="start-decline" type="button">Decline</button>
           <button class="btn" data-wait="10" type="button" ${it.can_wait ? '' : 'disabled'}>Remind me in 10 min</button>
-          <button class="btn" id="do-handoff" type="button">Send to duty manager</button></div>
+          <button class="btn" id="do-handoff" type="button" ${it.can_hand_off === false ? `disabled title="${esc(it.hand_off_reason || 'Only the named role can decide this one')}"` : ''}>Send to duty manager</button></div>
+        ${it.can_hand_off === false ? `<p class="muted small">Can't send this to the duty manager: ${esc(plain(it.hand_off_reason || 'only the named role can decide it'))}.</p>` : ''}
         ${it.can_wait ? '' : `<p class="blocked">Can't wait: ${esc((it.blocked_by || []).map((b) => b.title).join(', '))} depends on this.</p>`}`}
     </footer>`;
   const ids = group.map((g) => g.id);
-  box.querySelectorAll(`input[name="opt-${it.id}"]`).forEach((r) => r.addEventListener('change', () => { ui.choice[it.id] = r.value; box.querySelectorAll('.option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked)); }));
+  const approveLabel = () => {
+    const b = box.querySelector('#do-approve'); if (!b) return;
+    const o = options.find((x) => x.id === (ui.choice[it.id] || chosen));
+    b.textContent = group.length > 1 ? `Approve all ${group.length}` : o && !o.recommended && options.length > 1 ? `Approve: ${plain(o.label)}` : 'Approve';
+  };
+  box.querySelectorAll(`input[name="opt-${it.id}"]`).forEach((r) => r.addEventListener('change', () => { ui.choice[it.id] = r.value; box.querySelectorAll('.option').forEach((o) => o.classList.toggle('on', o.querySelector('input').checked)); approveLabel(); }));
+  approveLabel();
   box.querySelectorAll('[data-cust]').forEach((b) => b.addEventListener('click', () => { setTab('customers'); showCustomer(b.dataset.cust); }));
   box.querySelector('#next')?.addEventListener('click', () => { ui.selected = null; renderQueue(); });
   box.querySelector('#do-approve')?.addEventListener('click', () => {
@@ -286,7 +296,7 @@ function renderDetail() {
     decide(ids, { action: 'reject', reason }, 'Declined. The co-pilot will look for something else.');
   });
   box.querySelectorAll('[data-wait]').forEach((b) => b.addEventListener('click', () => decide([it.id], { action: 'wait', minutes: Number(b.dataset.wait) }, `It'll come back in ${b.dataset.wait} minutes, or sooner if its deadline gets close.`)));
-  box.querySelector('#do-handoff')?.addEventListener('click', () => decide(ids, { action: 'hand_off', to_role: 'director_of_operations' }, 'Sent to the duty manager.'));
+  box.querySelector('#do-handoff')?.addEventListener('click', () => decide(ids, { action: 'hand_off' }, 'Sent to the duty manager.'));
   loadTrace(it);
 }
 
@@ -444,6 +454,7 @@ function paintTrace() {
 $('cust-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = $('cust-q').value.trim();
+  if (/^(wn)?\d{3,4}$/i.test(q)) { openFlight(q.toUpperCase().startsWith('WN') ? q.toUpperCase() : `WN${q}`); return; }
   if (!q) { $('cust-list').innerHTML = '<li class="muted">Type a name, booking reference or flight number first.</li>'; return; }
   const list = await ui.api.customers(ui.run, q).catch((err) => { toast(err.message, true); return []; });
   $('cust-list').innerHTML = list.length ? list.map((c) => `<li><button type="button" class="cust-row" data-c="${esc(c.id)}"><b>${esc(c.name)}</b>
@@ -462,22 +473,134 @@ async function showCustomer(id) {
     <div class="cust-head"><h2>${esc(c.name)}</h2>${(c.needs || []).map((n) => `<span class="tagx warn">${esc(NEEDS[n] || plain(n))}</span>`).join(' ')}</div>
     <p class="cust-truth"><b>Right now:</b> ${esc(plain(c.true_status))}</p>
     <h3>Their trip</h3>
-    <ol class="trip">${c.trip.map((f) => `<li class="${f === leg ? 'hit' : ''}"><b>${esc(f.flight_id)}</b> ${esc(f.from)} ${esc(f.dep)} → ${esc(f.to)} ${esc(f.arr)} <span class="status ${/cancel/i.test(f.status) ? 'bad' : /delay|divert|held/i.test(f.status) ? 'warn' : 'ok'}">${esc(plain(f.status))}</span></li>`).join('')}</ol>
+    <div class="legs">${c.trip.map((f) => `<div class="leg ${f === leg ? 'hit' : ''}">
+      <div class="leg-top"><b>${esc(f.flight_id)}</b> <span>${esc(f.from)} → ${esc(f.to)}</span> <span class="status ${/cancel/i.test(f.status) ? 'bad' : /delay|divert|held/i.test(f.status) ? 'warn' : 'ok'}">${esc(plain(f.status))}</span>
+        <button class="link" type="button" data-fl="${esc(f.flight_id)}">Everyone on this flight</button></div>
+      <dl class="fl-facts small">
+        <div><dt>Scheduled</dt><dd>${esc(f.sched_dep || f.dep)} → ${esc(f.sched_arr || f.arr)}</dd></div>
+        <div><dt>Expected</dt><dd>${esc(f.est_dep || f.sched_dep || f.dep)}${f.est_arr ? ` → ${esc(f.est_arr)}` : ''}</dd></div>
+        <div><dt>Gate</dt><dd>${esc(f.gate || 'not set')}</dd></div>
+        ${f.connection ? `<div><dt>Connection</dt><dd>${esc(f.connection.to_flight)}, ${f.connection.minutes} min${f.connection.at_risk ? ' <span class="tagx bad">At risk</span>' : ''}</dd></div>` : ''}
+      </dl></div>`).join('')}</div>
+    ${c.international ? '<p><span class="tagx warn">International trip</span></p>' : ''}
     ${oneStoryHtml(flight)}
-    ${c.rebooking?.length ? `<h3>Other ways to get there</h3><ul class="rebook">${c.rebooking.map((o) => `<li class="${o.recommended ? 'rec' : ''}">
-        <div><b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)} ${o.recommended ? '<span class="tagx ok">Suggested</span>' : ''}
-        <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null ? `, ${o.seats_left} seats left` : ''}</span></div>
-        <button class="btn ${o.recommended ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Approve this rebooking</button></li>`).join('')}</ul>` : '<p class="muted">No rebooking needed or available right now.</p>'}
+    <div class="rebook-box" id="rebook-box">${c.rebooking?.length ? rebookList(c.rebooking, 'The co-pilot suggests') : `<button class="btn primary" type="button" id="rebook-ask">Rebook this Customer</button>
+      <span class="muted small">For a Customer who asks to change, or a flight running late.</span>`}</div>
     ${c.hotel ? `<p><b>Hotel:</b> ${esc(c.hotel.name)}${c.hotel.price ? `, $${c.hotel.price}` : ''}${c.hotel.shuttle === true ? ', shuttle included' : c.hotel.shuttle ? `, shuttle ${esc(c.hotel.shuttle)}` : ''}${c.hotel.status ? ` <span class="muted">(${esc(plain(c.hotel.status))})</span>` : ''}</p>` : ''}
     ${(c.refunds || []).length ? `<p><b>Refunds:</b> ${c.refunds.map((r) => `${r.amount != null ? `$${r.amount}` : 'Unused fare'} ${esc(r.status)}${r.t ? ` at ${esc(r.t)}` : ''}`).join('; ')}</p>` : ''}
     <div class="act-row">${c.refund_due ? '<button class="btn" id="refund" type="button">Refund instead</button>' : ''}</div>
     <h3>Messages they received</h3>
     ${(c.messages || []).length ? `<ol class="msgs">${c.messages.map((x) => `<li><span class="t">${esc(x.t)}</span> <span class="tagx quiet">${esc(cap(CHANNEL_WORDS[x.channel] || plain(x.channel || 'note')))}</span> "${esc(x.text)}"</li>`).join('')}</ol>` : '<p class="muted">No messages yet.</p>'}`;
-  card.querySelectorAll('[data-rebook]').forEach((b) => b.addEventListener('click', async () => {
-    try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); toast('Rebooked. The new trip goes out to every screen and every agent.'); showCustomer(id); }
-    catch (err) { toast(`Could not rebook: ${err.message}`, true); }
-  }));
+  card.querySelectorAll('[data-fl]').forEach((b) => b.addEventListener('click', () => openFlight(b.dataset.fl)));
+  card.querySelector('#rebook-ask')?.addEventListener('click', async () => {
+    ui.rebookAsked = id;
+    const opts = await ui.api.rebookOptions(ui.run, id).catch((err) => { toast(`Could not load options: ${err.message}`, true); return null; });
+    if (!opts) return;
+    $('rebook-box').innerHTML = opts.length ? rebookList(opts, 'Ways to get there, best first') : '<p class="muted">No other flight with seats today.</p>';
+    wireRebook(card, id);
+  });
   card.querySelector('#refund')?.addEventListener('click', async () => { await ui.api.refund(ui.run, id); toast('Refund issued.'); showCustomer(id); });
+  wireRebook(card, id);
+  if (ui.rebookAsked === id) card.querySelector('#rebook-ask')?.click();     // keep the options open while the page refreshes
+}
+function rebookList(opts, title) {
+  const sorted = [...opts].sort((a, b) => (a.rank ?? (a.recommended ? 0 : 9)) - (b.rank ?? (b.recommended ? 0 : 9)));
+  return `<h3>${title}</h3><ul class="rebook">${sorted.map((o, i) => `<li class="${i === 0 ? 'rec' : ''}">
+    <div><span class="tagx ${i === 0 ? 'ok' : 'quiet'}">${esc(o.label && !/^[A-Z]{2}\d/.test(o.label) ? o.label : ['Best option', 'Next best', 'Third choice'][i] || `Choice ${i + 1}`)}</span>
+    <b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)}
+    <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null ? `, ${o.seats_left} seats left` : ''}</span></div>
+    <button class="btn ${i === 0 ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Rebook on this</button></li>`).join('')}</ul>`;
+}
+function wireRebook(card, id) {
+  card.querySelectorAll('[data-rebook]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try { await ui.api.rebook(ui.run, id, { option_id: b.dataset.rebook }); ui.rebookAsked = null; toast('Rebooked. The Customer gets a text, and every screen shows the new trip.'); showCustomer(id); }
+    catch (err) { b.disabled = false; toast(`Could not rebook: ${err.message}`, true); }
+  }));
+}
+
+
+
+// ---------------------------------------------------------------- who is out of date, and everyone on a flight
+const CH = { app: 'app', sms: 'text message', gate_screen: 'gate screen', call_center: 'call center' };
+async function refreshOod() {
+  if (!ui.api.outOfDate) return;
+  const o = await ui.api.outOfDate(ui.run).catch(() => null);
+  const box = $('ood');
+  if (!o) { box.hidden = true; return; }
+  box.hidden = false;
+  const diff = (o.ten_min_ago ?? o.total) - o.total;
+  box.innerHTML = `<div class="card-head"><h2>Out of date right now: ${num(o.total)} Customers</h2>
+    <span class="tagx ${diff > 0 ? 'ok' : diff < 0 ? 'bad' : 'quiet'}">${diff > 0 ? `${num(diff)} fewer than 10 min ago` : diff < 0 ? `${num(-diff)} more than 10 min ago` : 'Same as 10 min ago'}</span></div>
+    ${o.flights.length ? `<ul class="ood-list">${o.flights.map((f) => `<li><div><b>${esc(f.label || f.flight_id)}</b> <span class="muted">${num(f.customers)} Customers</span><br>
+      <span class="small">${f.channels.map((c) => `${esc(CH[c.channel] || plain(c.channel))} out of date since ${esc(c.since)}`).join(', ')}${f.truth ? `. Truth: ${esc(plain(f.truth))}` : ''}</span></div>
+      <button class="btn" type="button" data-ood="${esc(f.flight_id)}">Open flight</button></li>`).join('')}</ul>` : '<p class="muted">Every Customer sees the truth right now.</p>'}`;
+  box.querySelectorAll('[data-ood]').forEach((b) => b.addEventListener('click', () => openFlight(b.dataset.ood)));
+}
+
+const NEED_WORD = { wheelchair: 'Wheelchair', unaccompanied_minor: 'Unaccompanied minor' };
+ui.fd = { filter: 'all', data: null, flight: null, picks: {} };
+$('fd-close').addEventListener('click', () => $('flight-dlg').close());
+async function openFlight(fid) {
+  ui.fd = { filter: 'all', data: null, flight: fid, picks: {} };
+  $('fd-title').textContent = `Customers on ${fid}`;
+  $('fd-body').innerHTML = '<p class="muted">Loading…</p>';
+  if (!$('flight-dlg').open) $('flight-dlg').showModal();
+  const d = await ui.api.flightCustomers(ui.run, fid).catch((err) => { $('fd-body').innerHTML = `<p class="muted">Could not load this flight: ${esc(err.message)}</p>`; return null; });
+  if (!d) return;
+  ui.fd.data = d; renderFlight();
+}
+function renderFlight() {
+  const d = ui.fd.data, f = d.flight || {};
+  const all = d.customers || [];
+  const counts = { all: all.length, connecting: all.filter((c) => c.connection).length, needs: all.filter((c) => (c.needs || []).length).length,
+    international: all.filter((c) => c.international).length, todo: all.filter((c) => !c.rebooked && c.best_option).length };
+  const show = all.filter((c) => ui.fd.filter === 'all' || (ui.fd.filter === 'connecting' && c.connection) || (ui.fd.filter === 'needs' && (c.needs || []).length)
+    || (ui.fd.filter === 'international' && c.international) || (ui.fd.filter === 'todo' && !c.rebooked && c.best_option))
+    .sort((a, b) => ((b.needs || []).length - (a.needs || []).length) || ((b.connection ? 1 : 0) - (a.connection ? 1 : 0)));
+  const chip = (k, label) => `<button type="button" class="btn chip ${ui.fd.filter === k ? 'active' : ''}" data-ff="${k}">${label} ${counts[k]}</button>`;
+  $('fd-body').innerHTML = `
+    <p class="fd-status"><b>${esc(f.id || ui.fd.flight)}</b> ${esc(f.from || '')}${f.to ? ` → ${esc(f.to)}` : ''} <span class="status ${/cancel/i.test(f.status || '') ? 'bad' : /delay|held|divert/i.test(f.status || '') ? 'warn' : 'ok'}">${esc(plain(f.status || ''))}</span>
+      ${f.truth ? `<span class="muted">${esc(plain(f.truth))}</span>` : ''}</p>
+    <div class="fd-filters">${chip('all', 'All')}${chip('todo', 'Not rebooked yet')}${chip('needs', 'Special needs')}${chip('connecting', 'Connecting')}${counts.international ? chip('international', 'International') : ''}</div>
+    <div class="board-wrap"><table class="board fd-table"><thead><tr><th>Customer</th><th>Needs</th><th>Connection</th><th>Best option</th><th></th></tr></thead><tbody>
+    ${show.map((c) => {
+      const pick = ui.fd.picks[c.id];
+      const opt = pick?.option || c.best_option;
+      return `<tr><td><button class="link" type="button" data-oc="${esc(c.id)}">${esc(c.name)}</button><br><span class="muted small">${esc(plain(c.status || ''))}</span></td>
+        <td>${(c.needs || []).map((n) => `<span class="tagx warn">${esc(NEED_WORD[n] || plain(n))}</span>`).join(' ')}${c.international ? ' <span class="tagx quiet">International</span>' : ''}</td>
+        <td>${c.connection ? `${esc(c.connection.to_flight)}, ${c.connection.minutes} min${c.connection.at_risk ? ' <span class="tagx bad">At risk</span>' : ''}` : '<span class="muted">-</span>'}</td>
+        <td>${c.rebooked ? '<span class="status ok">Rebooked</span>' : opt ? `<b>${opt.flights.map((x) => `${esc(x.flight_id)} ${esc(x.dep)}`).join(' + ')}</b> → ${esc(opt.arrives)}<br><span class="muted small">${esc(plain(opt.why || ''))}</span>
+          <div class="fd-alt" id="alt-${esc(c.id)}"></div>` : '<span class="muted">No rebooking needed</span>'}</td>
+        <td class="fd-act">${!c.rebooked && opt ? `<button class="btn primary" type="button" data-one="${esc(c.id)}">Rebook</button> <button class="btn" type="button" data-change="${esc(c.id)}">Change</button>` : ''}</td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">No Customers in this view.</td></tr>'}
+    </tbody></table></div>
+    ${counts.todo ? `<div class="act-row fd-all"><button class="btn primary" type="button" id="fd-all">Rebook all ${counts.todo} on their best option</button><span class="muted small">Special needs and connections are listed first. Each Customer gets a text with their new trip.</span></div>` : ''}`;
+  $('fd-body').querySelectorAll('[data-ff]').forEach((b) => b.addEventListener('click', () => { ui.fd.filter = b.dataset.ff; renderFlight(); }));
+  $('fd-body').querySelectorAll('[data-oc]').forEach((b) => b.addEventListener('click', () => { $('flight-dlg').close(); setTab('customers'); showCustomer(b.dataset.oc); }));
+  $('fd-body').querySelectorAll('[data-change]').forEach((b) => b.addEventListener('click', async () => {
+    const cid = b.dataset.change;
+    const opts = await ui.api.rebookOptions(ui.run, cid).catch((err) => { toast(err.message, true); return []; });
+    $(`alt-${cid}`).innerHTML = opts.length ? `<label class="field"><span class="field-label">Choose another</span><select data-pick="${esc(cid)}">${opts.map((o, i) => `<option value="${esc(o.option_id)}">${esc(o.label || ['Best option', 'Next best', 'Third choice'][i] || '')}: ${esc(o.flights.map((x) => `${x.flight_id} ${x.dep}`).join(' + '))}, arrives ${esc(o.arrives)}</option>`).join('')}</select></label>` : '<span class="muted small">No other flight with seats.</span>';
+    $(`alt-${cid}`).querySelector('select')?.addEventListener('change', (e) => { ui.fd.picks[cid] = { option: opts.find((o) => o.option_id === e.target.value) }; });
+  }));
+  const go = async (assignments) => {
+    try {
+      const r = await ui.api.flightRebook(ui.run, ui.fd.flight, assignments);
+      const bad = (r.results || []).filter((x) => x.error);
+      toast(bad.length ? `${assignments.length - bad.length} rebooked; ${bad.length} could not be: ${bad[0].error}` : `${assignments.length} rebooked. Each Customer gets a text with their new trip.`, !!bad.length);
+      openFlight(ui.fd.flight);
+    } catch (err) { toast(`Could not rebook: ${err.message}`, true); }
+  };
+  $('fd-body').querySelectorAll('[data-one]').forEach((b) => b.addEventListener('click', () => {
+    const c = all.find((x) => x.id === b.dataset.one); const opt = ui.fd.picks[c.id]?.option || c.best_option;
+    b.disabled = true; go([{ customer_id: c.id, option_id: opt.option_id }]);
+  }));
+  $('fd-all')?.addEventListener('click', (e) => {
+    e.target.disabled = true;
+    go(all.filter((c) => !c.rebooked && c.best_option).sort((a, b) => ((b.needs || []).length - (a.needs || []).length) || ((b.connection ? 1 : 0) - (a.connection ? 1 : 0)))
+      .map((c) => ({ customer_id: c.id, option_id: (ui.fd.picks[c.id]?.option || c.best_option).option_id })));
+  });
 }
 
 // ---------------------------------------------------------------- clocks
@@ -601,6 +724,7 @@ async function refreshSent() {
     const el = document.createElement('div');
     el.className = `sent-pop ${r.kind || 'message'}`;
     el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${r.channel ? `${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}` : `${esc({ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update')} for ${esc(r.to)}`}, ${esc(r.t)}</span><span class="sp-text">"${esc(String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, ''))}"</span>`;
+    if (r.customer_id) { el.classList.add('link'); el.tabIndex = 0; el.title = 'Open this Customer'; el.addEventListener('click', () => { setTab('customers'); showCustomer(r.customer_id); }); }
     $('sent-stack').appendChild(el);
     setTimeout(() => el.classList.add('out'), 7000);
     setTimeout(() => el.remove(), 7600);
@@ -638,7 +762,7 @@ async function loop() {
     if (ui.tab === 'flow' && ticks % 2 === 0) await refreshFlow();
     if (ui.tab === 'clocks' && ticks % 3 === 0) await refreshClocks();
     if (ui.tab === 'summary' && ticks % 5 === 0) await refreshSummary();
-    if (ui.tab === 'customers' && ui.custSel && ticks % 5 === 0) await showCustomer(ui.custSel);
+    if (ui.tab === 'customers' && ticks % 5 === 0) { await refreshOod(); if (ui.custSel && !document.activeElement?.closest?.('#cust-card select')) await showCustomer(ui.custSel); }
   } catch (e) { $('status').textContent = `Lost the connection: ${e.message}`; }
   ticks++;
   setTimeout(loop, 1000);

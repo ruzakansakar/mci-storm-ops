@@ -8,7 +8,12 @@ async function http(method, url, body) {
   const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   if (!r.ok) {
     let detail = r.statusText;
-    try { detail = (await r.json()).detail || detail; } catch (e) {}
+    try {
+      const d = (await r.json()).detail;
+      if (Array.isArray(d)) detail = d.map((x) => `${(x.loc || []).slice(-1)[0] || 'value'}: ${x.msg}`).join('; ');
+      else if (d && typeof d === 'object') detail = d.message || d.reason || JSON.stringify(d);
+      else if (d) detail = d;
+    } catch (e) {}
     const err = new Error(detail); err.status = r.status; throw err;
   }
   return r.json();
@@ -37,6 +42,10 @@ class RealApi {
   clocks(id) { return http('GET', `/api/live/${enc(id)}/clocks`); }
   handover(id, since) { return http('GET', `/api/live/${enc(id)}/handover?since=${enc(since)}`); }
   sent(id, since) { return http('GET', `/api/live/${enc(id)}/sent?since=${since}`); }
+  outOfDate(id) { return http('GET', `/api/live/${enc(id)}/out_of_date`); }
+  rebookOptions(id, c) { return http('GET', `/api/live/${enc(id)}/customers/${enc(c)}/rebooking?reason=customer_request`); }
+  flightCustomers(id, f) { return http('GET', `/api/live/${enc(id)}/flights/${enc(f)}/customers`); }
+  flightRebook(id, f, assignments) { return http('POST', `/api/live/${enc(id)}/flights/${enc(f)}/rebook`, { assignments }); }
 }
 const enc = encodeURIComponent;
 
@@ -245,6 +254,7 @@ class PracticeApi {
     const waitingMsgs = s.questions.filter((q) => q.msg && !['approved', 'rejected'].includes(q.status)).reduce((a, q) => a + q.wrongInfo * Math.min(1, (m - q.askedMin) / 20), 0);
     s.todayNow = Math.round(base); s.wrongNow = Math.round(base * 0.38 + waitingMsgs);
     s.todayTotal += s.todayNow; s.wrongTotal += s.wrongNow;
+    (s.wrongHist ||= []).push(s.wrongNow); s.wrongAgo = s.wrongHist[Math.max(0, s.wrongHist.length - 11)];
   }
 
   _ask(sc, m, override = {}) {
@@ -470,6 +480,45 @@ class PracticeApi {
     return { id: fid, ...F, truth: script === 'On time.' ? `${fid} is on time.` : script, one_story, est_dep: F.sched_dep, est_arr: F.sched_arr, status, script: { text: script, updated: hm(Math.max(660, m - 3)) },
       notes: (s.notes[fid] || []), on_screens: { app: script, sms: script, gate_screen: status, call_center: script } };
   }
+
+  async outOfDate() {
+    const st = await this.state(); const m = Math.floor(this.s.minute);
+    const total = st.truth.wrong_now;
+    const flights = total ? [
+      { flight_id: 'WN2031', label: 'WN2031 from Denver', customers: Math.round(total * 0.5), channels: [{ channel: 'gate_screen', since: '12:15' }, { channel: 'call_center', since: '12:15' }], truth: 'Diverted to St. Louis' },
+      { flight_id: 'WN1033', label: 'WN1033 to Baltimore', customers: Math.round(total * 0.3), channels: [{ channel: 'call_center', since: '11:30' }], truth: 'Delayed by the ground stop' },
+      { flight_id: 'WN1034', label: 'WN1034 to San Diego', customers: total - Math.round(total * 0.5) - Math.round(total * 0.3), channels: [{ channel: 'app', since: '11:31' }], truth: 'Delayed to 13:43' },
+    ].filter((f) => f.customers > 0) : [];
+    return { total, ten_min_ago: this.s.wrongAgo ?? total, flights, minute: m };
+  }
+  _options(cid) {
+    const to = 'BWI';
+    return [
+      { option_id: 'r1', rank: 1, label: 'Best option', flights: [{ flight_id: 'WN1041', from: 'MCI', to, dep: '17:20', arr: '21:05' }], arrives: '21:05', seats_left: 3, why: 'Arrives first tonight, same airport, no extra connection', recommended: true },
+      { option_id: 'r2', rank: 2, label: 'Next best', flights: [{ flight_id: 'WN1055', from: 'MCI', to: 'MDW', dep: '18:35', arr: '20:10' }, { flight_id: 'WN2290', from: 'MDW', to, dep: '21:00', arr: '23:40' }], arrives: '23:40', seats_left: 7, why: 'Still tonight, but adds a connection in Chicago', recommended: false },
+      { option_id: 'r3', rank: 3, label: 'Third choice', flights: [{ flight_id: 'WN3005', from: 'MCI', to, dep: '06:30', arr: '10:15' }], arrives: 'tomorrow 10:15', seats_left: 22, why: 'Nonstop but overnight: hotel included', recommended: false },
+    ];
+  }
+  async rebookOptions(id, cid) { return this._options(cid); }
+  async flightCustomers(id, fid) {
+    const s = this.s, base = this._customers().filter((c) => c.flight_id === fid);
+    const extra = Array.from({ length: 8 }, (_, i) => ({ id: `PAXF${fid}${i}`, name: ['Ava Brooks', 'Noah Kim', 'Grace Lee', 'Omar Haddad', 'Lena Fischer', 'Ravi Patel', 'Chloe Martin', 'Ethan Wright'][i], booking_ref: `ZZ${i}${fid.slice(-2)}`, flight_id: fid, status: 'Delayed', needs: i === 2 ? ['wheelchair'] : [] }));
+    const list = [...base, ...extra];
+    return { flight: this._flightInfo(fid), customers: list.map((c, i) => ({ id: c.id, name: c.name, status: s.rebooked[c.id] ? 'Rebooked' : c.status, needs: c.needs, international: i === 5,
+      connection: i % 3 === 0 ? { to_flight: 'WN2290', minutes: 45, at_risk: true } : null, best_option: s.rebooked[c.id] ? null : this._options(c.id)[0], rebooked: !!s.rebooked[c.id] })) };
+  }
+  async flightRebook(id, fid, assignments) {
+    const results = [];
+    for (const a of assignments) {
+      const opt = this._options(a.customer_id).find((o) => o.option_id === a.option_id);
+      this.s.rebooked[a.customer_id] = opt;
+      const name = (await this.flightCustomers(id, fid)).customers.find((c) => c.id === a.customer_id)?.name || a.customer_id;
+      this._send(Math.floor(this.s.minute), name, 'sms', 'rebook', `Your trip has been changed: ${opt.flights.map((f) => `${f.flight_id} at ${f.dep}`).join(' then ')}, arriving ${opt.arrives}.`, 1, a.customer_id);
+      results.push({ customer_id: a.customer_id, ok: true, error: null });
+    }
+    return { results };
+  }
+
   async flight(id, fid) { return this._flightInfo(fid); }
   async addNote(id, fid, body) { const s = this.s; (s.notes[fid] ||= []).push({ t: hm(s.minute), role: body.role, text: body.text }); return s.notes[fid]; }
   async report(id, body) { const s = this.s; s.reports.push({ t: hm(s.minute), ...body }); if (body.kind === 'gate_unavailable' && body.gate) s.closedGates.add(body.gate); return { ok: true }; }
@@ -491,7 +540,8 @@ class PracticeApi {
     const rebooked = s.rebooked[cid];
     const maya = cid === 'PAX0001';
     const trip = rebooked ? rebooked.flights.map((f) => ({ ...f, status: 'Confirmed' }))
-      : maya ? [{ flight_id: 'WN2031', from: 'DEN', to: 'MCI', dep: '09:55', arr: '11:45', status: m < 735 ? 'Holding' : m < 850 ? 'Diverted to STL' : 'Landed' }, { flight_id: 'WN1033', from: 'MCI', to: 'BWI', dep: '12:40', arr: '16:05', status: c.status }]
+      : maya ? [{ flight_id: 'WN2031', from: 'DEN', to: 'MCI', dep: '09:55', arr: '11:45', sched_dep: '09:55', sched_arr: '11:45', est_arr: m < 850 ? '14:10' : '14:10', gate: 'B55', status: m < 735 ? 'Holding' : m < 850 ? 'Diverted to STL' : 'Landed', connection: { to_flight: 'WN1033', minutes: 55, at_risk: true } },
+          { flight_id: 'WN1033', from: 'MCI', to: 'BWI', dep: '12:40', arr: '16:05', sched_dep: '12:40', sched_arr: '16:05', est_dep: s.approvedKeys.has('swap') ? '15:14' : 'not known', gate: 'B58', status: c.status, connection: null }]
       : [{ flight_id: c.flight_id, from: 'MCI', to: this._flightInfo(c.flight_id).to, dep: this._flightInfo(c.flight_id).sched_dep, arr: this._flightInfo(c.flight_id).sched_arr, status: c.status }];
     const to = trip[trip.length - 1].to;
     const rebooking = rebooked ? [] : [
@@ -507,9 +557,9 @@ class PracticeApi {
   }
   async rebook(id, cid, body) {
     const c = await this.customer(id, cid);
-    const opt = c.rebooking.find((o) => o.option_id === body.option_id);
+    const opt = c.rebooking.find((o) => o.option_id === body.option_id) || this._options(cid).find((o) => o.option_id === body.option_id);
     this.s.rebooked[cid] = opt;
-    this._send(Math.floor(this.s.minute), c.name, 'text', 'rebook', `You're now on ${opt.flights.map((f) => `${f.flight_id} at ${f.dep}`).join(' then ')}, arriving ${opt.arrives}.`);
+    this._send(Math.floor(this.s.minute), c.name, 'sms', 'rebook', `Your trip has been changed. You're now on ${opt.flights.map((f) => `${f.flight_id} at ${f.dep}`).join(' then ')}, arriving ${opt.arrives}.`, 1, cid);
     this.s.decisions.push({ id: 900 + this.s.decisions.length, title: `Rebooked ${c.name} on ${opt.flights.map((f) => f.flight_id).join(' + ')}`, role: 'counter_gate_agent', action: 'rebook', answer: 'approved', reason: '', asked: hm(this.s.minute), answered: hm(this.s.minute), waited_min: 0 });
     return this.customer(id, cid);
   }
@@ -547,7 +597,7 @@ class PracticeApi {
   }
 
 
-  _send(m, to, channel, kind, text, count = 1) { this.s.sentLog.push({ t: hm(m + 1), minute: m + 1, to, channel, kind, text, count }); }
+  _send(m, to, channel, kind, text, count = 1, customer_id = null) { this.s.sentLog.push({ t: hm(m + 1), minute: m + 1, to, channel, kind, text, count, customer_id }); }
   _sendFor(q, m) {
     if (q.msg) this._send(m, `${q.pax.toLocaleString()} Customers`, 'app + text', 'message', q.plan.includes('"') ? q.plan.replace(/^.*?"(.*)".*$/, '$1') : q.plan, q.pax);
     if (q.key === 'swap') { this._send(m, 'Crew C35', 'crew', 'message', 'You are assigned to WN1033 MCI to BWI, departing 15:14 from gate B58. Report by 14:30.'); this._send(m, 'Gate agents', 'staff_note', 'message', 'WN1033 now leaves 15:14 from B58 with crew C35. Boarding 14:44.'); }
