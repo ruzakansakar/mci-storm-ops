@@ -43,7 +43,7 @@ class RealApi {
   handover(id, since) { return http('GET', `/api/live/${enc(id)}/handover?since=${enc(since)}`); }
   sent(id, since) { return http('GET', `/api/live/${enc(id)}/sent?since=${since}`); }
   outOfDate(id) { return http('GET', `/api/live/${enc(id)}/out_of_date`); }
-  rebookOptions(id, c) { return http('GET', `/api/live/${enc(id)}/customers/${enc(c)}/rebooking?reason=customer_request`); }
+  rebookOptions(id, c) { return http('GET', `/api/live/${enc(id)}/customers/${enc(c)}/rebooking?reason=customer_request`).then((r) => (Array.isArray(r) ? r : r?.options || [])); }
   flightCustomers(id, f) { return http('GET', `/api/live/${enc(id)}/flights/${enc(f)}/customers`); }
   flightRebook(id, f, assignments) { return http('POST', `/api/live/${enc(id)}/flights/${enc(f)}/rebook`, { assignments }); }
 }

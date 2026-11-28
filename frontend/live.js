@@ -481,7 +481,7 @@ async function showCustomer(id) {
         <div><dt>Scheduled</dt><dd>${esc(f.sched_dep || f.dep)} → ${esc(f.sched_arr || f.arr)}</dd></div>
         <div><dt>Expected</dt><dd>${esc(f.est_dep || f.sched_dep || f.dep)}${f.est_arr ? ` → ${esc(f.est_arr)}` : ''}</dd></div>
         <div><dt>Gate</dt><dd>${esc(f.gate || 'not set')}</dd></div>
-        ${f.connection ? `<div><dt>Connection</dt><dd>${esc(f.connection.to_flight)}, ${f.connection.minutes} min${f.connection.at_risk ? ' <span class="tagx bad">At risk</span>' : ''}</dd></div>` : ''}
+        ${f.connection ? `<div><dt>Connection</dt><dd>${connText(f.connection)}</dd></div>` : ''}
       </dl></div>`).join('')}</div>
     ${c.international ? '<p><span class="tagx warn">International trip</span></p>' : ''}
     ${oneStoryHtml(flight)}
@@ -497,19 +497,24 @@ async function showCustomer(id) {
     ui.rebookAsked = id;
     const opts = await ui.api.rebookOptions(ui.run, id).catch((err) => { toast(`Could not load options: ${err.message}`, true); return null; });
     if (!opts) return;
-    $('rebook-box').innerHTML = opts.length ? rebookList(opts, 'Ways to get there, best first') : '<p class="muted">No other flight with seats today.</p>';
+    $('rebook-box').innerHTML = opts.length ? rebookList(opts, 'Ways to get there, best first') : '<p class="muted">No other flight to this destination has seats today or tomorrow.</p>';
     wireRebook(card, id);
   });
   card.querySelector('#refund')?.addEventListener('click', async () => { await ui.api.refund(ui.run, id); toast('Refund issued.'); showCustomer(id); });
   wireRebook(card, id);
   if (ui.rebookAsked === id) card.querySelector('#rebook-ask')?.click();     // keep the options open while the page refreshes
 }
+function connText(k) {      // a negative connection time means the first flight now lands after the second one leaves
+  const m = Number(k.minutes);
+  const words = m < 0 ? `misses it by ${-m} min` : `${m} min to connect`;
+  return `${esc(k.to_flight)}, ${words}${k.at_risk ? ` <span class="tagx bad">${m < 0 ? 'Missed' : 'At risk'}</span>` : ''}`;
+}
 function rebookList(opts, title) {
   const sorted = [...opts].sort((a, b) => (a.rank ?? (a.recommended ? 0 : 9)) - (b.rank ?? (b.recommended ? 0 : 9)));
   return `<h3>${title}</h3><ul class="rebook">${sorted.map((o, i) => `<li class="${i === 0 ? 'rec' : ''}">
     <div><span class="tagx ${i === 0 ? 'ok' : 'quiet'}">${esc(o.label && !/^[A-Z]{2}\d/.test(o.label) ? o.label : ['Best option', 'Next best', 'Third choice'][i] || `Choice ${i + 1}`)}</span>
     <b>${o.flights.map((f) => `${esc(f.flight_id)} ${esc(f.dep)}`).join(' + ')}</b> → arrives ${esc(o.arrives)}
-    <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null ? `, ${o.seats_left} seats left` : ''}</span></div>
+    <br><span class="muted">${esc(plain(o.why))}${o.seats_left != null && !/seat/i.test(o.why || '') ? `, ${o.seats_left} seats left` : ''}</span></div>
     <button class="btn ${i === 0 ? 'primary' : ''}" type="button" data-rebook="${esc(o.option_id)}">Rebook on this</button></li>`).join('')}</ul>`;
 }
 function wireRebook(card, id) {
@@ -570,7 +575,7 @@ function renderFlight() {
       const opt = pick?.option || c.best_option;
       return `<tr><td><button class="link" type="button" data-oc="${esc(c.id)}">${esc(c.name)}</button><br><span class="muted small">${esc(plain(c.status || ''))}</span></td>
         <td>${(c.needs || []).map((n) => `<span class="tagx warn">${esc(NEED_WORD[n] || plain(n))}</span>`).join(' ')}${c.international ? ' <span class="tagx quiet">International</span>' : ''}</td>
-        <td>${c.connection ? `${esc(c.connection.to_flight)}, ${c.connection.minutes} min${c.connection.at_risk ? ' <span class="tagx bad">At risk</span>' : ''}` : '<span class="muted">-</span>'}</td>
+        <td>${c.connection ? connText(c.connection) : '<span class="muted">-</span>'}</td>
         <td>${c.rebooked ? '<span class="status ok">Rebooked</span>' : opt ? `<b>${opt.flights.map((x) => `${esc(x.flight_id)} ${esc(x.dep)}`).join(' + ')}</b> → ${esc(opt.arrives)}<br><span class="muted small">${esc(plain(opt.why || ''))}</span>
           <div class="fd-alt" id="alt-${esc(c.id)}"></div>` : '<span class="muted">No rebooking needed</span>'}</td>
         <td class="fd-act">${!c.rebooked && opt ? `<button class="btn primary" type="button" data-one="${esc(c.id)}">Rebook</button> <button class="btn" type="button" data-change="${esc(c.id)}">Change</button>` : ''}</td></tr>`;
