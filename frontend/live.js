@@ -59,7 +59,7 @@ $('start-form').addEventListener('submit', async (e) => {
 
 function open(runId) {
   ui.run = runId;
-  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false; $('popups-btn').hidden = false;
+  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false;
   history.replaceState(null, '', `?run=${encodeURIComponent(runId)}${ui.api.practice ? '&mock=1' : ''}`);
   $('role').innerHTML = Object.entries(ALL_ROLES).map(([k, v]) => `<option value="${k}" ${k === ui.role ? 'selected' : ''}>${esc(v)}</option>`).join('');
   ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote, onFlightCustomers: openFlight });
@@ -507,7 +507,7 @@ async function showCustomer(id) {
 function connText(k) {      // a negative connection time means the first flight now lands after the second one leaves
   const m = Number(k.minutes);
   const words = m < 0 ? `misses it by ${-m} min` : `${m} min to connect`;
-  return `${esc(k.to_flight)}, ${words}${k.at_risk ? ` <span class="tagx bad">${m < 0 ? 'Missed' : 'At risk'}</span>` : ''}`;
+  return `${k.from_flight ? `From ${esc(k.from_flight)}` : esc(k.to_flight)}, ${words}${k.at_risk ? ` <span class="tagx bad">${m < 0 ? 'Missed' : 'At risk'}</span>` : ''}`;
 }
 function rebookList(opts, title) {
   const sorted = [...opts].sort((a, b) => (a.rank ?? (a.recommended ? 0 : 9)) - (b.rank ?? (b.recommended ? 0 : 9)));
@@ -548,7 +548,7 @@ const NEED_WORD = { wheelchair: 'Wheelchair', unaccompanied_minor: 'Unaccompanie
 ui.fd = { filter: 'all', data: null, flight: null, picks: {} };
 $('fd-close').addEventListener('click', () => $('flight-dlg').close());
 async function openFlight(fid) {
-  ui.fd = { filter: 'all', data: null, flight: fid, picks: {} };
+  ui.fd = { filter: 'all', data: null, flight: fid, picks: {}, note: null };
   $('fd-title').textContent = `Customers on ${fid}`;
   $('fd-body').innerHTML = '<p class="muted">Loading…</p>';
   if (!$('flight-dlg').open) $('flight-dlg').showModal();
@@ -568,6 +568,7 @@ function renderFlight() {
   $('fd-body').innerHTML = `
     <p class="fd-status"><b>${esc(f.id || ui.fd.flight)}</b> ${esc(f.from || '')}${f.to ? ` → ${esc(f.to)}` : ''} <span class="status ${/cancel/i.test(f.status || '') ? 'bad' : /delay|held|divert/i.test(f.status || '') ? 'warn' : 'ok'}">${esc(plain(f.status || ''))}</span>
       ${f.truth ? `<span class="muted">${esc(plain(f.truth))}</span>` : ''}</p>
+    ${ui.fd.note ? `<p class="fd-note ${ui.fd.note.bad ? 'bad' : 'ok'}">${esc(ui.fd.note.text)}</p>` : ''}
     <div class="fd-filters">${chip('all', 'All')}${chip('todo', 'Not rebooked yet')}${chip('needs', 'Special needs')}${chip('connecting', 'Connecting')}${counts.international ? chip('international', 'International') : ''}</div>
     <div class="board-wrap"><table class="board fd-table"><thead><tr><th>Customer</th><th>Needs</th><th>Connection</th><th>Best option</th><th></th></tr></thead><tbody>
     ${show.map((c) => {
@@ -594,8 +595,11 @@ function renderFlight() {
     try {
       const r = await ui.api.flightRebook(ui.run, ui.fd.flight, assignments);
       const bad = (r.results || []).filter((x) => x.error);
-      toast(bad.length ? `${assignments.length - bad.length} rebooked; ${bad.length} could not be: ${bad[0].error}` : `${assignments.length} rebooked. Each Customer gets a text with their new trip.`, !!bad.length);
-      openFlight(ui.fd.flight);
+      const msg = bad.length ? `${assignments.length - bad.length} rebooked; ${bad.length} could not be: ${bad[0].error}` : `${assignments.length} rebooked. Each Customer gets a text with their new trip.`;
+      toast(msg, !!bad.length);
+      const names = assignments.map((a) => `${all.find((x) => x.id === a.customer_id)?.name || a.customer_id} to ${(ui.fd.picks[a.customer_id]?.option || all.find((x) => x.id === a.customer_id)?.best_option)?.flights?.map((x) => x.flight_id).join(' + ') || 'a new flight'}`);
+      await openFlight(ui.fd.flight);
+      ui.fd.note = { bad: !!bad.length, text: `${msg} ${names.join(', ')}.` }; renderFlight();
     } catch (err) { toast(`Could not rebook: ${err.message}`, true); }
   };
   $('fd-body').querySelectorAll('[data-one]').forEach((b) => b.addEventListener('click', () => {
@@ -711,35 +715,46 @@ function drawFlow(flow) {
 
 
 // ---------------------------------------------------------------- messages going out (bottom-right)
-ui.sentSince = 0; ui.popups = true;
-try { ui.popups = localStorage.getItem('gsc-popups') !== 'off'; } catch (e) {}
+ui.sentSince = 0; ui.sentLog = []; ui.sbQueue = []; ui.sentSeen = new Set();
+const SENT_ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
 const CHANNEL_WORDS = { sms: 'text message', text: 'text message', app: 'app', email: 'email', staff_note: 'staff note', crew: 'crew message', 'app + text': 'app and text' };
-const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+const cap = (s) => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+const sentWho = (r) => r.channel ? `${cap(CHANNEL_WORDS[r.channel] || plain(r.channel))} to ${r.to}` : `${{ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update'} for ${r.to}`;
+const sentText = (r) => String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, '');
 async function refreshSent() {
   if (!ui.api.sent || ui.sentOff) return;
   let rows;
   try { rows = await ui.api.sent(ui.run, ui.sentSince); } catch (e) { if (e.status === 404) ui.sentOff = true; return; }
-  const first = !ui.sentPrimed; ui.sentPrimed = true;
   if (!rows || !rows.length) return;
   ui.sentSince = Math.max(ui.sentSince, ...rows.map((r) => r.minute || 0));
-  const ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
-  ui.sentSeen ||= new Set();
   const fresh = rows.filter((r) => { const k = `${r.minute}|${r.to}|${r.kind}|${r.text}`; if (ui.sentSeen.has(k)) return false; ui.sentSeen.add(k); return true; });
-  if (first || !ui.popups) return;
-  for (const r of fresh.slice(-4)) {
-    const el = document.createElement('div');
-    el.className = `sent-pop ${r.kind || 'message'}`;
-    el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${r.channel ? `${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}` : `${esc({ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update')} for ${esc(r.to)}`}, ${esc(r.t)}</span><span class="sp-text">"${esc(String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, ''))}"</span>`;
-    if (r.customer_id) { el.classList.add('link'); el.tabIndex = 0; el.title = 'Open this Customer'; el.addEventListener('click', () => { setTab('customers'); showCustomer(r.customer_id); }); }
-    $('sent-stack').appendChild(el);
-    setTimeout(() => el.classList.add('out'), 7000);
-    setTimeout(() => el.remove(), 7600);
-  }
-  while ($('sent-stack').children.length > 4) $('sent-stack').firstChild.remove();
+  if (!fresh.length) return;
+  ui.sentLog = fresh.slice().reverse().concat(ui.sentLog).slice(0, 200);
+  const last = fresh[fresh.length - 1];
+  const batch = fresh.filter((r) => r.t === last.t).length;
+  $('sb-count').textContent = `${batch} sent at ${last.t}`;
+  ui.sbQueue = fresh.slice(-6);          // the line steps through the newest few, then rests on the latest
+  showSentLine();
+  $('sb-all').disabled = false;
+  if ($('sent-dlg').open) renderSentList();
 }
-function popupLabel() { $('popups-btn').textContent = ui.popups ? 'Message pop-ups: on' : 'Message pop-ups: off'; $('popups-btn').setAttribute('aria-pressed', ui.popups); }
-$('popups-btn').addEventListener('click', () => { ui.popups = !ui.popups; try { localStorage.setItem('gsc-popups', ui.popups ? 'on' : 'off'); } catch (e) {} popupLabel(); });
-popupLabel();
+function showSentLine() {
+  const r = ui.sbQueue.shift() || ui.sentLog[0];
+  if (!r) return;
+  const b = $('sb-line');
+  b.innerHTML = `<span class="sb-icon">${SENT_ICON[r.kind] || '✉'}</span><b>${esc(sentWho(r))}:</b> ${esc(sentText(r))}`;
+  b.disabled = !r.customer_id; b.title = r.customer_id ? 'Open this Customer' : '';
+  b.onclick = r.customer_id ? () => { setTab('customers'); showCustomer(r.customer_id); } : null;
+  b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
+}
+setInterval(() => { if (ui.sbQueue.length) showSentLine(); }, 3500);
+function renderSentList() {
+  $('sent-list').innerHTML = ui.sentLog.map((r, i) => `<li><button type="button" class="sent-item" data-si="${i}" ${r.customer_id ? '' : 'disabled'}>
+    <span class="si-head">${SENT_ICON[r.kind] || '✉'} ${esc(sentWho(r))}, ${esc(r.t)}</span><span class="si-text">${esc(sentText(r))}</span></button></li>`).join('') || '<li class="muted">No messages yet.</li>';
+  $('sent-list').querySelectorAll('[data-si]').forEach((b) => b.addEventListener('click', () => { const r = ui.sentLog[+b.dataset.si]; $('sent-dlg').close(); setTab('customers'); showCustomer(r.customer_id); }));
+}
+$('sb-all').addEventListener('click', () => { renderSentList(); $('sent-dlg').showModal(); });
+$('sent-close').addEventListener('click', () => $('sent-dlg').close());
 
 // ---------------------------------------------------------------- polling
 async function refreshQueue() {

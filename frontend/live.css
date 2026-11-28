@@ -395,3 +395,26 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--bg);
 .fd-act { white-space: nowrap; }
 .fd-all { position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; align-items: center; }
 .sent-pop.link { pointer-events: auto; cursor: pointer; } .sent-pop.link:hover { border-color: var(--accent); }
+
+/* result of the last rebooking, kept on the flight list so it isn't missed */
+.fd-note { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; font-weight: 600; }
+.fd-note.ok { background: var(--ok-soft); color: var(--ok); }
+.fd-note.bad { background: var(--bad-soft); color: var(--bad); }
+
+/* messages going out: a single line in the page flow, so it never covers the map or a decision */
+.sent-bar { display: flex; align-items: center; gap: 12px; margin: 8px 0 0; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-height: 40px; }
+.sb-count { flex: none; font-weight: 600; font-size: 14px; color: var(--muted); white-space: nowrap; }
+.sb-line { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 4px 6px; border-radius: 6px; font: inherit; font-size: 14px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.sb-line:disabled { cursor: default; color: var(--ink); }
+.sb-line:not(:disabled):hover { background: var(--accent-soft); }
+.sb-line .sb-icon { margin-right: 6px; }
+.sb-line.flash { animation: sbIn 400ms ease-out; }
+@keyframes sbIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sb-line.flash { animation: none; } }
+.sb-all { flex: none; }
+.sent-dlg { width: min(720px, calc(100vw - 32px)); max-height: 80vh; }
+.sent-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow: auto; max-height: 60vh; }
+.sent-item { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font: inherit; color: var(--ink); cursor: pointer; }
+.sent-item:disabled { cursor: default; }
+.si-head { font-weight: 600; font-size: 14px; } .si-text { font-size: 14px; color: var(--muted); }
+@media (max-width: 700px) { .sb-count { display: none; } }
