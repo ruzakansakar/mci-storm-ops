@@ -52,7 +52,9 @@ def _world(ctx, result, view, situation, memory, settings, screens):
     flights = {fid: {"status": "cancelled" if f.cancelled_at else "arrived" if f.arrived else "departed" if f.done else "waiting",
                      "departure": f.est_dep.isoformat()} for fid, f in st.flights.items()}
     trips = {pid: {"itinerary": list(t["itinerary"]), "status": t["status"]} for pid, t in st.truth.items()}
-    passenger_flights = {pid: {fid for _, _, snap in rows for fid in snap["itinerary"]} for pid, rows in st.history.items()}
+    # a Customer is told about a flight only while it is on their CURRENT trip (not every flight ever on it: after a rebooking
+    # they must never hear about the flight they left)
+    passenger_flights = {pid: set(t["itinerary"]) for pid, t in st.truth.items()}
     return {"now": ctx.now, "recovery_view": view, "recovery_fresh": fresh, "recovery_applications": applications,
             "recovery_flights": flights, "recovery_crews": crews, "recovery_trips": trips, "screens": screens,
             "recovery_passenger_flights": passenger_flights, "open_conflicts": set(situation.conflicts),

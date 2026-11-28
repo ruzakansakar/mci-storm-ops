@@ -487,10 +487,18 @@ class Views:
             p = self.w.passengers[pid]
             legs = self.trip(pid)
             leg = next((x for x in legs if x["flight_id"] == fid), None)
+            i = next((k for k, x in enumerate(legs) if x["flight_id"] == fid), None)
+            inbound = None                                      # an earlier leg that connects into this flight
+            if i:
+                prev = legs[i - 1]
+                inbound = {"from_flight": prev["flight_id"], "minutes": prev["connection"]["minutes"],
+                           "at_risk": prev["connection"]["at_risk"]} if prev.get("connection") else None
             opts = self.request_options(pid) if fid in now[pid]["itinerary"] else []
             out.append({"id": pid, "name": p.get("full_name"), "status": now[pid]["status"],
                         "needs": [NEEDS[p["segment"]]] if p.get("segment") in NEEDS else [],
-                        "international": self.international(pid), "connection": (leg or {}).get("connection"),
+                        "international": self.international(pid),
+                        "connection": inbound or (leg or {}).get("connection"),   # connecting into this flight first, else onward
+                        "inbound": inbound, "onward": (leg or {}).get("connection"),
                         "best_option": opts[0] if opts else None,
                         "rebooked": fid in self.s.first_trip.get(pid, []) and fid not in now[pid]["itinerary"]})
         return {"flight": {"id": fid, "from": f["origin"], "to": f["destination"], "sched_dep": fmt(f["sched_dep"]),

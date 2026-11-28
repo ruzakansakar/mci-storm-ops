@@ -155,7 +155,8 @@ def test_a_flights_customers_and_rebooking_several_at_once(counter):
     before = m["before"]
     assert set(before) == {"flight", "customers"} and before["flight"]["id"] == m["flight"] and before["flight"]["truth"]
     for c in before["customers"]:
-        assert set(c) == {"id", "name", "status", "needs", "international", "connection", "best_option", "rebooked"}
+        assert set(c) == {"id", "name", "status", "needs", "international", "connection", "inbound", "onward", "best_option",
+                          "rebooked"}
     res = m["out"]["results"]
     assert [r["ok"] for r in res] == [True, True, False] and res[2]["error"]   # an unknown Customer fails on its own
     moved = {r["customer_id"] for r in res if r["ok"]}
@@ -177,3 +178,47 @@ def test_sent_rows_for_one_customer_carry_their_id(counter):
             assert r["customer_id"] in s.world.passengers, r
         if r["count"] > 1:
             assert r["customer_id"] is None
+
+
+def test_a_customer_connecting_into_a_flight_counts_as_connecting(counter):
+    s, _ = counter
+    view = client.get(f"/api/live/{s.run_id}/flights/WN1033/customers").json()
+    maya = next(c for c in view["customers"] if c["id"] == "PAX0001")       # WN2031 (Denver) -> WN1033 (Baltimore)
+    assert maya["inbound"]["from_flight"] == "WN2031" and maya["connection"] == maya["inbound"]
+    a, d = s.world.flights["WN2031"], s.world.flights["WN1033"]
+    assert maya["inbound"]["minutes"] == d["est_dep"] - a["est_arr"]
+    assert maya["inbound"]["at_risk"] == (maya["inbound"]["minutes"] < int(read_limits()["min_connection_min"]))
+    connecting = [c for c in view["customers"] if c["connection"]]
+    assert len(connecting) >= 1
+
+
+def test_after_a_counter_rebooking_the_customer_never_hears_about_the_flight_they_left(data_seed7):
+    """The bug: Maya rebooked from WN1033 to WN1049 at 12:58 got "Your flight WN1033 is now expected to leave at 15:14" at 13:57.
+    Communication may only message a Customer about flights on their current trip."""
+    seen = {}
+
+    def user(s, t):
+        for q in s.queue_items():
+            s.decide([q["id"]], "approve")
+        if t == 12 * 60 + 58:
+            o = next(o for o in s.views.request_options("PAX0001") if o["flights"][0]["flight_id"] == "WN1049")
+            seen["r"] = s.rebook("PAX0001", o["option_id"])
+
+    s = L.LiveSession("a31_storm-s7-live-maya", data=data_seed7, pace=False, driver=user, until=14 * 60 + 30)
+    s.run()
+    assert s.status == "finished" and seen["r"]["ok"], getattr(s, "trace_text", s.error)
+    after = [e for e in s.world.events if e["type"] == "message_delivered" and e["payload"]["passenger_id"] == "PAX0001"
+             and e["t"] > 12 * 60 + 58]
+    assert any("WN1049" in e["payload"]["text"] and "trip has changed" in e["payload"]["text"] for e in after)
+    assert not [e for e in after if "WN1033" in e["payload"]["text"]], [e["payload"]["text"] for e in after]
+    late = [h for h in s.copilot.recovery.history if h.get("passenger_id") == "PAX0001" and h.get("flight_id") == "WN1033"
+            and h["status"] in ("drafted", "held", "sent") and (h.get("as_of") or h["created"]) > "2026-10-06T12:58"]
+    assert late == []                                                          # not even drafted for her any more
+    for e in after:                                                             # every later message is about her current trip
+        flights = set(re.findall(r"WN\d{3,4}", e["payload"]["text"]))
+        assert flights <= set(s.world.truth["PAX0001"]["itinerary"]), e["payload"]["text"]
+
+
+@pytest.fixture(scope="module")
+def data_seed7():
+    return build()
