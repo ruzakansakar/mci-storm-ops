@@ -548,7 +548,7 @@ const NEED_WORD = { wheelchair: 'Wheelchair', unaccompanied_minor: 'Unaccompanie
 ui.fd = { filter: 'all', data: null, flight: null, picks: {} };
 $('fd-close').addEventListener('click', () => $('flight-dlg').close());
 async function openFlight(fid) {
-  ui.fd = { filter: 'all', data: null, flight: fid, picks: {} };
+  ui.fd = { filter: 'all', data: null, flight: fid, picks: {}, note: null };
   $('fd-title').textContent = `Customers on ${fid}`;
   $('fd-body').innerHTML = '<p class="muted">Loading…</p>';
   if (!$('flight-dlg').open) $('flight-dlg').showModal();
@@ -568,6 +568,7 @@ function renderFlight() {
   $('fd-body').innerHTML = `
     <p class="fd-status"><b>${esc(f.id || ui.fd.flight)}</b> ${esc(f.from || '')}${f.to ? ` → ${esc(f.to)}` : ''} <span class="status ${/cancel/i.test(f.status || '') ? 'bad' : /delay|held|divert/i.test(f.status || '') ? 'warn' : 'ok'}">${esc(plain(f.status || ''))}</span>
       ${f.truth ? `<span class="muted">${esc(plain(f.truth))}</span>` : ''}</p>
+    ${ui.fd.note ? `<p class="fd-note ${ui.fd.note.bad ? 'bad' : 'ok'}">${esc(ui.fd.note.text)}</p>` : ''}
     <div class="fd-filters">${chip('all', 'All')}${chip('todo', 'Not rebooked yet')}${chip('needs', 'Special needs')}${chip('connecting', 'Connecting')}${counts.international ? chip('international', 'International') : ''}</div>
     <div class="board-wrap"><table class="board fd-table"><thead><tr><th>Customer</th><th>Needs</th><th>Connection</th><th>Best option</th><th></th></tr></thead><tbody>
     ${show.map((c) => {
@@ -594,8 +595,11 @@ function renderFlight() {
     try {
       const r = await ui.api.flightRebook(ui.run, ui.fd.flight, assignments);
       const bad = (r.results || []).filter((x) => x.error);
-      toast(bad.length ? `${assignments.length - bad.length} rebooked; ${bad.length} could not be: ${bad[0].error}` : `${assignments.length} rebooked. Each Customer gets a text with their new trip.`, !!bad.length);
-      openFlight(ui.fd.flight);
+      const msg = bad.length ? `${assignments.length - bad.length} rebooked; ${bad.length} could not be: ${bad[0].error}` : `${assignments.length} rebooked. Each Customer gets a text with their new trip.`;
+      toast(msg, !!bad.length);
+      const names = assignments.map((a) => `${all.find((x) => x.id === a.customer_id)?.name || a.customer_id} to ${(ui.fd.picks[a.customer_id]?.option || all.find((x) => x.id === a.customer_id)?.best_option)?.flights?.map((x) => x.flight_id).join(' + ') || 'a new flight'}`);
+      await openFlight(ui.fd.flight);
+      ui.fd.note = { bad: !!bad.length, text: `${msg} ${names.join(', ')}.` }; renderFlight();
     } catch (err) { toast(`Could not rebook: ${err.message}`, true); }
   };
   $('fd-body').querySelectorAll('[data-one]').forEach((b) => b.addEventListener('click', () => {

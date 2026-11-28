@@ -395,3 +395,8 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--bg);
 .fd-act { white-space: nowrap; }
 .fd-all { position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; align-items: center; }
 .sent-pop.link { pointer-events: auto; cursor: pointer; } .sent-pop.link:hover { border-color: var(--accent); }
+
+/* result of the last rebooking, kept on the flight list so it isn't missed */
+.fd-note { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; font-weight: 600; }
+.fd-note.ok { background: var(--ok-soft); color: var(--ok); }
+.fd-note.bad { background: var(--bad-soft); color: var(--bad); }
