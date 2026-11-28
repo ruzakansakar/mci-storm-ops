@@ -507,7 +507,7 @@ async function showCustomer(id) {
 function connText(k) {      // a negative connection time means the first flight now lands after the second one leaves
   const m = Number(k.minutes);
   const words = m < 0 ? `misses it by ${-m} min` : `${m} min to connect`;
-  return `${esc(k.to_flight)}, ${words}${k.at_risk ? ` <span class="tagx bad">${m < 0 ? 'Missed' : 'At risk'}</span>` : ''}`;
+  return `${k.from_flight ? `From ${esc(k.from_flight)}` : esc(k.to_flight)}, ${words}${k.at_risk ? ` <span class="tagx bad">${m < 0 ? 'Missed' : 'At risk'}</span>` : ''}`;
 }
 function rebookList(opts, title) {
   const sorted = [...opts].sort((a, b) => (a.rank ?? (a.recommended ? 0 : 9)) - (b.rank ?? (b.recommended ? 0 : 9)));
