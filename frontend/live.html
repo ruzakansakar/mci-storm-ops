@@ -28,7 +28,6 @@
   <div class="top-right">
     <label class="field" id="role-field" hidden><span class="field-label">You are</span><select id="role"></select></label>
     <button id="report-btn" class="btn" type="button" hidden>Report from the floor</button>
-    <button id="popups-btn" class="btn ghost" type="button" hidden aria-pressed="true">Message pop-ups: on</button>
     <button id="theme" class="btn ghost" type="button">Dark mode</button>
   </div>
 </header>
@@ -61,6 +60,12 @@
 <!-- the live session -->
 <main id="live" class="live" hidden>
   <button id="truth-strip" class="truth-strip" type="button"></button>
+  <!-- messages going out: one line in the page, never on top of anything -->
+  <div id="sent-bar" class="sent-bar" aria-live="polite">
+    <span class="sb-count" id="sb-count">No messages sent yet</span>
+    <button id="sb-line" class="sb-line" type="button" disabled></button>
+    <button id="sb-all" class="btn ghost sb-all" type="button" disabled>See all messages</button>
+  </div>
 
   <div class="live-head">
     <nav class="tabs big-tabs" role="tablist" aria-label="Views">
@@ -224,7 +229,11 @@
 </dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<div id="sent-stack" class="sent-stack" aria-live="polite" aria-label="Messages being sent"></div>
+<dialog id="sent-dlg" class="dlg sent-dlg">
+  <div class="card-head"><h2>Messages sent</h2><button class="btn" id="sent-close" type="button">Close</button></div>
+  <p class="muted small">Newest first. Click a message to open that Customer.</p>
+  <ul id="sent-list" class="sent-list"></ul>
+</dialog>
 <script type="module" src="/live.js"></script>
 </body>
 </html>

@@ -59,7 +59,7 @@ $('start-form').addEventListener('submit', async (e) => {
 
 function open(runId) {
   ui.run = runId;
-  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false; $('popups-btn').hidden = false;
+  $('start').hidden = true; $('live').hidden = false; $('top-live').hidden = false; $('role-field').hidden = false; $('report-btn').hidden = false;
   history.replaceState(null, '', `?run=${encodeURIComponent(runId)}${ui.api.practice ? '&mock=1' : ''}`);
   $('role').innerHTML = Object.entries(ALL_ROLES).map(([k, v]) => `<option value="${k}" ${k === ui.role ? 'selected' : ''}>${esc(v)}</option>`).join('');
   ui.ops = new OpsView({ api: ui.api, run: runId, onFlightNotes: openNote, onFlightCustomers: openFlight });
@@ -715,35 +715,46 @@ function drawFlow(flow) {
 
 
 // ---------------------------------------------------------------- messages going out (bottom-right)
-ui.sentSince = 0; ui.popups = true;
-try { ui.popups = localStorage.getItem('gsc-popups') !== 'off'; } catch (e) {}
+ui.sentSince = 0; ui.sentLog = []; ui.sbQueue = []; ui.sentSeen = new Set();
+const SENT_ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
 const CHANNEL_WORDS = { sms: 'text message', text: 'text message', app: 'app', email: 'email', staff_note: 'staff note', crew: 'crew message', 'app + text': 'app and text' };
-const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+const cap = (s) => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+const sentWho = (r) => r.channel ? `${cap(CHANNEL_WORDS[r.channel] || plain(r.channel))} to ${r.to}` : `${{ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update'} for ${r.to}`;
+const sentText = (r) => String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, '');
 async function refreshSent() {
   if (!ui.api.sent || ui.sentOff) return;
   let rows;
   try { rows = await ui.api.sent(ui.run, ui.sentSince); } catch (e) { if (e.status === 404) ui.sentOff = true; return; }
-  const first = !ui.sentPrimed; ui.sentPrimed = true;
   if (!rows || !rows.length) return;
   ui.sentSince = Math.max(ui.sentSince, ...rows.map((r) => r.minute || 0));
-  const ICON = { refund: '✓', hotel: '🏨', rebook: '✈', message: '✉' };
-  ui.sentSeen ||= new Set();
   const fresh = rows.filter((r) => { const k = `${r.minute}|${r.to}|${r.kind}|${r.text}`; if (ui.sentSeen.has(k)) return false; ui.sentSeen.add(k); return true; });
-  if (first || !ui.popups) return;
-  for (const r of fresh.slice(-4)) {
-    const el = document.createElement('div');
-    el.className = `sent-pop ${r.kind || 'message'}`;
-    el.innerHTML = `<span class="sp-head">${ICON[r.kind] || '✉'} ${r.channel ? `${esc(cap(CHANNEL_WORDS[r.channel] || plain(r.channel)))} to ${esc(r.to)}` : `${esc({ refund: 'Refund', hotel: 'Hotel', rebook: 'Rebooking' }[r.kind] || 'Update')} for ${esc(r.to)}`}, ${esc(r.t)}</span><span class="sp-text">"${esc(String(r.text).replace(/\s*\([^)]*legal-floor[^)]*\)/i, ''))}"</span>`;
-    if (r.customer_id) { el.classList.add('link'); el.tabIndex = 0; el.title = 'Open this Customer'; el.addEventListener('click', () => { setTab('customers'); showCustomer(r.customer_id); }); }
-    $('sent-stack').appendChild(el);
-    setTimeout(() => el.classList.add('out'), 7000);
-    setTimeout(() => el.remove(), 7600);
-  }
-  while ($('sent-stack').children.length > 4) $('sent-stack').firstChild.remove();
+  if (!fresh.length) return;
+  ui.sentLog = fresh.slice().reverse().concat(ui.sentLog).slice(0, 200);
+  const last = fresh[fresh.length - 1];
+  const batch = fresh.filter((r) => r.t === last.t).length;
+  $('sb-count').textContent = `${batch} sent at ${last.t}`;
+  ui.sbQueue = fresh.slice(-6);          // the line steps through the newest few, then rests on the latest
+  showSentLine();
+  $('sb-all').disabled = false;
+  if ($('sent-dlg').open) renderSentList();
 }
-function popupLabel() { $('popups-btn').textContent = ui.popups ? 'Message pop-ups: on' : 'Message pop-ups: off'; $('popups-btn').setAttribute('aria-pressed', ui.popups); }
-$('popups-btn').addEventListener('click', () => { ui.popups = !ui.popups; try { localStorage.setItem('gsc-popups', ui.popups ? 'on' : 'off'); } catch (e) {} popupLabel(); });
-popupLabel();
+function showSentLine() {
+  const r = ui.sbQueue.shift() || ui.sentLog[0];
+  if (!r) return;
+  const b = $('sb-line');
+  b.innerHTML = `<span class="sb-icon">${SENT_ICON[r.kind] || '✉'}</span><b>${esc(sentWho(r))}:</b> ${esc(sentText(r))}`;
+  b.disabled = !r.customer_id; b.title = r.customer_id ? 'Open this Customer' : '';
+  b.onclick = r.customer_id ? () => { setTab('customers'); showCustomer(r.customer_id); } : null;
+  b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
+}
+setInterval(() => { if (ui.sbQueue.length) showSentLine(); }, 3500);
+function renderSentList() {
+  $('sent-list').innerHTML = ui.sentLog.map((r, i) => `<li><button type="button" class="sent-item" data-si="${i}" ${r.customer_id ? '' : 'disabled'}>
+    <span class="si-head">${SENT_ICON[r.kind] || '✉'} ${esc(sentWho(r))}, ${esc(r.t)}</span><span class="si-text">${esc(sentText(r))}</span></button></li>`).join('') || '<li class="muted">No messages yet.</li>';
+  $('sent-list').querySelectorAll('[data-si]').forEach((b) => b.addEventListener('click', () => { const r = ui.sentLog[+b.dataset.si]; $('sent-dlg').close(); setTab('customers'); showCustomer(r.customer_id); }));
+}
+$('sb-all').addEventListener('click', () => { renderSentList(); $('sent-dlg').showModal(); });
+$('sent-close').addEventListener('click', () => $('sent-dlg').close());
 
 // ---------------------------------------------------------------- polling
 async function refreshQueue() {
