@@ -494,17 +494,36 @@ class Views:
                 inbound = {"from_flight": prev["flight_id"], "minutes": prev["connection"]["minutes"],
                            "at_risk": prev["connection"]["at_risk"]} if prev.get("connection") else None
             opts = self.request_options(pid) if fid in now[pid]["itinerary"] else []
+            best = opts[0] if opts and self.improves(pid, opts[0]) else None    # ranked by arrival: the first or nothing
+            changed = list(now[pid]["itinerary"]) != list(self.s.first_trip.get(pid, now[pid]["itinerary"]))
             out.append({"id": pid, "name": p.get("full_name"), "status": now[pid]["status"],
                         "needs": [NEEDS[p["segment"]]] if p.get("segment") in NEEDS else [],
                         "international": self.international(pid),
                         "connection": inbound or (leg or {}).get("connection"),   # connecting into this flight first, else onward
                         "inbound": inbound, "onward": (leg or {}).get("connection"),
-                        "best_option": opts[0] if opts else None,
-                        "rebooked": fid in self.s.first_trip.get(pid, []) and fid not in now[pid]["itinerary"]})
+                        "best_option": best,
+                        "rebooked": changed or now[pid]["status"] == "rebooked"})   # their trip changed in this session
         return {"flight": {"id": fid, "from": f["origin"], "to": f["destination"], "sched_dep": fmt(f["sched_dep"]),
                            "est_dep": fmt(f.get("est_dep")), "status": f["status"], "gate": self.gate_of(fid),
                            "truth": self.truth_of(f)},
                 "customers": out}
+
+    def trip_arrival(self, pid):
+        """When the Customer's current trip gets them to their final destination (minutes), or None if it no longer does."""
+        t = self.w.pax_truth(pid)
+        f = self.w.flights.get(t["itinerary"][-1]) if t["itinerary"] else None
+        if t["status"] == "cancelled" or not f or f.get("status") == "cancelled":
+            return None
+        return f["est_arr"] if f.get("est_arr") is not None else f["sched_arr"]
+
+    def option_arrival(self, option):
+        f = self.w.flights[option["flights"][-1]["flight_id"]]
+        return f["est_arr"] if f.get("est_arr") is not None else f["sched_arr"]
+
+    def improves(self, pid, option):
+        """An option is worth offering from a flight's list only if it gets the Customer there earlier than their trip now."""
+        cur = self.trip_arrival(pid)
+        return cur is None or self.option_arrival(option) < cur
 
     def care_entry(self, pid):
         rows = self.s.copilot.store.records["care_plans"]

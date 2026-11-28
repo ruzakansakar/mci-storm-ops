@@ -419,9 +419,13 @@ POST /api/live/{run_id}/flights/{id}/rebook {"assignments":[{"customer_id","opti
  -> {"flight_id","results":[{"customer_id","ok":true,"error":null,"trip":[...]}]}
 ```
 
-- The list covers the flight's Customers now, plus those already moved off it (`rebooked: true`).
+- The list covers the flight's Customers now, plus those already moved off it.
+- `rebooked` is true when the Customer's trip has changed in this session (and always when their `status` is `rebooked`).
+- `best_option` is `null` unless it gets the Customer to their destination earlier than their current trip does (any option
+  counts if their trip was cancelled). "Rebook all" should use only these.
 - Each assignment goes through the same path and rule check as a single rebooking, and is its own result: one failure doesn't
-  stop the others.
+  stop the others. An option that arrives later than the Customer's current trip is refused with a plain sentence, for
+  example "WN1061 arrives at 22:35, later than Maya Torres's current trip (19:35), so they were not moved."
 - These routes are for the frontline role (`counter_gate_agent`).
 
 ## GET /api/live/{run_id}/sent?since=<minute>

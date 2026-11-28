@@ -219,6 +219,47 @@ def test_after_a_counter_rebooking_the_customer_never_hears_about_the_flight_the
         assert flights <= set(s.world.truth["PAX0001"]["itinerary"]), e["payload"]["text"]
 
 
+def test_a_flights_list_never_offers_a_rebooked_customer_a_worse_flight():
+    """The bug: Maya on a late flight, rebooked from WN2031's list to the best option, was then offered her old late flight as
+    the "best option", so Rebook moved her back. A flight's list only offers an earlier arrival, and refuses a later one."""
+    seen = {}
+
+    def user(s, t):
+        for q in s.queue_items():
+            s.decide([q["id"]], "approve")
+        if t == 12 * 60 + 58:
+            opts = s.views.request_options("PAX0001")
+            seen["opts"] = opts
+            late = max(opts, key=s.views.option_arrival)                  # she asks for the latest flight first
+            s.rebook("PAX0001", late["option_id"])
+            seen["late"] = late["flights"][0]["flight_id"]
+            maya = lambda: next(c for c in s.views.flight_customers("WN2031")["customers"] if c["id"] == "PAX0001")
+            seen["before"] = maya()
+            seen["moved"] = s.rebook_many("WN2031", [{"customer_id": "PAX0001", "option_id": seen["before"]["best_option"]["option_id"]}])
+            seen["after"] = maya()
+            seen["list"] = s.views.flight_customers("WN2031")["customers"]
+            back = next(o for o in s.views.request_options("PAX0001") if o["flights"][0]["flight_id"] == seen["late"])
+            seen["back"] = s.rebook_many("WN2031", [{"customer_id": "PAX0001", "option_id": back["option_id"]}])
+            seen["trip"] = list(s.world.pax_truth("PAX0001")["itinerary"])
+
+    s = L.LiveSession("a31_storm-s7-live-maya-worse", data=build(), pace=False, driver=user, until=13 * 60)
+    s.run()
+    assert s.status == "finished" and "back" in seen, getattr(s, "trace_text", s.error)
+    arr = {o["flights"][0]["flight_id"]: s.world.flights[o["flights"][0]["flight_id"]]["est_arr"] for o in seen["opts"]}
+    assert len(set(arr.values())) >= 2
+    before, after = seen["before"], seen["after"]
+    assert before["rebooked"]                                                # her trip already changed this session
+    best = before["best_option"]["flights"][0]["flight_id"]
+    assert arr[best] < arr[seen["late"]]                                     # only an earlier arrival is offered
+    assert seen["moved"]["results"][0]["ok"]
+    assert after["best_option"] is None and after["rebooked"]
+    assert all(c["rebooked"] for c in seen["list"] if c["status"] == "rebooked")
+    refused = seen["back"]["results"][0]
+    assert refused["ok"] is False and isinstance(refused["error"], str) and "later than" in refused["error"]
+    assert not SNAKE.search(refused["error"])
+    assert best in seen["trip"] and seen["late"] not in seen["trip"]          # she stays on the better flight
+
+
 @pytest.fixture(scope="module")
 def data_seed7():
     return build()

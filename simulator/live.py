@@ -618,6 +618,13 @@ class LiveSession:
             if fid not in self.world.pax_truth(pid)["itinerary"]:
                 out.append({"customer_id": pid, "ok": False, "error": f"{pid} is not on {fid}", "trip": None})
                 continue
+            o = next((x for x in self.views.rebooking(pid) + self.views.request_options(pid) if x["option_id"] == opt), None)
+            if o is not None and not self.views.improves(pid, o):     # never move a Customer to a trip that gets in later
+                name = self.world.passengers[pid].get("full_name") or pid
+                out.append({"customer_id": pid, "ok": False, "trip": None,
+                            "error": f"{o['flights'][-1]['flight_id']} arrives at {o['arrives']}, later than {name}'s current "
+                                     f"trip ({fmt(self.views.trip_arrival(pid))}), so they were not moved."})
+                continue
             try:
                 r = self.rebook(pid, opt)
                 out.append({"customer_id": pid, "ok": True, "error": None, "trip": r["trip"]})
